@@ -1,32 +1,29 @@
 # Prerequisites
 *.d
 
-# Compiled Object files
+# Compiled object files
 *.slo
 *.lo
 *.o
 *.obj
 
-# Precompiled Headers
+# Precompiled headers
 *.gch
 *.pch
 
 # Linker files
 *.ilk
 
-# Debugger Files
+# Debug symbols / debugger files
 *.pdb
+*.dSYM/
+*.dwo
 
-# Compiled Dynamic libraries
+# Libraries
 *.so
+*.so.*
 *.dylib
 *.dll
-
-# Fortran module files
-*.mod
-*.smod
-
-# Compiled Static libraries
 *.lai
 *.la
 *.a
@@ -37,5 +34,27 @@
 *.out
 *.app
 
-# debug information files
-*.dwo
+# macOS
+.DS_Store
+
+# CMake / build outputs
+build/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+compile_commands.json
+*.cmake.user
+
+# Repo-local test/example binaries
+*_elf
+*_elfio
+test_elf
+simple_test_elf
+comprehensive_example_elf
+test
+test_data/test_dwarf4
+
+# Editors
+.vscode/
+.idea/

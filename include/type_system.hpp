@@ -1,0 +1,246 @@
+#pragma once
+
+#include "dwarf_types.hpp"
+#include <memory>
+#include <vector>
+#include <map>
+#include <string>
+#include <functional>
+
+namespace dwarf {
+
+// Forward declarations
+class DIE;
+
+// Forward declaration for Type
+class Type;
+
+// Member and BaseClass structures
+struct Member {
+    std::string name;
+    std::shared_ptr<Type> type;
+    uint64_t offset;
+    uint64_t bit_size;
+    uint64_t bit_offset;
+    bool is_static;
+    bool is_public;
+    bool is_protected;
+    bool is_private;
+};
+
+struct BaseClass {
+    std::shared_ptr<Type> type;
+    uint64_t offset;
+    bool is_virtual;
+    bool is_public;
+    bool is_protected;
+    bool is_private;
+};
+
+// Forward declaration
+class TypeSystem;
+
+// Base type representation
+class Type : public std::enable_shared_from_this<Type> {
+public:
+    virtual ~Type() = default;
+    virtual std::string getName() const = 0;
+    virtual uint64_t getSize() const = 0;
+    virtual std::string getDescription() const = 0;
+    virtual bool isComplete() const = 0;
+    virtual std::shared_ptr<Type> resolve() = 0;
+
+    DwarfTag getDwarfTag() const { return dwarf_tag_; }
+    void setDwarfTag(DwarfTag tag) { dwarf_tag_ = tag; }
+
+protected:
+    DwarfTag dwarf_tag_ = static_cast<DwarfTag>(0);
+};
+
+// Primitive types
+class PrimitiveType : public Type {
+public:
+    enum class Kind {
+        VOID,
+        BOOLEAN,
+        INTEGER,
+        FLOAT,
+        COMPLEX,
+        POINTER
+    };
+    
+    PrimitiveType(Kind kind, uint64_t size, const std::string& name = "");
+    std::string getName() const override;
+    uint64_t getSize() const override;
+    std::string getDescription() const override;
+    bool isComplete() const override;
+    std::shared_ptr<Type> resolve() override;
+    Kind getKind() const { return kind_; }
+    
+private:
+    Kind kind_;
+    uint64_t size_;
+    std::string name_;
+};
+
+// Composite types
+class CompositeType : public Type {
+public:
+    enum class Kind {
+        STRUCT,
+        UNION,
+        CLASS,
+        INTERFACE
+    };
+    
+    CompositeType(Kind kind, const std::string& name, uint64_t size = 0);
+    std::string getName() const override;
+    uint64_t getSize() const override;
+    std::string getDescription() const override;
+    bool isComplete() const override;
+    std::shared_ptr<Type> resolve() override;
+    Kind getKind() const { return kind_; }
+    
+    // Member management
+    void addMember(const std::string& name, std::shared_ptr<Type> type, uint64_t offset = 0);
+    const std::vector<dwarf::Member>& getMembers() const { return members_; }
+    std::shared_ptr<Type> getMemberType(const std::string& name) const;
+    uint64_t getMemberOffset(const std::string& name) const;
+    
+    // Inheritance
+    void addBaseClass(std::shared_ptr<CompositeType> base, uint64_t offset = 0);
+    const std::vector<dwarf::BaseClass>& getBaseClasses() const { return base_classes_; }
+    
+private:
+    Kind kind_;
+    std::string name_;
+    uint64_t size_;
+    
+    std::vector<dwarf::Member> members_;
+    std::vector<dwarf::BaseClass> base_classes_;
+};
+
+// Array types
+class ArrayType : public Type {
+public:
+    ArrayType(std::shared_ptr<Type> element_type, const std::vector<uint64_t>& dimensions);
+    std::string getName() const override;
+    uint64_t getSize() const override;
+    std::string getDescription() const override;
+    bool isComplete() const override;
+    std::shared_ptr<Type> resolve() override;
+    
+    std::shared_ptr<Type> getElementType() const { return element_type_; }
+    const std::vector<uint64_t>& getDimensions() const { return dimensions_; }
+    uint64_t getElementCount() const;
+    
+private:
+    std::shared_ptr<Type> element_type_;
+    std::vector<uint64_t> dimensions_;
+};
+
+// Function types
+class FunctionType : public Type {
+public:
+    FunctionType(std::shared_ptr<Type> return_type, 
+                 const std::vector<std::shared_ptr<Type>>& parameter_types,
+                 bool is_variadic = false);
+    std::string getName() const override;
+    uint64_t getSize() const override;
+    std::string getDescription() const override;
+    bool isComplete() const override;
+    std::shared_ptr<Type> resolve() override;
+    
+    std::shared_ptr<Type> getReturnType() const { return return_type_; }
+    const std::vector<std::shared_ptr<Type>>& getParameterTypes() const { return parameter_types_; }
+    bool isVariadic() const { return is_variadic_; }
+    
+private:
+    std::shared_ptr<Type> return_type_;
+    std::vector<std::shared_ptr<Type>> parameter_types_;
+    bool is_variadic_;
+};
+
+// Enum types
+class EnumType : public Type {
+public:
+    struct Enumerator {
+        std::string name;
+        int64_t value;
+    };
+    
+    EnumType(const std::string& name, std::shared_ptr<Type> underlying_type);
+    std::string getName() const override;
+    uint64_t getSize() const override;
+    std::string getDescription() const override;
+    bool isComplete() const override;
+    std::shared_ptr<Type> resolve() override;
+    
+    void addEnumerator(const std::string& name, int64_t value);
+    const std::vector<Enumerator>& getEnumerators() const { return enumerators_; }
+    std::shared_ptr<Type> getUnderlyingType() const { return underlying_type_; }
+    std::string getEnumeratorName(int64_t value) const;
+    
+private:
+    std::string name_;
+    std::shared_ptr<Type> underlying_type_;
+    std::vector<Enumerator> enumerators_;
+};
+
+// Type system for managing types
+class TypeSystem {
+public:
+    using DIELookup = std::function<std::shared_ptr<DIE>(uint64_t)>;
+
+    explicit TypeSystem(uint8_t pointer_size_bytes = sizeof(void*), DIELookup die_lookup = {});
+    
+    // Type creation
+    std::shared_ptr<Type> createPrimitiveType(PrimitiveType::Kind kind, uint64_t size, 
+                                              const std::string& name = "");
+    std::shared_ptr<Type> createPointerType(std::shared_ptr<Type> pointee_type);
+    std::shared_ptr<Type> createArrayType(std::shared_ptr<Type> element_type, 
+                                          const std::vector<uint64_t>& dimensions);
+    std::shared_ptr<Type> createFunctionType(std::shared_ptr<Type> return_type,
+                                             const std::vector<std::shared_ptr<Type>>& parameter_types,
+                                             bool is_variadic = false);
+    std::shared_ptr<Type> createCompositeType(CompositeType::Kind kind, const std::string& name,
+                                              uint64_t size = 0);
+    std::shared_ptr<Type> createEnumType(const std::string& name, 
+                                         std::shared_ptr<Type> underlying_type);
+    
+    // Type resolution
+    std::shared_ptr<Type> resolveType(std::shared_ptr<DIE> die);
+    std::shared_ptr<Type> getType(uint64_t offset);
+    void cacheType(uint64_t offset, std::shared_ptr<Type> type);
+    
+    // Type queries
+    std::vector<std::shared_ptr<Type>> getAllTypes() const;
+    std::vector<std::shared_ptr<Type>> getTypesByTag(DwarfTag tag) const;
+    std::shared_ptr<Type> findTypeByName(const std::string& name) const;
+    
+    // Debugging
+    void printTypes() const;
+    void printType(std::shared_ptr<Type> type, int indent = 0) const;
+    
+private:
+    std::map<uint64_t, std::shared_ptr<Type>> type_cache_;
+    std::vector<std::shared_ptr<Type>> all_types_;
+    uint8_t pointer_size_bytes_ = sizeof(void*);
+    DIELookup die_lookup_;
+    
+    // Type resolution helpers
+    std::shared_ptr<Type> resolvePrimitiveType(std::shared_ptr<DIE> die);
+    std::shared_ptr<Type> resolvePointerType(std::shared_ptr<DIE> die);
+    std::shared_ptr<Type> resolveArrayType(std::shared_ptr<DIE> die);
+    std::shared_ptr<Type> resolveCompositeType(std::shared_ptr<DIE> die);
+    std::shared_ptr<Type> resolveEnumType(std::shared_ptr<DIE> die);
+    std::shared_ptr<Type> resolveFunctionType(std::shared_ptr<DIE> die);
+    std::shared_ptr<Type> resolveTypedefType(std::shared_ptr<DIE> die);
+    
+    // Attribute helpers
+    std::string getTypeName(std::shared_ptr<DIE> die) const;
+    uint64_t getTypeSize(std::shared_ptr<DIE> die) const;
+    std::shared_ptr<DIE> getTypeReference(std::shared_ptr<DIE> die) const;
+};
+
+} // namespace dwarf
