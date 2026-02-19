@@ -69,6 +69,7 @@ public:
     // CFI (Call Frame Information) / Stack Unwinding
     UnwindInfo getUnwindInfo(uint64_t pc) const;
     bool hasCFI() const { return cfi_parser_ != nullptr; }
+    const CFIParser& getCFIParser() const { return *cfi_parser_; }
 
     // Unwind a single frame given register values and memory reader
     // Returns the unwound register values and the return address

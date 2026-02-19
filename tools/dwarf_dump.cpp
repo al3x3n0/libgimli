@@ -6,11 +6,13 @@
 #include "cfi_parser.hpp"
 #include "source_location.hpp"
 #include "expression_compare.hpp"
+#include "cfi_symbolic.hpp"
 #include <iostream>
 #include <iomanip>
 #include <string>
 #include <vector>
 #include <algorithm>
+#include <deque>
 #include <cstring>
 #include <getopt.h>
 #include <limits>
@@ -58,6 +60,8 @@ void printUsage(const char* prog) {
               << "Subcommands:\n"
               << "  " << prog << " compare-expr <lhs-elf> <rhs-elf> [options]\n"
               << "    Compare DWARF location expressions across two binaries.\n"
+              << "  " << prog << " compare-cfi <lhs-elf> <rhs-elf> [options]\n"
+              << "    Compare unwind/CFI semantics across two binaries.\n"
               << "\n"
               << "Section Options:\n"
               << "  -i, --debug-info      Dump .debug_info section\n"
@@ -101,6 +105,7 @@ void printCompareExprUsage(const char* prog) {
               << "  --key-mode=<name|linkage>        Match key mode (default: name)\n"
               << "  --strict-attr-present            Compare only pairs where attr exists on both sides\n"
               << "  --format=<text|json>             Report format (default: text)\n"
+              << "  --schema-version=<N>             JSON schema version (currently supports 1)\n"
               << "  --output=<PATH>                  Write report to file instead of stdout\n"
               << "  --summary-only                   Emit only summary line/object (no rows)\n"
               << "  --only-verdict=<KIND>            Keep only verdict kind (repeatable: equivalent|different|unknown)\n"
@@ -149,6 +154,75 @@ void printCompareExprUsage(const char* prog) {
               << "  --strict                         Equivalent-only gate (no different/unknown/missing)\n"
               << "  --allow-unknown                 Disable unknown failures\n"
               << "  --allow-missing                 Disable missing failures\n";
+}
+
+void printCompareCFIUsage(const char* prog) {
+    std::cerr << "Usage: " << prog << " compare-cfi <lhs-elf> <rhs-elf> [options]\n\n"
+              << "Modes:\n"
+              << "  FDE interval mode (default): compare by FDE index over code interval.\n"
+              << "  All-FDE mode: use --all-fdes to compare all index-aligned FDE pairs.\n"
+              << "  PC mode: provide both --lhs-pc and --rhs-pc to compare one state.\n"
+              << "\n"
+              << "Options:\n"
+              << "  --lhs-fde-index=<N>              LHS FDE index (default: 0)\n"
+              << "  --rhs-fde-index=<N>              RHS FDE index (default: 0)\n"
+              << "  --all-fdes                       Compare all index-aligned FDE pairs\n"
+              << "  --pair-by=<index|start-pc|range> Pairing strategy in --all-fdes mode (default: index)\n"
+              << "  --lhs-pc=<PC>                    LHS PC for state compare mode\n"
+              << "  --rhs-pc=<PC>                    RHS PC for state compare mode\n"
+              << "  --lhs-func=<NAME>                Resolve lhs function name to low_pc for PC mode\n"
+              << "  --rhs-func=<NAME>                Resolve rhs function name to low_pc for PC mode\n"
+              << "  --func=<NAME>                    Resolve function name on both sides for PC mode\n"
+              << "  --allow-range-mismatch           Don't require equal FDE address_range\n"
+              << "  --strict-range                   Require equal FDE address_range (default)\n"
+              << "  --lhs-cfa=<VAL>                  Set lhs CFA in eval context\n"
+              << "  --rhs-cfa=<VAL>                  Set rhs CFA in eval context\n"
+              << "  --cfa=<VAL>                      Set CFA on both sides\n"
+              << "  --lhs-frame-base=<VAL>           Set lhs frame_base in eval context\n"
+              << "  --rhs-frame-base=<VAL>           Set rhs frame_base in eval context\n"
+              << "  --frame-base=<VAL>               Set frame_base on both sides\n"
+              << "  --lhs-tls-base=<VAL>             Set lhs tls_base in eval context\n"
+              << "  --rhs-tls-base=<VAL>             Set rhs tls_base in eval context\n"
+              << "  --tls-base=<VAL>                 Set tls_base on both sides\n"
+              << "  --lhs-object-address=<VAL>       Set lhs object_address in eval context\n"
+              << "  --rhs-object-address=<VAL>       Set rhs object_address in eval context\n"
+              << "  --object-address=<VAL>           Set object_address on both sides\n"
+              << "  --lhs-address-size=<N>           Set lhs address_size (1..8)\n"
+              << "  --rhs-address-size=<N>           Set rhs address_size (1..8)\n"
+              << "  --address-size=<N>               Set address_size on both sides (1..8)\n"
+              << "  --lhs-offset-size=<N>            Set lhs offset_size (4 or 8)\n"
+              << "  --rhs-offset-size=<N>            Set rhs offset_size (4 or 8)\n"
+              << "  --offset-size=<N>                Set offset_size on both sides (4 or 8)\n"
+              << "  --lhs-reg=<IDX:VAL>              Set lhs register value (repeatable)\n"
+              << "  --rhs-reg=<IDX:VAL>              Set rhs register value (repeatable)\n"
+              << "  --reg=<IDX:VAL>                  Set register value on both sides\n"
+              << "  --differential-trials=<N>        Concrete differential trials\n"
+              << "  --register-count=<N>             Synthetic register count per trial (>0)\n"
+              << "  --seed=<VAL>                     Differential seed\n"
+              << "  --no-differential                Disable concrete differential search\n"
+              << "  --format=<text|json>             Report format (default: text)\n"
+              << "  --schema-version=<N>             JSON schema version (0=legacy,1=wrapped)\n"
+              << "  --output=<PATH>                  Write report to file instead of stdout\n"
+              << "  --summary-only                   Emit only summary (no rows)\n"
+              << "  --max-rows=<N>                   Limit rows in all-fdes report (0 = all)\n"
+              << "  --sort=<lhs-index|rhs-index|lhs-pc|rhs-pc|verdict>\n"
+              << "                                   Sort row output (default: lhs-index)\n"
+              << "  --show-equivalent                Include EQUIVALENT rows in row output\n"
+              << "  --hide-equivalent                Exclude EQUIVALENT rows in row output\n"
+              << "  --only-different                 Include only DIFFERENT rows in row output\n"
+              << "  --only-unknown                   Include only UNKNOWN rows in row output\n"
+              << "  --report-only                    Do not enforce gate thresholds\n"
+              << "  --max-different=<N>              Gate threshold (default: 0)\n"
+              << "  --max-unknown=<N>                Gate threshold (default: unlimited)\n"
+              << "  --max-missing-lhs=<N>            Gate threshold (default: unlimited)\n"
+              << "  --max-missing-rhs=<N>            Gate threshold (default: unlimited)\n"
+              << "  --fail-on-unknown                Gate fails if unknown>0\n"
+              << "  --fail-on-missing                Gate fails if missing>0\n"
+              << "\n"
+              << "Policy presets:\n"
+              << "  --strict                         Equivalent-only gate (no different/unknown/missing)\n"
+              << "  --allow-unknown                  Disable unknown failures\n"
+              << "  --allow-missing                  Disable missing failures\n";
 }
 
 // Helper to format hex values
@@ -493,6 +567,78 @@ static bool parseVerdictName(const std::string& raw, ExpressionVerificationResul
     return false;
 }
 
+static const char* verdictToString(ExpressionVerificationResult::Verdict v) {
+    switch (v) {
+        case ExpressionVerificationResult::Verdict::EQUIVALENT: return "EQUIVALENT";
+        case ExpressionVerificationResult::Verdict::DIFFERENT: return "DIFFERENT";
+        case ExpressionVerificationResult::Verdict::UNKNOWN: return "UNKNOWN";
+    }
+    return "UNKNOWN";
+}
+
+static std::string jsonEscape(const std::string& s) {
+    std::ostringstream out;
+    for (char ch : s) {
+        switch (ch) {
+            case '\\': out << "\\\\"; break;
+            case '"': out << "\\\""; break;
+            case '\n': out << "\\n"; break;
+            case '\r': out << "\\r"; break;
+            case '\t': out << "\\t"; break;
+            default:
+                if (static_cast<unsigned char>(ch) < 0x20) {
+                    out << "\\u00";
+                    const char* hex = "0123456789abcdef";
+                    unsigned v = static_cast<unsigned char>(ch);
+                    out << hex[(v >> 4) & 0xf] << hex[v & 0xf];
+                } else {
+                    out << ch;
+                }
+                break;
+        }
+    }
+    return out.str();
+}
+
+static bool resolveFunctionPC(const DwarfParser& parser,
+                              const std::string& name,
+                              uint64_t& out_pc,
+                              std::string& out_err) {
+    std::vector<std::shared_ptr<DIE>> candidates;
+    for (const auto& fn : parser.getFunctions()) {
+        if (!fn) continue;
+        if (fn->getName() == name) {
+            candidates.push_back(fn);
+            continue;
+        }
+        auto ln_attr = fn->getAttribute(DwarfAttribute::DW_AT_linkage_name);
+        auto ln = std::dynamic_pointer_cast<StringAttributeValue>(ln_attr);
+        if (ln && ln->getValue() == name) {
+            candidates.push_back(fn);
+        }
+    }
+    if (candidates.empty()) {
+        out_err = "function '" + name + "' not found";
+        return false;
+    }
+
+    uint64_t best_pc = 0;
+    bool has_pc = false;
+    for (const auto& fn : candidates) {
+        uint64_t pc = getDIELowPC(fn);
+        if (!has_pc || (pc != 0 && pc < best_pc)) {
+            best_pc = pc;
+            has_pc = true;
+        }
+    }
+    if (!has_pc || best_pc == 0) {
+        out_err = "function '" + name + "' has no low_pc";
+        return false;
+    }
+    out_pc = best_pc;
+    return true;
+}
+
 static std::string trim(const std::string& s) {
     size_t b = 0;
     while (b < s.size() && (s[b] == ' ' || s[b] == '\t' || s[b] == '\r' || s[b] == '\n')) ++b;
@@ -540,6 +686,7 @@ static int runCompareExpr(int argc, char* argv[]) {
     std::string name_prefix_filter;
     std::string name_contains_filter;
     std::string format = "text";
+    int schema_version = 0;
     std::string output_path;
     std::set<ExpressionVerificationResult::Verdict> verdict_filters;
     std::string sort_mode = "name";
@@ -631,6 +778,16 @@ static int runCompareExpr(int argc, char* argv[]) {
                 return 1;
             }
             format = val;
+            continue;
+        }
+        if (key == "--schema-version") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            uint64_t parsed = 0;
+            if (!parseUIntOption(val, parsed)) {
+                std::cerr << "Error: invalid --schema-version value '" << val << "'\n";
+                return 1;
+            }
+            schema_version = static_cast<int>(parsed);
             continue;
         }
         if (key == "--output") {
@@ -975,22 +1132,62 @@ static int runCompareExpr(int argc, char* argv[]) {
                   });
     }
 
+    if (format == "json" && schema_version != 0 && schema_version != 1) {
+        std::cerr << "Error: unsupported --schema-version " << schema_version
+                  << " (supported: 0,1)\n";
+        return 1;
+    }
+
+    auto gate = cmp.evaluateGate(comparisons, gate_opts);
+
     std::string report;
     if (summary_only) {
         auto s = cmp.summarize(comparisons);
         if (format == "json") {
-            std::ostringstream oss;
-            oss << "{"
-                << "\"summary\":{"
-                << "\"total\":" << s.total << ","
-                << "\"equivalent\":" << s.equivalent << ","
-                << "\"different\":" << s.different << ","
-                << "\"unknown\":" << s.unknown << ","
-                << "\"missing_lhs\":" << s.missing_lhs << ","
-                << "\"missing_rhs\":" << s.missing_rhs
-                << "}"
-                << "}\n";
-            report = oss.str();
+            if (schema_version == 1) {
+                std::ostringstream oss;
+                oss << "{"
+                    << "\"schema_version\":1,"
+                    << "\"options\":{"
+                    << "\"tag\":\"" << (cmp_opts.tag == DwarfTag::DW_TAG_subprogram ? "subprogram" : "variable") << "\","
+                    << "\"attr\":\"" << (cmp_opts.attribute == DwarfAttribute::DW_AT_frame_base ? "frame_base" : "location") << "\","
+                    << "\"key_mode\":\"" << (cmp_opts.key_mode == CompareKeyMode::LINKAGE_OR_NAME ? "linkage" : "name") << "\","
+                    << "\"include_missing\":" << (cmp_opts.include_missing ? "true" : "false") << ","
+                    << "\"strict_attr_present\":" << (cmp_opts.require_attribute_on_both ? "true" : "false") << ","
+                    << "\"summary_only\":true,"
+                    << "\"max_rows\":" << max_rows << ","
+                    << "\"report_only\":" << (report_only ? "true" : "false")
+                    << "},"
+                    << "\"report\":{"
+                    << "\"summary\":{"
+                    << "\"total\":" << s.total << ","
+                    << "\"equivalent\":" << s.equivalent << ","
+                    << "\"different\":" << s.different << ","
+                    << "\"unknown\":" << s.unknown << ","
+                    << "\"missing_lhs\":" << s.missing_lhs << ","
+                    << "\"missing_rhs\":" << s.missing_rhs
+                    << "}"
+                    << "},"
+                    << "\"gate\":{"
+                    << "\"pass\":" << (gate.pass ? "true" : "false") << ","
+                    << "\"reason\":\"" << jsonEscape(gate.reason) << "\""
+                    << "}"
+                    << "}\n";
+                report = oss.str();
+            } else {
+                std::ostringstream oss;
+                oss << "{"
+                    << "\"summary\":{"
+                    << "\"total\":" << s.total << ","
+                    << "\"equivalent\":" << s.equivalent << ","
+                    << "\"different\":" << s.different << ","
+                    << "\"unknown\":" << s.unknown << ","
+                    << "\"missing_lhs\":" << s.missing_lhs << ","
+                    << "\"missing_rhs\":" << s.missing_rhs
+                    << "}"
+                    << "}\n";
+                report = oss.str();
+            }
         } else {
             std::ostringstream oss;
             oss << "summary total=" << s.total
@@ -1003,7 +1200,30 @@ static int runCompareExpr(int argc, char* argv[]) {
             report = oss.str();
         }
     } else if (format == "json") {
-        report = cmp.renderJsonReport(comparisons, max_rows) + "\n";
+        if (schema_version == 0) {
+            report = cmp.renderJsonReport(comparisons, max_rows) + "\n";
+        } else {
+            std::ostringstream oss;
+            oss << "{"
+                << "\"schema_version\":1,"
+                << "\"options\":{"
+                << "\"tag\":\"" << (cmp_opts.tag == DwarfTag::DW_TAG_subprogram ? "subprogram" : "variable") << "\","
+                << "\"attr\":\"" << (cmp_opts.attribute == DwarfAttribute::DW_AT_frame_base ? "frame_base" : "location") << "\","
+                << "\"key_mode\":\"" << (cmp_opts.key_mode == CompareKeyMode::LINKAGE_OR_NAME ? "linkage" : "name") << "\","
+                << "\"include_missing\":" << (cmp_opts.include_missing ? "true" : "false") << ","
+                << "\"strict_attr_present\":" << (cmp_opts.require_attribute_on_both ? "true" : "false") << ","
+                << "\"summary_only\":" << (summary_only ? "true" : "false") << ","
+                << "\"max_rows\":" << max_rows << ","
+                << "\"report_only\":" << (report_only ? "true" : "false")
+                << "},"
+                << "\"report\":" << cmp.renderJsonReport(comparisons, max_rows) << ","
+                << "\"gate\":{"
+                << "\"pass\":" << (gate.pass ? "true" : "false") << ","
+                << "\"reason\":\"" << jsonEscape(gate.reason) << "\""
+                << "}"
+                << "}\n";
+            report = oss.str();
+        }
     } else {
         report = cmp.renderTextReport(comparisons, max_rows);
     }
@@ -1019,9 +1239,841 @@ static int runCompareExpr(int argc, char* argv[]) {
         std::cout << report;
     }
 
-    auto gate = cmp.evaluateGate(comparisons, gate_opts);
     if (!report_only && !gate.pass) {
         std::cerr << "compare-expr gate FAILED: " << gate.reason << "\n";
+        return 2;
+    }
+    return 0;
+}
+
+static int runCompareCFI(int argc, char* argv[]) {
+    for (int i = 2; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--help" || arg == "-h") {
+            printCompareCFIUsage(argv[0]);
+            return 0;
+        }
+    }
+    if (argc < 4) {
+        printCompareCFIUsage(argv[0]);
+        return 1;
+    }
+
+    std::string lhs_file = argv[2];
+    std::string rhs_file = argv[3];
+
+    size_t lhs_fde_index = 0;
+    size_t rhs_fde_index = 0;
+    bool all_fdes = false;
+    std::string pair_by = "index";
+    bool lhs_pc_set = false;
+    bool rhs_pc_set = false;
+    uint64_t lhs_pc = 0;
+    uint64_t rhs_pc = 0;
+    std::string lhs_func;
+    std::string rhs_func;
+    std::string format = "text";
+    int schema_version = 1;
+    std::string output_path;
+    bool summary_only = false;
+    size_t max_rows = 0;
+    std::string sort_mode = "lhs-index";
+    bool show_equivalent_rows = true;
+    bool equivalent_filter_explicit = false;
+    bool only_different_rows = false;
+    bool only_unknown_rows = false;
+    bool report_only = false;
+    size_t max_different = 0;
+    size_t max_unknown = std::numeric_limits<size_t>::max();
+    size_t max_missing_lhs = std::numeric_limits<size_t>::max();
+    size_t max_missing_rhs = std::numeric_limits<size_t>::max();
+    bool fail_on_unknown = false;
+    bool fail_on_missing = false;
+    SymbolicCFICompareOptions cmp_opts;
+
+    for (int i = 4; i < argc; ++i) {
+        std::string arg = argv[i];
+        auto split = arg.find('=');
+        auto key = (split == std::string::npos) ? arg : arg.substr(0, split);
+        auto val = (split == std::string::npos) ? std::string() : arg.substr(split + 1);
+
+        if (key == "--lhs-fde-index") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            uint64_t parsed = 0;
+            if (!parseUIntOption(val, parsed)) {
+                std::cerr << "Error: invalid --lhs-fde-index value '" << val << "'\n";
+                return 1;
+            }
+            lhs_fde_index = static_cast<size_t>(parsed);
+            continue;
+        }
+        if (key == "--rhs-fde-index") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            uint64_t parsed = 0;
+            if (!parseUIntOption(val, parsed)) {
+                std::cerr << "Error: invalid --rhs-fde-index value '" << val << "'\n";
+                return 1;
+            }
+            rhs_fde_index = static_cast<size_t>(parsed);
+            continue;
+        }
+        if (key == "--all-fdes") {
+            all_fdes = true;
+            continue;
+        }
+        if (key == "--pair-by") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            if (val != "index" && val != "start-pc" && val != "range") {
+                std::cerr << "Error: invalid --pair-by value '" << val
+                          << "' (expected index|start-pc|range)\n";
+                return 1;
+            }
+            pair_by = val;
+            continue;
+        }
+        if (key == "--lhs-pc") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            if (!parseUIntOption(val, lhs_pc)) {
+                std::cerr << "Error: invalid --lhs-pc value '" << val << "'\n";
+                return 1;
+            }
+            lhs_pc_set = true;
+            continue;
+        }
+        if (key == "--rhs-pc") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            if (!parseUIntOption(val, rhs_pc)) {
+                std::cerr << "Error: invalid --rhs-pc value '" << val << "'\n";
+                return 1;
+            }
+            rhs_pc_set = true;
+            continue;
+        }
+        if (key == "--lhs-func" || key == "--rhs-func" || key == "--func") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            if (val.empty()) {
+                std::cerr << "Error: invalid " << key << " value (empty)\n";
+                return 1;
+            }
+            if (key == "--lhs-func" || key == "--func") lhs_func = val;
+            if (key == "--rhs-func" || key == "--func") rhs_func = val;
+            continue;
+        }
+        if (key == "--allow-range-mismatch") {
+            cmp_opts.require_same_range = false;
+            continue;
+        }
+        if (key == "--strict-range") {
+            cmp_opts.require_same_range = true;
+            continue;
+        }
+        if (key == "--lhs-cfa" || key == "--rhs-cfa" || key == "--cfa" ||
+            key == "--lhs-frame-base" || key == "--rhs-frame-base" || key == "--frame-base" ||
+            key == "--lhs-tls-base" || key == "--rhs-tls-base" || key == "--tls-base" ||
+            key == "--lhs-object-address" || key == "--rhs-object-address" || key == "--object-address") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            uint64_t parsed = 0;
+            if (!parseUIntOption(val, parsed)) {
+                std::cerr << "Error: invalid " << key << " value '" << val << "'\n";
+                return 1;
+            }
+            if (key == "--lhs-cfa" || key == "--cfa") cmp_opts.lhs_context.cfa = parsed;
+            if (key == "--rhs-cfa" || key == "--cfa") cmp_opts.rhs_context.cfa = parsed;
+            if (key == "--lhs-frame-base" || key == "--frame-base") cmp_opts.lhs_context.frame_base = parsed;
+            if (key == "--rhs-frame-base" || key == "--frame-base") cmp_opts.rhs_context.frame_base = parsed;
+            if (key == "--lhs-tls-base" || key == "--tls-base") cmp_opts.lhs_context.tls_base = parsed;
+            if (key == "--rhs-tls-base" || key == "--tls-base") cmp_opts.rhs_context.tls_base = parsed;
+            if (key == "--lhs-object-address" || key == "--object-address") cmp_opts.lhs_context.object_address = parsed;
+            if (key == "--rhs-object-address" || key == "--object-address") cmp_opts.rhs_context.object_address = parsed;
+            continue;
+        }
+        if (key == "--lhs-address-size" || key == "--rhs-address-size" || key == "--address-size") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            uint8_t parsed = 0;
+            if (!parseByteSizedOption(val, parsed, 1, 8)) {
+                std::cerr << "Error: invalid " << key << " value '" << val
+                          << "' (expected integer in [1,8])\n";
+                return 1;
+            }
+            if (key == "--lhs-address-size" || key == "--address-size") cmp_opts.lhs_context.address_size = parsed;
+            if (key == "--rhs-address-size" || key == "--address-size") cmp_opts.rhs_context.address_size = parsed;
+            continue;
+        }
+        if (key == "--lhs-offset-size" || key == "--rhs-offset-size" || key == "--offset-size") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            uint8_t parsed = 0;
+            if (!parseByteSizedOption(val, parsed, 4, 8) || (parsed != 4 && parsed != 8)) {
+                std::cerr << "Error: invalid " << key << " value '" << val
+                          << "' (expected 4 or 8)\n";
+                return 1;
+            }
+            if (key == "--lhs-offset-size" || key == "--offset-size") cmp_opts.lhs_context.offset_size = parsed;
+            if (key == "--rhs-offset-size" || key == "--offset-size") cmp_opts.rhs_context.offset_size = parsed;
+            continue;
+        }
+        if (key == "--lhs-reg" || key == "--rhs-reg" || key == "--reg") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            size_t reg_index = 0;
+            uint64_t reg_value = 0;
+            if (!parseRegisterAssignment(val, reg_index, reg_value)) {
+                std::cerr << "Error: invalid " << key << " value '" << val
+                          << "' (expected IDX:VAL)\n";
+                return 1;
+            }
+            auto apply_reg = [&](std::vector<uint64_t>& regs) {
+                if (regs.size() <= reg_index) regs.resize(reg_index + 1, 0);
+                regs[reg_index] = reg_value;
+            };
+            if (key == "--lhs-reg" || key == "--reg") apply_reg(cmp_opts.lhs_registers);
+            if (key == "--rhs-reg" || key == "--reg") apply_reg(cmp_opts.rhs_registers);
+            continue;
+        }
+        if (key == "--differential-trials") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            uint64_t parsed = 0;
+            if (!parseUIntOption(val, parsed)) {
+                std::cerr << "Error: invalid --differential-trials value '" << val << "'\n";
+                return 1;
+            }
+            cmp_opts.expression_options.differential_trials = static_cast<size_t>(parsed);
+            continue;
+        }
+        if (key == "--register-count") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            uint64_t parsed = 0;
+            if (!parseUIntOption(val, parsed) || parsed == 0) {
+                std::cerr << "Error: invalid --register-count value '" << val
+                          << "' (expected positive integer)\n";
+                return 1;
+            }
+            cmp_opts.expression_options.register_count = static_cast<size_t>(parsed);
+            continue;
+        }
+        if (key == "--seed") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            uint64_t parsed = 0;
+            if (!parseUIntOption(val, parsed)) {
+                std::cerr << "Error: invalid --seed value '" << val << "'\n";
+                return 1;
+            }
+            cmp_opts.expression_options.seed = parsed;
+            continue;
+        }
+        if (key == "--no-differential") {
+            cmp_opts.expression_options.run_differential = false;
+            continue;
+        }
+        if (key == "--format") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            if (val != "text" && val != "json") {
+                std::cerr << "Error: invalid --format value '" << val << "'\n";
+                return 1;
+            }
+            format = val;
+            continue;
+        }
+        if (key == "--schema-version") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            uint64_t parsed = 0;
+            if (!parseUIntOption(val, parsed)) {
+                std::cerr << "Error: invalid --schema-version value '" << val << "'\n";
+                return 1;
+            }
+            schema_version = static_cast<int>(parsed);
+            continue;
+        }
+        if (key == "--output") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            if (val.empty()) {
+                std::cerr << "Error: invalid --output value (empty)\n";
+                return 1;
+            }
+            output_path = val;
+            continue;
+        }
+        if (key == "--summary-only") {
+            summary_only = true;
+            continue;
+        }
+        if (key == "--max-rows") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            uint64_t parsed = 0;
+            if (!parseUIntOption(val, parsed)) {
+                std::cerr << "Error: invalid --max-rows value '" << val << "'\n";
+                return 1;
+            }
+            max_rows = static_cast<size_t>(parsed);
+            continue;
+        }
+        if (key == "--sort") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            if (val != "lhs-index" && val != "rhs-index" &&
+                val != "lhs-pc" && val != "rhs-pc" && val != "verdict") {
+                std::cerr << "Error: invalid --sort value '" << val
+                          << "' (expected lhs-index|rhs-index|lhs-pc|rhs-pc|verdict)\n";
+                return 1;
+            }
+            sort_mode = val;
+            continue;
+        }
+        if (key == "--show-equivalent") {
+            show_equivalent_rows = true;
+            equivalent_filter_explicit = true;
+            continue;
+        }
+        if (key == "--hide-equivalent") {
+            show_equivalent_rows = false;
+            equivalent_filter_explicit = true;
+            continue;
+        }
+        if (key == "--only-different") {
+            only_different_rows = true;
+            continue;
+        }
+        if (key == "--only-unknown") {
+            only_unknown_rows = true;
+            continue;
+        }
+        if (key == "--report-only") {
+            report_only = true;
+            continue;
+        }
+        if (key == "--max-different") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            uint64_t parsed = 0;
+            if (!parseUIntOption(val, parsed)) {
+                std::cerr << "Error: invalid --max-different value '" << val << "'\n";
+                return 1;
+            }
+            max_different = static_cast<size_t>(parsed);
+            continue;
+        }
+        if (key == "--max-unknown") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            uint64_t parsed = 0;
+            if (!parseUIntOption(val, parsed)) {
+                std::cerr << "Error: invalid --max-unknown value '" << val << "'\n";
+                return 1;
+            }
+            max_unknown = static_cast<size_t>(parsed);
+            continue;
+        }
+        if (key == "--max-missing-lhs") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            uint64_t parsed = 0;
+            if (!parseUIntOption(val, parsed)) {
+                std::cerr << "Error: invalid --max-missing-lhs value '" << val << "'\n";
+                return 1;
+            }
+            max_missing_lhs = static_cast<size_t>(parsed);
+            continue;
+        }
+        if (key == "--max-missing-rhs") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            uint64_t parsed = 0;
+            if (!parseUIntOption(val, parsed)) {
+                std::cerr << "Error: invalid --max-missing-rhs value '" << val << "'\n";
+                return 1;
+            }
+            max_missing_rhs = static_cast<size_t>(parsed);
+            continue;
+        }
+        if (key == "--fail-on-unknown") {
+            fail_on_unknown = true;
+            continue;
+        }
+        if (key == "--fail-on-missing") {
+            fail_on_missing = true;
+            continue;
+        }
+        if (key == "--strict") {
+            max_different = 0;
+            max_unknown = 0;
+            max_missing_lhs = 0;
+            max_missing_rhs = 0;
+            fail_on_unknown = true;
+            fail_on_missing = true;
+            continue;
+        }
+        if (key == "--allow-unknown") {
+            fail_on_unknown = false;
+            max_unknown = std::numeric_limits<size_t>::max();
+            continue;
+        }
+        if (key == "--allow-missing") {
+            fail_on_missing = false;
+            max_missing_lhs = std::numeric_limits<size_t>::max();
+            max_missing_rhs = std::numeric_limits<size_t>::max();
+            continue;
+        }
+        std::cerr << "Error: unknown compare-cfi option '" << arg << "'\n";
+        return 1;
+    }
+
+    if ((!lhs_func.empty() || !rhs_func.empty()) && (lhs_pc_set || rhs_pc_set)) {
+        std::cerr << "Error: do not mix --*-pc with --*-func in compare-cfi\n";
+        return 1;
+    }
+    if (all_fdes && (lhs_pc_set || rhs_pc_set || !lhs_func.empty() || !rhs_func.empty())) {
+        std::cerr << "Error: --all-fdes cannot be combined with PC/function selector mode\n";
+        return 1;
+    }
+    if (!all_fdes && pair_by != "index") {
+        std::cerr << "Error: --pair-by is only valid with --all-fdes\n";
+        return 1;
+    }
+    if (lhs_pc_set != rhs_pc_set) {
+        std::cerr << "Error: PC mode requires both --lhs-pc and --rhs-pc\n";
+        return 1;
+    }
+    bool pc_mode = lhs_pc_set && rhs_pc_set;
+    bool func_mode = !lhs_func.empty() || !rhs_func.empty();
+    if (func_mode && (lhs_func.empty() || rhs_func.empty())) {
+        std::cerr << "Error: function mode requires both lhs and rhs function names\n";
+        return 1;
+    }
+    if (only_different_rows && only_unknown_rows) {
+        std::cerr << "Error: --only-different and --only-unknown are mutually exclusive\n";
+        return 1;
+    }
+
+    DwarfParser lhs(lhs_file);
+    DwarfParser rhs(rhs_file);
+    if (!lhs.load()) {
+        std::cerr << "Error: failed to load lhs ELF '" << lhs_file << "'\n";
+        return 1;
+    }
+    if (!rhs.load()) {
+        std::cerr << "Error: failed to load rhs ELF '" << rhs_file << "'\n";
+        return 1;
+    }
+    if (!lhs.hasCFI() || !rhs.hasCFI()) {
+        std::cerr << "Error: one or both binaries lack CFI data\n";
+        return 1;
+    }
+    if (func_mode) {
+        std::string err;
+        if (!resolveFunctionPC(lhs, lhs_func, lhs_pc, err)) {
+            std::cerr << "Error: lhs " << err << "\n";
+            return 1;
+        }
+        if (!resolveFunctionPC(rhs, rhs_func, rhs_pc, err)) {
+            std::cerr << "Error: rhs " << err << "\n";
+            return 1;
+        }
+        lhs_pc_set = rhs_pc_set = true;
+        pc_mode = true;
+    }
+
+    SymbolicCFIVerifier verifier;
+    struct CFICompareRow {
+        size_t lhs_index = 0;
+        size_t rhs_index = 0;
+        ExpressionVerificationResult::Verdict verdict = ExpressionVerificationResult::Verdict::UNKNOWN;
+        std::string reason;
+        size_t points_checked = 0;
+        bool has_mismatch_pc = false;
+        uint64_t mismatch_pc = 0;
+        bool has_lhs_fde = false;
+        bool has_rhs_fde = false;
+        uint64_t lhs_initial_location = 0;
+        uint64_t lhs_address_range = 0;
+        uint64_t rhs_initial_location = 0;
+        uint64_t rhs_address_range = 0;
+        std::string lhs_function_name;
+        std::string rhs_function_name;
+        std::string lhs_summary;
+        std::string rhs_summary;
+    };
+    std::vector<CFICompareRow> rows;
+    size_t missing_lhs = 0;
+    size_t missing_rhs = 0;
+
+    auto resolveFuncName = [](const DwarfParser& p, uint64_t pc) -> std::string {
+        auto die = p.getFunctionAt(pc);
+        if (!die) return "";
+        std::string n = die->getName();
+        if (!n.empty()) return n;
+        auto ln_attr = die->getAttribute(DwarfAttribute::DW_AT_linkage_name);
+        auto ln = std::dynamic_pointer_cast<StringAttributeValue>(ln_attr);
+        return ln ? ln->getValue() : "";
+    };
+
+    if (all_fdes) {
+        const auto& lf = lhs.getCFIParser().getFDEs();
+        const auto& rf = rhs.getCFIParser().getFDEs();
+        std::vector<std::pair<size_t, size_t>> pairs;
+
+        if (pair_by == "index") {
+            size_t n = std::min(lf.size(), rf.size());
+            if (lf.size() > rf.size()) {
+                missing_rhs = lf.size() - rf.size();
+            } else if (rf.size() > lf.size()) {
+                missing_lhs = rf.size() - lf.size();
+            }
+            for (size_t i = 0; i < n; ++i) {
+                pairs.emplace_back(i, i);
+            }
+        } else if (pair_by == "start-pc") {
+            std::map<uint64_t, std::deque<size_t>> lhs_by_pc;
+            std::map<uint64_t, std::deque<size_t>> rhs_by_pc;
+            for (size_t i = 0; i < lf.size(); ++i) lhs_by_pc[lf[i]->initial_location].push_back(i);
+            for (size_t i = 0; i < rf.size(); ++i) rhs_by_pc[rf[i]->initial_location].push_back(i);
+
+            std::set<uint64_t> keys;
+            for (const auto& kv : lhs_by_pc) keys.insert(kv.first);
+            for (const auto& kv : rhs_by_pc) keys.insert(kv.first);
+
+            for (uint64_t k : keys) {
+                auto& lq = lhs_by_pc[k];
+                auto& rq = rhs_by_pc[k];
+                size_t n = std::min(lq.size(), rq.size());
+                for (size_t i = 0; i < n; ++i) {
+                    pairs.emplace_back(lq.front(), rq.front());
+                    lq.pop_front();
+                    rq.pop_front();
+                }
+                missing_rhs += lq.size();
+                missing_lhs += rq.size();
+            }
+        } else { // pair_by == "range"
+            using Key = std::pair<uint64_t, uint64_t>;
+            std::map<Key, std::deque<size_t>> lhs_by_range;
+            std::map<Key, std::deque<size_t>> rhs_by_range;
+            for (size_t i = 0; i < lf.size(); ++i) {
+                lhs_by_range[{lf[i]->initial_location, lf[i]->address_range}].push_back(i);
+            }
+            for (size_t i = 0; i < rf.size(); ++i) {
+                rhs_by_range[{rf[i]->initial_location, rf[i]->address_range}].push_back(i);
+            }
+
+            std::set<Key> keys;
+            for (const auto& kv : lhs_by_range) keys.insert(kv.first);
+            for (const auto& kv : rhs_by_range) keys.insert(kv.first);
+
+            for (const auto& k : keys) {
+                auto& lq = lhs_by_range[k];
+                auto& rq = rhs_by_range[k];
+                size_t n = std::min(lq.size(), rq.size());
+                for (size_t i = 0; i < n; ++i) {
+                    pairs.emplace_back(lq.front(), rq.front());
+                    lq.pop_front();
+                    rq.pop_front();
+                }
+                missing_rhs += lq.size();
+                missing_lhs += rq.size();
+            }
+        }
+
+        for (const auto& p : pairs) {
+            auto r = verifier.compareFDEByIndex(lhs.getCFIParser(), p.first, rhs.getCFIParser(), p.second, cmp_opts);
+            CFICompareRow row;
+            row.lhs_index = p.first;
+            row.rhs_index = p.second;
+            row.verdict = r.verdict;
+            row.reason = r.reason;
+            row.points_checked = r.points_checked;
+            row.has_mismatch_pc = r.has_mismatch_relative_pc;
+            row.mismatch_pc = r.mismatch_relative_pc;
+            if (p.first < lf.size()) {
+                row.has_lhs_fde = true;
+                row.lhs_initial_location = lf[p.first]->initial_location;
+                row.lhs_address_range = lf[p.first]->address_range;
+                row.lhs_function_name = resolveFuncName(lhs, row.lhs_initial_location);
+            }
+            if (p.second < rf.size()) {
+                row.has_rhs_fde = true;
+                row.rhs_initial_location = rf[p.second]->initial_location;
+                row.rhs_address_range = rf[p.second]->address_range;
+                row.rhs_function_name = resolveFuncName(rhs, row.rhs_initial_location);
+            }
+            rows.push_back(std::move(row));
+        }
+    } else if (pc_mode) {
+        auto r = verifier.compareParsersAtPC(lhs.getCFIParser(), rhs.getCFIParser(), lhs_pc, rhs_pc, cmp_opts);
+        CFICompareRow row;
+        row.verdict = r.verdict;
+        row.reason = r.reason;
+        row.points_checked = 1;
+        row.lhs_summary = r.lhs_summary;
+        row.rhs_summary = r.rhs_summary;
+        auto lf = lhs.getCFIParser().findFDE(lhs_pc);
+        auto rf = rhs.getCFIParser().findFDE(rhs_pc);
+        if (lf) {
+            row.has_lhs_fde = true;
+            row.lhs_initial_location = lf->initial_location;
+            row.lhs_address_range = lf->address_range;
+            row.lhs_function_name = resolveFuncName(lhs, row.lhs_initial_location);
+        }
+        if (rf) {
+            row.has_rhs_fde = true;
+            row.rhs_initial_location = rf->initial_location;
+            row.rhs_address_range = rf->address_range;
+            row.rhs_function_name = resolveFuncName(rhs, row.rhs_initial_location);
+        }
+        rows.push_back(std::move(row));
+    } else {
+        auto r = verifier.compareFDEByIndex(
+            lhs.getCFIParser(), lhs_fde_index,
+            rhs.getCFIParser(), rhs_fde_index,
+            cmp_opts);
+        CFICompareRow row;
+        row.lhs_index = lhs_fde_index;
+        row.rhs_index = rhs_fde_index;
+        row.verdict = r.verdict;
+        row.reason = r.reason;
+        row.points_checked = r.points_checked;
+        row.has_mismatch_pc = r.has_mismatch_relative_pc;
+        row.mismatch_pc = r.mismatch_relative_pc;
+        const auto& lf = lhs.getCFIParser().getFDEs();
+        const auto& rf = rhs.getCFIParser().getFDEs();
+        if (lhs_fde_index < lf.size()) {
+            row.has_lhs_fde = true;
+            row.lhs_initial_location = lf[lhs_fde_index]->initial_location;
+            row.lhs_address_range = lf[lhs_fde_index]->address_range;
+            row.lhs_function_name = resolveFuncName(lhs, row.lhs_initial_location);
+        }
+        if (rhs_fde_index < rf.size()) {
+            row.has_rhs_fde = true;
+            row.rhs_initial_location = rf[rhs_fde_index]->initial_location;
+            row.rhs_address_range = rf[rhs_fde_index]->address_range;
+            row.rhs_function_name = resolveFuncName(rhs, row.rhs_initial_location);
+        }
+        rows.push_back(std::move(row));
+    }
+
+    size_t equivalent = 0;
+    size_t different = 0;
+    size_t unknown = 0;
+    for (const auto& row : rows) {
+        if (row.verdict == ExpressionVerificationResult::Verdict::EQUIVALENT) ++equivalent;
+        if (row.verdict == ExpressionVerificationResult::Verdict::DIFFERENT) ++different;
+        if (row.verdict == ExpressionVerificationResult::Verdict::UNKNOWN) ++unknown;
+    }
+    if (all_fdes && !equivalent_filter_explicit) {
+        // In bulk mode, default to actionable rows unless user overrides with --show-equivalent.
+        show_equivalent_rows = false;
+    }
+
+    std::vector<size_t> visible_rows;
+    visible_rows.reserve(rows.size());
+    for (size_t i = 0; i < rows.size(); ++i) {
+        if (only_different_rows &&
+            rows[i].verdict != ExpressionVerificationResult::Verdict::DIFFERENT) {
+            continue;
+        }
+        if (only_unknown_rows &&
+            rows[i].verdict != ExpressionVerificationResult::Verdict::UNKNOWN) {
+            continue;
+        }
+        if (!show_equivalent_rows &&
+            rows[i].verdict == ExpressionVerificationResult::Verdict::EQUIVALENT) {
+            continue;
+        }
+        visible_rows.push_back(i);
+    }
+    {
+        auto verdictRank = [](ExpressionVerificationResult::Verdict v) {
+            switch (v) {
+                case ExpressionVerificationResult::Verdict::DIFFERENT: return 0;
+                case ExpressionVerificationResult::Verdict::UNKNOWN: return 1;
+                case ExpressionVerificationResult::Verdict::EQUIVALENT: return 2;
+            }
+            return 3;
+        };
+        auto lhsPcKey = [&](size_t i) {
+            return rows[i].has_lhs_fde ? rows[i].lhs_initial_location : std::numeric_limits<uint64_t>::max();
+        };
+        auto rhsPcKey = [&](size_t i) {
+            return rows[i].has_rhs_fde ? rows[i].rhs_initial_location : std::numeric_limits<uint64_t>::max();
+        };
+        auto tieBreak = [&](size_t a, size_t b) {
+            if (rows[a].lhs_index != rows[b].lhs_index) return rows[a].lhs_index < rows[b].lhs_index;
+            return rows[a].rhs_index < rows[b].rhs_index;
+        };
+        std::sort(visible_rows.begin(), visible_rows.end(), [&](size_t a, size_t b) {
+            if (sort_mode == "verdict") {
+                int ar = verdictRank(rows[a].verdict);
+                int br = verdictRank(rows[b].verdict);
+                if (ar != br) return ar < br;
+                return tieBreak(a, b);
+            }
+            if (sort_mode == "rhs-index") {
+                if (rows[a].rhs_index != rows[b].rhs_index) return rows[a].rhs_index < rows[b].rhs_index;
+                return rows[a].lhs_index < rows[b].lhs_index;
+            }
+            if (sort_mode == "lhs-pc") {
+                uint64_t ap = lhsPcKey(a);
+                uint64_t bp = lhsPcKey(b);
+                if (ap != bp) return ap < bp;
+                return tieBreak(a, b);
+            }
+            if (sort_mode == "rhs-pc") {
+                uint64_t ap = rhsPcKey(a);
+                uint64_t bp = rhsPcKey(b);
+                if (ap != bp) return ap < bp;
+                return tieBreak(a, b);
+            }
+            // default: lhs-index
+            return tieBreak(a, b);
+        });
+    }
+
+    bool gate_pass = true;
+    std::string gate_reason;
+    if (different > max_different) {
+        gate_pass = false;
+        gate_reason = "different=" + std::to_string(different) + " exceeds max_different=" +
+                      std::to_string(max_different);
+    } else if (unknown > max_unknown) {
+        gate_pass = false;
+        gate_reason = "unknown=" + std::to_string(unknown) + " exceeds max_unknown=" +
+                      std::to_string(max_unknown);
+    } else if (missing_lhs > max_missing_lhs) {
+        gate_pass = false;
+        gate_reason = "missing_lhs=" + std::to_string(missing_lhs) +
+                      " exceeds max_missing_lhs=" + std::to_string(max_missing_lhs);
+    } else if (missing_rhs > max_missing_rhs) {
+        gate_pass = false;
+        gate_reason = "missing_rhs=" + std::to_string(missing_rhs) +
+                      " exceeds max_missing_rhs=" + std::to_string(max_missing_rhs);
+    } else if (fail_on_unknown && unknown > 0) {
+        gate_pass = false;
+        gate_reason = "unknown result not allowed by fail-on-unknown";
+    } else if (fail_on_missing && (missing_lhs > 0 || missing_rhs > 0)) {
+        gate_pass = false;
+        gate_reason = "missing FDE pairs not allowed by fail-on-missing";
+    }
+
+    std::ostringstream out;
+    size_t shown = (max_rows == 0) ? visible_rows.size() : std::min(max_rows, visible_rows.size());
+    if (format == "json") {
+        if (schema_version != 1) {
+            std::cerr << "Error: unsupported --schema-version " << schema_version
+                      << " (supported: 1)\n";
+            return 1;
+        }
+        out << "{"
+            << "\"schema_version\":" << schema_version << ","
+            << "\"mode\":\"" << (all_fdes ? "all-fdes" : (pc_mode ? (func_mode ? "func" : "pc") : "fde")) << "\","
+            << "\"pair_by\":\"" << pair_by << "\","
+            << "\"options\":{"
+            << "\"all_fdes\":" << (all_fdes ? "true" : "false") << ","
+            << "\"pc_mode\":" << (pc_mode ? "true" : "false") << ","
+            << "\"func_mode\":" << (func_mode ? "true" : "false") << ","
+            << "\"lhs_fde_index\":" << lhs_fde_index << ","
+            << "\"rhs_fde_index\":" << rhs_fde_index << ","
+            << "\"lhs_pc\":" << lhs_pc << ","
+            << "\"rhs_pc\":" << rhs_pc << ","
+            << "\"max_rows\":" << max_rows << ","
+            << "\"sort\":\"" << sort_mode << "\","
+            << "\"show_equivalent\":" << (show_equivalent_rows ? "true" : "false") << ","
+            << "\"only_different\":" << (only_different_rows ? "true" : "false") << ","
+            << "\"only_unknown\":" << (only_unknown_rows ? "true" : "false") << ","
+            << "\"summary_only\":" << (summary_only ? "true" : "false") << ","
+            << "\"report_only\":" << (report_only ? "true" : "false") << ","
+            << "\"max_different\":" << max_different << ","
+            << "\"max_unknown\":" << max_unknown << ","
+            << "\"max_missing_lhs\":" << max_missing_lhs << ","
+            << "\"max_missing_rhs\":" << max_missing_rhs << ","
+            << "\"fail_on_unknown\":" << (fail_on_unknown ? "true" : "false") << ","
+            << "\"fail_on_missing\":" << (fail_on_missing ? "true" : "false")
+            << "},"
+            << "\"summary\":{"
+            << "\"total\":" << rows.size() << ","
+            << "\"equivalent\":" << equivalent << ","
+            << "\"different\":" << different << ","
+            << "\"unknown\":" << unknown << ","
+            << "\"missing_lhs\":" << missing_lhs << ","
+            << "\"missing_rhs\":" << missing_rhs
+            << "},";
+        if (!summary_only) {
+            out << "\"rows\":[";
+            for (size_t i = 0; i < shown; ++i) {
+                if (i != 0) out << ",";
+                const auto& row = rows[visible_rows[i]];
+                out << "{"
+                    << "\"lhs_index\":" << row.lhs_index << ","
+                    << "\"rhs_index\":" << row.rhs_index << ","
+                    << "\"verdict\":\"" << verdictToString(row.verdict) << "\","
+                    << "\"reason\":\"" << jsonEscape(row.reason) << "\","
+                    << "\"points_checked\":" << row.points_checked << ","
+                    << "\"has_mismatch_relative_pc\":" << (row.has_mismatch_pc ? "true" : "false") << ","
+                    << "\"mismatch_relative_pc\":" << row.mismatch_pc << ","
+                    << "\"has_lhs_fde\":" << (row.has_lhs_fde ? "true" : "false") << ","
+                    << "\"has_rhs_fde\":" << (row.has_rhs_fde ? "true" : "false") << ","
+                    << "\"lhs_initial_location\":" << row.lhs_initial_location << ","
+                    << "\"lhs_address_range\":" << row.lhs_address_range << ","
+                    << "\"rhs_initial_location\":" << row.rhs_initial_location << ","
+                    << "\"rhs_address_range\":" << row.rhs_address_range << ","
+                    << "\"lhs_function_name\":\"" << jsonEscape(row.lhs_function_name) << "\","
+                    << "\"rhs_function_name\":\"" << jsonEscape(row.rhs_function_name) << "\""
+                    << "}";
+            }
+            out << "],";
+        }
+        out
+            << "\"gate\":{"
+            << "\"pass\":" << (gate_pass ? "true" : "false") << ","
+            << "\"reason\":\"" << jsonEscape(gate_reason) << "\""
+            << "}"
+            << "}\n";
+    } else {
+        out << "mode=" << (all_fdes ? "all-fdes" : (pc_mode ? (func_mode ? "func" : "pc") : "fde"))
+            << " pair_by=" << pair_by
+            << " sort=" << sort_mode
+            << " total=" << rows.size()
+            << " equivalent=" << equivalent
+            << " different=" << different
+            << " unknown=" << unknown
+            << " missing_lhs=" << missing_lhs
+            << " missing_rhs=" << missing_rhs
+            << " gate_pass=" << (gate_pass ? "1" : "0")
+            << "\n";
+        if (func_mode) {
+            out << "lhs_func=" << lhs_func << " lhs_pc=0x" << std::hex << lhs_pc << std::dec << "\n";
+            out << "rhs_func=" << rhs_func << " rhs_pc=0x" << std::hex << rhs_pc << std::dec << "\n";
+        }
+        if (!summary_only) {
+            out << "lhs_index|rhs_index|lhs_initial_location|lhs_address_range|lhs_function_name|rhs_initial_location|rhs_address_range|rhs_function_name|verdict|points_checked|mismatch_relative_pc|reason\n";
+            for (size_t i = 0; i < shown; ++i) {
+                const auto& row = rows[visible_rows[i]];
+                out << row.lhs_index << "|"
+                    << row.rhs_index << "|"
+                    << "0x" << std::hex << row.lhs_initial_location << "|"
+                    << "0x" << std::hex << row.lhs_address_range << "|"
+                    << row.lhs_function_name << "|"
+                    << "0x" << std::hex << row.rhs_initial_location << "|"
+                    << "0x" << std::hex << row.rhs_address_range << "|"
+                    << row.rhs_function_name << "|"
+                    << std::dec
+                    << verdictToString(row.verdict) << "|"
+                    << row.points_checked << "|";
+                if (row.has_mismatch_pc) out << row.mismatch_pc;
+                out << "|" << row.reason << "\n";
+                if (!row.lhs_summary.empty()) out << "lhs=" << row.lhs_summary << "\n";
+                if (!row.rhs_summary.empty()) out << "rhs=" << row.rhs_summary << "\n";
+            }
+            if (shown < visible_rows.size()) {
+                out << "... truncated " << (visible_rows.size() - shown) << " rows\n";
+            }
+        }
+        if (!gate_pass) out << "gate_reason=" << gate_reason << "\n";
+    }
+
+    if (!output_path.empty()) {
+        std::ofstream file(output_path);
+        if (!file) {
+            std::cerr << "Error: cannot open output file '" << output_path << "'\n";
+            return 1;
+        }
+        file << out.str();
+    } else {
+        std::cout << out.str();
+    }
+
+    if (!report_only && !gate_pass) {
+        std::cerr << "compare-cfi gate FAILED: " << gate_reason << "\n";
         return 2;
     }
     return 0;
@@ -1030,6 +2082,9 @@ static int runCompareExpr(int argc, char* argv[]) {
 int main(int argc, char* argv[]) {
     if (argc >= 2 && std::string(argv[1]) == "compare-expr") {
         return runCompareExpr(argc, argv);
+    }
+    if (argc >= 2 && std::string(argv[1]) == "compare-cfi") {
+        return runCompareCFI(argc, argv);
     }
 
     Options opts;

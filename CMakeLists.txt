@@ -35,6 +35,7 @@ set(SOURCES
     src/debug_names_parser.cpp
     src/debug_macro_parser.cpp
     src/cfi_parser.cpp
+    src/cfi_symbolic.cpp
     src/source_location.cpp
     src/variable_location.cpp
     src/split_dwarf.cpp
@@ -65,6 +66,7 @@ set(HEADERS
     include/debug_names_parser.hpp
     include/debug_macro_parser.hpp
     include/cfi_parser.hpp
+    include/cfi_symbolic.hpp
     include/source_location.hpp
     include/variable_location.hpp
     include/split_dwarf.hpp

@@ -14,6 +14,7 @@
 #include "debug_names_parser.hpp"
 #include "debug_macro_parser.hpp"
 #include "call_stack.hpp"
+#include "cfi_symbolic.hpp"
 #include <iostream>
 #include <cassert>
 #include <cstring>
@@ -7881,6 +7882,232 @@ void testUnwindInfoValExpressionMemoryEndianness() {
     std::cout << "UnwindInfo VAL_EXPRESSION memory endianness tests passed!" << std::endl;
 }
 
+void testSymbolicCFIVerifier() {
+    std::cout << "Testing SymbolicCFIVerifier..." << std::endl;
+
+    auto makeDebugFrame = [](bool use_offset_extended, uint64_t lr_off_uleb) {
+        std::vector<uint8_t> sec;
+        auto appendU8 = [&](uint8_t v) { sec.push_back(v); };
+
+        // CIE: version=4, addr_size=8, code_align=1, data_align=-8, ra_reg=30
+        {
+            size_t len_pos = sec.size();
+            appendU32(sec, 0);
+            appendU32(sec, 0xffffffffU); // CIE id (.debug_frame)
+            appendU8(4);                 // version
+            appendU8(0);                 // augmentation ""
+            appendU8(8);                 // address_size
+            appendU8(0);                 // segment_selector_size
+            appendU8(0x01);              // code_alignment_factor = 1
+            appendU8(0x78);              // data_alignment_factor = -8 (SLEB)
+            appendU8(0x1e);              // return_address_register = 30
+
+            // DW_CFA_def_cfa reg31,16
+            appendU8(0x0c);
+            appendULEB(sec, 31);
+            appendULEB(sec, 16);
+
+            uint32_t len = static_cast<uint32_t>(sec.size() - (len_pos + 4));
+            sec[len_pos + 0] = static_cast<uint8_t>(len & 0xff);
+            sec[len_pos + 1] = static_cast<uint8_t>((len >> 8) & 0xff);
+            sec[len_pos + 2] = static_cast<uint8_t>((len >> 16) & 0xff);
+            sec[len_pos + 3] = static_cast<uint8_t>((len >> 24) & 0xff);
+        }
+
+        // FDE: [0x1000, 0x1100)
+        {
+            size_t len_pos = sec.size();
+            appendU32(sec, 0);
+            appendU32(sec, 0);      // CIE pointer to offset 0
+            appendU64(sec, 0x1000);
+            appendU64(sec, 0x100);
+
+            if (use_offset_extended) {
+                appendU8(0x05);      // DW_CFA_offset_extended
+                appendULEB(sec, 30); // reg
+                appendULEB(sec, lr_off_uleb);
+            } else {
+                appendU8(static_cast<uint8_t>(0x80 | 30)); // DW_CFA_offset + reg
+                appendULEB(sec, lr_off_uleb);
+            }
+
+            uint32_t len = static_cast<uint32_t>(sec.size() - (len_pos + 4));
+            sec[len_pos + 0] = static_cast<uint8_t>(len & 0xff);
+            sec[len_pos + 1] = static_cast<uint8_t>((len >> 8) & 0xff);
+            sec[len_pos + 2] = static_cast<uint8_t>((len >> 16) & 0xff);
+            sec[len_pos + 3] = static_cast<uint8_t>((len >> 24) & 0xff);
+        }
+
+        return sec;
+    };
+
+    // Equivalent encodings: DW_CFA_offset vs DW_CFA_offset_extended (same reg+offset rule).
+    {
+        auto lhs_sec = makeDebugFrame(false, 1);
+        auto rhs_sec = makeDebugFrame(true, 1);
+        CFIParser lhs(lhs_sec, /*is_eh_frame=*/false, /*address_size=*/8);
+        CFIParser rhs(rhs_sec, /*is_eh_frame=*/false, /*address_size=*/8);
+        assert(lhs.parse());
+        assert(rhs.parse());
+        SymbolicCFIVerifier v;
+        auto r = v.compareFDEByIndex(lhs, 0, rhs, 0);
+        assert(r.verdict == ExpressionVerificationResult::Verdict::EQUIVALENT);
+    }
+
+    // Different rule payload: same opcode form, different offset encoding value.
+    {
+        auto lhs_sec = makeDebugFrame(false, 1); // CFA-8
+        auto rhs_sec = makeDebugFrame(true, 2);  // CFA-16
+        CFIParser lhs(lhs_sec, /*is_eh_frame=*/false, /*address_size=*/8);
+        CFIParser rhs(rhs_sec, /*is_eh_frame=*/false, /*address_size=*/8);
+        assert(lhs.parse());
+        assert(rhs.parse());
+        SymbolicCFIVerifier v;
+        auto r = v.compareFDEByIndex(lhs, 0, rhs, 0);
+        assert(r.verdict == ExpressionVerificationResult::Verdict::DIFFERENT);
+        assert(r.has_mismatch_relative_pc);
+    }
+
+    // CFA expression equivalence/difference via DW_CFA_def_cfa_expression in CIE.
+    {
+        auto makeDebugFrameWithCFAExpr = [](int8_t sleb_off) {
+            std::vector<uint8_t> sec;
+            auto appendU8 = [&](uint8_t v) { sec.push_back(v); };
+
+            // CIE
+            {
+                size_t len_pos = sec.size();
+                appendU32(sec, 0);
+                appendU32(sec, 0xffffffffU); // CIE id (.debug_frame)
+                appendU8(4);                 // version
+                appendU8(0);                 // augmentation ""
+                appendU8(8);                 // address_size
+                appendU8(0);                 // segment_selector_size
+                appendU8(0x01);              // code_alignment_factor = 1
+                appendU8(0x78);              // data_alignment_factor = -8 (SLEB)
+                appendU8(0x1e);              // return_address_register = 30
+
+                // DW_CFA_def_cfa_expression: block(DW_OP_breg31, sleb_off)
+                appendU8(0x0f);
+                appendULEB(sec, 2);
+                appendU8(static_cast<uint8_t>(DwarfOp::DW_OP_breg31));
+                appendU8(static_cast<uint8_t>(sleb_off)); // small SLEB immediate
+
+                uint32_t len = static_cast<uint32_t>(sec.size() - (len_pos + 4));
+                sec[len_pos + 0] = static_cast<uint8_t>(len & 0xff);
+                sec[len_pos + 1] = static_cast<uint8_t>((len >> 8) & 0xff);
+                sec[len_pos + 2] = static_cast<uint8_t>((len >> 16) & 0xff);
+                sec[len_pos + 3] = static_cast<uint8_t>((len >> 24) & 0xff);
+            }
+
+            // FDE
+            {
+                size_t len_pos = sec.size();
+                appendU32(sec, 0);
+                appendU32(sec, 0);
+                appendU64(sec, 0x2000);
+                appendU64(sec, 0x40);
+                uint32_t len = static_cast<uint32_t>(sec.size() - (len_pos + 4));
+                sec[len_pos + 0] = static_cast<uint8_t>(len & 0xff);
+                sec[len_pos + 1] = static_cast<uint8_t>((len >> 8) & 0xff);
+                sec[len_pos + 2] = static_cast<uint8_t>((len >> 16) & 0xff);
+                sec[len_pos + 3] = static_cast<uint8_t>((len >> 24) & 0xff);
+            }
+            return sec;
+        };
+
+        auto a = makeDebugFrameWithCFAExpr(/*+16=*/0x10);
+        auto b = makeDebugFrameWithCFAExpr(/*+16=*/0x10);
+        auto c = makeDebugFrameWithCFAExpr(/*+24=*/0x18);
+
+        CFIParser pa(a, /*is_eh_frame=*/false, /*address_size=*/8);
+        CFIParser pb(b, /*is_eh_frame=*/false, /*address_size=*/8);
+        CFIParser pc(c, /*is_eh_frame=*/false, /*address_size=*/8);
+        assert(pa.parse());
+        assert(pb.parse());
+        assert(pc.parse());
+
+        SymbolicCFIVerifier v;
+        auto eq = v.compareFDEByIndex(pa, 0, pb, 0);
+        assert(eq.verdict == ExpressionVerificationResult::Verdict::EQUIVALENT);
+
+        auto diff = v.compareFDEByIndex(pa, 0, pc, 0);
+        assert(diff.verdict == ExpressionVerificationResult::Verdict::DIFFERENT);
+    }
+
+    // Register val_expression equivalence/difference via DW_CFA_val_expression in FDE.
+    {
+        auto makeDebugFrameWithValExpr = [](uint8_t imm) {
+            std::vector<uint8_t> sec;
+            auto appendU8 = [&](uint8_t v) { sec.push_back(v); };
+
+            // CIE: simple register CFA.
+            {
+                size_t len_pos = sec.size();
+                appendU32(sec, 0);
+                appendU32(sec, 0xffffffffU);
+                appendU8(4);
+                appendU8(0);
+                appendU8(8);
+                appendU8(0);
+                appendU8(0x01);
+                appendU8(0x78);
+                appendU8(0x1e);
+
+                appendU8(0x0c); // DW_CFA_def_cfa reg31,16
+                appendULEB(sec, 31);
+                appendULEB(sec, 16);
+
+                uint32_t len = static_cast<uint32_t>(sec.size() - (len_pos + 4));
+                sec[len_pos + 0] = static_cast<uint8_t>(len & 0xff);
+                sec[len_pos + 1] = static_cast<uint8_t>((len >> 8) & 0xff);
+                sec[len_pos + 2] = static_cast<uint8_t>((len >> 16) & 0xff);
+                sec[len_pos + 3] = static_cast<uint8_t>((len >> 24) & 0xff);
+            }
+
+            // FDE: DW_CFA_val_expression reg30, block(DW_OP_const1u imm)
+            {
+                size_t len_pos = sec.size();
+                appendU32(sec, 0);
+                appendU32(sec, 0);
+                appendU64(sec, 0x3000);
+                appendU64(sec, 0x40);
+
+                appendU8(0x16); // DW_CFA_val_expression
+                appendULEB(sec, 30);
+                appendULEB(sec, 2);
+                appendU8(static_cast<uint8_t>(DwarfOp::DW_OP_const1u));
+                appendU8(imm);
+
+                uint32_t len = static_cast<uint32_t>(sec.size() - (len_pos + 4));
+                sec[len_pos + 0] = static_cast<uint8_t>(len & 0xff);
+                sec[len_pos + 1] = static_cast<uint8_t>((len >> 8) & 0xff);
+                sec[len_pos + 2] = static_cast<uint8_t>((len >> 16) & 0xff);
+                sec[len_pos + 3] = static_cast<uint8_t>((len >> 24) & 0xff);
+            }
+            return sec;
+        };
+
+        auto a = makeDebugFrameWithValExpr(0x2a);
+        auto b = makeDebugFrameWithValExpr(0x2a);
+        auto c = makeDebugFrameWithValExpr(0x2b);
+        CFIParser pa(a, /*is_eh_frame=*/false, /*address_size=*/8);
+        CFIParser pb(b, /*is_eh_frame=*/false, /*address_size=*/8);
+        CFIParser pc(c, /*is_eh_frame=*/false, /*address_size=*/8);
+        assert(pa.parse());
+        assert(pb.parse());
+        assert(pc.parse());
+
+        SymbolicCFIVerifier v;
+        auto eq = v.compareFDEByIndex(pa, 0, pb, 0);
+        assert(eq.verdict == ExpressionVerificationResult::Verdict::EQUIVALENT);
+        auto diff = v.compareFDEByIndex(pa, 0, pc, 0);
+        assert(diff.verdict == ExpressionVerificationResult::Verdict::DIFFERENT);
+    }
+
+    std::cout << "SymbolicCFIVerifier tests passed!" << std::endl;
+}
+
 void testDWPIndexParsing() {
     std::cout << "Testing DWP index parsing..." << std::endl;
 
@@ -10136,8 +10363,9 @@ int main() {
 		    testCFIParserMIPSAdvanceLoc8DoesNotAbort();
 		    testCFIParserDwarf2EscapeIsSkipped();
 		    testCFIParserCFAExpressionThenDefCFARegisterOffsetSwitchesBack();
-		    testCFIParserUnknownOpcodeAbortsInstructionStream();
-		    testUnwindInfoValExpressionMemoryEndianness();
+	    testCFIParserUnknownOpcodeAbortsInstructionStream();
+	    testUnwindInfoValExpressionMemoryEndianness();
+	    testSymbolicCFIVerifier();
 		    testDWPIndexParsing();
     testImplicitConstInAbbrev();
     testRefAddrBiasForDWO();
