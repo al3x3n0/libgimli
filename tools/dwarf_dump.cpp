@@ -5,12 +5,17 @@
 #include "call_stack.hpp"
 #include "cfi_parser.hpp"
 #include "source_location.hpp"
+#include "expression_compare.hpp"
 #include <iostream>
 #include <iomanip>
 #include <string>
 #include <vector>
+#include <algorithm>
 #include <cstring>
 #include <getopt.h>
+#include <limits>
+#include <set>
+#include <fstream>
 
 using namespace dwarf;
 
@@ -50,6 +55,10 @@ struct Options {
 void printUsage(const char* prog) {
     std::cerr << "Usage: " << prog << " [options] <elf-file>\n\n"
               << "DWARF Debugging Information Dump Utility\n\n"
+              << "Subcommands:\n"
+              << "  " << prog << " compare-expr <lhs-elf> <rhs-elf> [options]\n"
+              << "    Compare DWARF location expressions across two binaries.\n"
+              << "\n"
               << "Section Options:\n"
               << "  -i, --debug-info      Dump .debug_info section\n"
               << "  -a, --debug-abbrev    Dump .debug_abbrev section\n"
@@ -76,7 +85,70 @@ void printUsage(const char* prog) {
               << "  " << prog << " -i program          # Dump debug_info\n"
               << "  " << prog << " -l program          # Dump line tables\n"
               << "  " << prog << " --find=main program # Find 'main' function\n"
-              << "  " << prog << " -A program          # Dump everything\n";
+              << "  " << prog << " -A program          # Dump everything\n"
+              << "  " << prog << " compare-expr a b --format=json --max-different=0\n";
+}
+
+void printCompareExprUsage(const char* prog) {
+    std::cerr << "Usage: " << prog << " compare-expr <lhs-elf> <rhs-elf> [options]\n\n"
+              << "Options:\n"
+              << "  --tag=<variable|subprogram>      DIE tag to compare (default: variable)\n"
+              << "  --attr=<location|frame_base>     Attribute to compare (default: location)\n"
+              << "  --name=<SYMBOL>                  Compare only selected symbol name (repeatable)\n"
+              << "  --name-file=<PATH>               Add symbol names from file (one per line, '#' comments)\n"
+              << "  --name-prefix=<TEXT>             Keep rows whose symbol name starts with TEXT\n"
+              << "  --name-contains=<TEXT>           Keep rows whose symbol name contains TEXT\n"
+              << "  --key-mode=<name|linkage>        Match key mode (default: name)\n"
+              << "  --strict-attr-present            Compare only pairs where attr exists on both sides\n"
+              << "  --format=<text|json>             Report format (default: text)\n"
+              << "  --output=<PATH>                  Write report to file instead of stdout\n"
+              << "  --summary-only                   Emit only summary line/object (no rows)\n"
+              << "  --only-verdict=<KIND>            Keep only verdict kind (repeatable: equivalent|different|unknown)\n"
+              << "  --sort=<name|verdict>            Sort rows by name or verdict\n"
+              << "  --max-rows=<N>                   Limit rows in report (0 = all)\n"
+              << "  --include-missing                Include missing symbols (default)\n"
+              << "  --no-include-missing             Exclude missing symbols\n"
+              << "  --lhs-location-list-pc=<PC>      Select lhs location-list expression by PC\n"
+              << "  --rhs-location-list-pc=<PC>      Select rhs location-list expression by PC\n"
+              << "  --lhs-eval-pc=<PC>               Evaluation PC for lhs expressions\n"
+              << "  --rhs-eval-pc=<PC>               Evaluation PC for rhs expressions\n"
+              << "  --lhs-cfa=<VAL>                  Set lhs CFA in eval context\n"
+              << "  --rhs-cfa=<VAL>                  Set rhs CFA in eval context\n"
+              << "  --cfa=<VAL>                      Set CFA on both sides\n"
+              << "  --lhs-frame-base=<VAL>           Set lhs frame_base in eval context\n"
+              << "  --rhs-frame-base=<VAL>           Set rhs frame_base in eval context\n"
+              << "  --frame-base=<VAL>               Set frame_base on both sides\n"
+              << "  --lhs-tls-base=<VAL>             Set lhs tls_base in eval context\n"
+              << "  --rhs-tls-base=<VAL>             Set rhs tls_base in eval context\n"
+              << "  --tls-base=<VAL>                 Set tls_base on both sides\n"
+              << "  --lhs-object-address=<VAL>       Set lhs object_address in eval context\n"
+              << "  --rhs-object-address=<VAL>       Set rhs object_address in eval context\n"
+              << "  --object-address=<VAL>           Set object_address on both sides\n"
+              << "  --lhs-address-size=<N>           Set lhs address_size (1..8)\n"
+              << "  --rhs-address-size=<N>           Set rhs address_size (1..8)\n"
+              << "  --address-size=<N>               Set address_size on both sides (1..8)\n"
+              << "  --lhs-offset-size=<N>            Set lhs offset_size (4 or 8)\n"
+              << "  --rhs-offset-size=<N>            Set rhs offset_size (4 or 8)\n"
+              << "  --offset-size=<N>                Set offset_size on both sides (4 or 8)\n"
+              << "  --lhs-reg=<IDX:VAL>              Set lhs register value (repeatable)\n"
+              << "  --rhs-reg=<IDX:VAL>              Set rhs register value (repeatable)\n"
+              << "  --reg=<IDX:VAL>                  Set register value on both sides\n"
+              << "  --differential-trials=<N>        Concrete differential trials (default: 64)\n"
+              << "  --register-count=<N>             Synthetic register count per trial (default: 64)\n"
+              << "  --seed=<VAL>                     Differential seed (default: 0x9e3779b97f4a7c15)\n"
+              << "  --no-differential                Disable concrete differential search\n"
+              << "  --max-different=<N>              Gate threshold (default: 0)\n"
+              << "  --max-unknown=<N>                Gate threshold (default: unlimited)\n"
+              << "  --max-missing-lhs=<N>            Gate threshold (default: unlimited)\n"
+              << "  --max-missing-rhs=<N>            Gate threshold (default: unlimited)\n"
+              << "  --fail-on-unknown                Gate fails if unknown>0\n"
+              << "  --fail-on-missing                Gate fails if missing>0\n"
+              << "  --report-only                    Do not enforce gate thresholds (always exit 0 on compare)\n"
+              << "\n"
+              << "Policy presets:\n"
+              << "  --strict                         Equivalent-only gate (no different/unknown/missing)\n"
+              << "  --allow-unknown                 Disable unknown failures\n"
+              << "  --allow-missing                 Disable missing failures\n";
 }
 
 // Helper to format hex values
@@ -348,7 +420,618 @@ void printSummary(const DwarfParser& parser) {
     std::cout << "  Has split DWARF: " << (parser.hasSplitDwarf() ? "yes" : "no") << "\n";
 }
 
+static bool parseTag(const std::string& s, DwarfTag& out) {
+    if (s == "variable") {
+        out = DwarfTag::DW_TAG_variable;
+        return true;
+    }
+    if (s == "subprogram") {
+        out = DwarfTag::DW_TAG_subprogram;
+        return true;
+    }
+    return false;
+}
+
+static bool parseAttribute(const std::string& s, DwarfAttribute& out) {
+    if (s == "location") {
+        out = DwarfAttribute::DW_AT_location;
+        return true;
+    }
+    if (s == "frame_base") {
+        out = DwarfAttribute::DW_AT_frame_base;
+        return true;
+    }
+    return false;
+}
+
+static bool parseUIntOption(const std::string& raw, uint64_t& out) {
+    if (raw.empty()) return false;
+    try {
+        size_t consumed = 0;
+        uint64_t v = std::stoull(raw, &consumed, 0);
+        if (consumed != raw.size()) return false;
+        out = v;
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+static bool parseRegisterAssignment(const std::string& raw, size_t& reg_index, uint64_t& reg_value) {
+    auto colon = raw.find(':');
+    if (colon == std::string::npos || colon == 0 || colon + 1 >= raw.size()) return false;
+    uint64_t idx = 0;
+    uint64_t val = 0;
+    if (!parseUIntOption(raw.substr(0, colon), idx)) return false;
+    if (!parseUIntOption(raw.substr(colon + 1), val)) return false;
+    reg_index = static_cast<size_t>(idx);
+    reg_value = val;
+    return true;
+}
+
+static bool parseByteSizedOption(const std::string& raw, uint8_t& out, uint8_t min_v, uint8_t max_v) {
+    uint64_t parsed = 0;
+    if (!parseUIntOption(raw, parsed)) return false;
+    if (parsed < min_v || parsed > max_v) return false;
+    out = static_cast<uint8_t>(parsed);
+    return true;
+}
+
+static bool parseVerdictName(const std::string& raw, ExpressionVerificationResult::Verdict& out) {
+    if (raw == "equivalent") {
+        out = ExpressionVerificationResult::Verdict::EQUIVALENT;
+        return true;
+    }
+    if (raw == "different") {
+        out = ExpressionVerificationResult::Verdict::DIFFERENT;
+        return true;
+    }
+    if (raw == "unknown") {
+        out = ExpressionVerificationResult::Verdict::UNKNOWN;
+        return true;
+    }
+    return false;
+}
+
+static std::string trim(const std::string& s) {
+    size_t b = 0;
+    while (b < s.size() && (s[b] == ' ' || s[b] == '\t' || s[b] == '\r' || s[b] == '\n')) ++b;
+    size_t e = s.size();
+    while (e > b && (s[e - 1] == ' ' || s[e - 1] == '\t' || s[e - 1] == '\r' || s[e - 1] == '\n')) --e;
+    return s.substr(b, e - b);
+}
+
+static bool appendNamesFromFile(const std::string& path,
+                                std::vector<std::string>& out_names,
+                                std::string& error) {
+    std::ifstream in(path);
+    if (!in) {
+        error = "cannot open name file '" + path + "'";
+        return false;
+    }
+    std::string line;
+    while (std::getline(in, line)) {
+        std::string t = trim(line);
+        if (t.empty() || t[0] == '#') continue;
+        out_names.push_back(t);
+    }
+    return true;
+}
+
+static int runCompareExpr(int argc, char* argv[]) {
+    for (int i = 2; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--help" || arg == "-h") {
+            printCompareExprUsage(argv[0]);
+            return 0;
+        }
+    }
+
+    if (argc < 4) {
+        printCompareExprUsage(argv[0]);
+        return 1;
+    }
+
+    std::string lhs_file = argv[2];
+    std::string rhs_file = argv[3];
+
+    CrossBinaryCompareOptions cmp_opts;
+    std::vector<std::string> selected_names;
+    std::string name_prefix_filter;
+    std::string name_contains_filter;
+    std::string format = "text";
+    std::string output_path;
+    std::set<ExpressionVerificationResult::Verdict> verdict_filters;
+    std::string sort_mode = "name";
+    bool summary_only = false;
+    size_t max_rows = 0;
+    CrossBinaryGateOptions gate_opts;
+    bool report_only = false;
+
+    for (int i = 4; i < argc; ++i) {
+        std::string arg = argv[i];
+        auto split = arg.find('=');
+        auto key = (split == std::string::npos) ? arg : arg.substr(0, split);
+        auto val = (split == std::string::npos) ? std::string() : arg.substr(split + 1);
+
+        if (key == "--tag") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            if (!parseTag(val, cmp_opts.tag)) {
+                std::cerr << "Error: invalid --tag value '" << val << "'\n";
+                return 1;
+            }
+            continue;
+        }
+        if (key == "--attr") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            if (!parseAttribute(val, cmp_opts.attribute)) {
+                std::cerr << "Error: invalid --attr value '" << val << "'\n";
+                return 1;
+            }
+            continue;
+        }
+        if (key == "--name") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            if (val.empty()) {
+                std::cerr << "Error: invalid --name value (empty)\n";
+                return 1;
+            }
+            selected_names.push_back(val);
+            continue;
+        }
+        if (key == "--name-file") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            if (val.empty()) {
+                std::cerr << "Error: invalid --name-file value (empty)\n";
+                return 1;
+            }
+            std::string err;
+            if (!appendNamesFromFile(val, selected_names, err)) {
+                std::cerr << "Error: " << err << "\n";
+                return 1;
+            }
+            continue;
+        }
+        if (key == "--name-prefix") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            if (val.empty()) {
+                std::cerr << "Error: invalid --name-prefix value (empty)\n";
+                return 1;
+            }
+            name_prefix_filter = val;
+            continue;
+        }
+        if (key == "--name-contains") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            if (val.empty()) {
+                std::cerr << "Error: invalid --name-contains value (empty)\n";
+                return 1;
+            }
+            name_contains_filter = val;
+            continue;
+        }
+        if (key == "--key-mode") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            if (val == "name") cmp_opts.key_mode = CompareKeyMode::NAME_ONLY;
+            else if (val == "linkage") cmp_opts.key_mode = CompareKeyMode::LINKAGE_OR_NAME;
+            else {
+                std::cerr << "Error: invalid --key-mode value '" << val << "'\n";
+                return 1;
+            }
+            continue;
+        }
+        if (key == "--strict-attr-present") {
+            cmp_opts.require_attribute_on_both = true;
+            continue;
+        }
+        if (key == "--format") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            if (val != "text" && val != "json") {
+                std::cerr << "Error: invalid --format value '" << val << "'\n";
+                return 1;
+            }
+            format = val;
+            continue;
+        }
+        if (key == "--output") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            if (val.empty()) {
+                std::cerr << "Error: invalid --output value (empty)\n";
+                return 1;
+            }
+            output_path = val;
+            continue;
+        }
+        if (key == "--summary-only") {
+            summary_only = true;
+            continue;
+        }
+        if (key == "--only-verdict") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            ExpressionVerificationResult::Verdict v;
+            if (!parseVerdictName(val, v)) {
+                std::cerr << "Error: invalid --only-verdict value '" << val
+                          << "' (expected equivalent|different|unknown)\n";
+                return 1;
+            }
+            verdict_filters.insert(v);
+            continue;
+        }
+        if (key == "--sort") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            if (val != "name" && val != "verdict") {
+                std::cerr << "Error: invalid --sort value '" << val << "' (expected name|verdict)\n";
+                return 1;
+            }
+            sort_mode = val;
+            continue;
+        }
+        if (key == "--max-rows") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            uint64_t parsed = 0;
+            if (!parseUIntOption(val, parsed)) {
+                std::cerr << "Error: invalid --max-rows value '" << val << "'\n";
+                return 1;
+            }
+            max_rows = static_cast<size_t>(parsed);
+            continue;
+        }
+        if (key == "--include-missing") {
+            cmp_opts.include_missing = true;
+            continue;
+        }
+        if (key == "--no-include-missing") {
+            cmp_opts.include_missing = false;
+            continue;
+        }
+        if (key == "--lhs-location-list-pc") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            uint64_t parsed = 0;
+            if (!parseUIntOption(val, parsed)) {
+                std::cerr << "Error: invalid --lhs-location-list-pc value '" << val << "'\n";
+                return 1;
+            }
+            cmp_opts.use_location_list_pc = true;
+            cmp_opts.lhs_location_list_pc = parsed;
+            continue;
+        }
+        if (key == "--rhs-location-list-pc") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            uint64_t parsed = 0;
+            if (!parseUIntOption(val, parsed)) {
+                std::cerr << "Error: invalid --rhs-location-list-pc value '" << val << "'\n";
+                return 1;
+            }
+            cmp_opts.use_location_list_pc = true;
+            cmp_opts.rhs_location_list_pc = parsed;
+            continue;
+        }
+        if (key == "--lhs-eval-pc") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            uint64_t parsed = 0;
+            if (!parseUIntOption(val, parsed)) {
+                std::cerr << "Error: invalid --lhs-eval-pc value '" << val << "'\n";
+                return 1;
+            }
+            cmp_opts.lhs_evaluation_pc = parsed;
+            continue;
+        }
+        if (key == "--rhs-eval-pc") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            uint64_t parsed = 0;
+            if (!parseUIntOption(val, parsed)) {
+                std::cerr << "Error: invalid --rhs-eval-pc value '" << val << "'\n";
+                return 1;
+            }
+            cmp_opts.rhs_evaluation_pc = parsed;
+            continue;
+        }
+        if (key == "--lhs-cfa" || key == "--rhs-cfa" || key == "--cfa" ||
+            key == "--lhs-frame-base" || key == "--rhs-frame-base" || key == "--frame-base" ||
+            key == "--lhs-tls-base" || key == "--rhs-tls-base" || key == "--tls-base" ||
+            key == "--lhs-object-address" || key == "--rhs-object-address" || key == "--object-address") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            uint64_t parsed = 0;
+            if (!parseUIntOption(val, parsed)) {
+                std::cerr << "Error: invalid " << key << " value '" << val << "'\n";
+                return 1;
+            }
+            if (key == "--lhs-cfa" || key == "--cfa") cmp_opts.lhs_context.cfa = parsed;
+            if (key == "--rhs-cfa" || key == "--cfa") cmp_opts.rhs_context.cfa = parsed;
+            if (key == "--lhs-frame-base" || key == "--frame-base") cmp_opts.lhs_context.frame_base = parsed;
+            if (key == "--rhs-frame-base" || key == "--frame-base") cmp_opts.rhs_context.frame_base = parsed;
+            if (key == "--lhs-tls-base" || key == "--tls-base") cmp_opts.lhs_context.tls_base = parsed;
+            if (key == "--rhs-tls-base" || key == "--tls-base") cmp_opts.rhs_context.tls_base = parsed;
+            if (key == "--lhs-object-address" || key == "--object-address") {
+                cmp_opts.lhs_context.object_address = parsed;
+            }
+            if (key == "--rhs-object-address" || key == "--object-address") {
+                cmp_opts.rhs_context.object_address = parsed;
+            }
+            continue;
+        }
+        if (key == "--lhs-address-size" || key == "--rhs-address-size" || key == "--address-size") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            uint8_t parsed = 0;
+            if (!parseByteSizedOption(val, parsed, 1, 8)) {
+                std::cerr << "Error: invalid " << key << " value '" << val
+                          << "' (expected integer in [1,8])\n";
+                return 1;
+            }
+            if (key == "--lhs-address-size" || key == "--address-size") cmp_opts.lhs_context.address_size = parsed;
+            if (key == "--rhs-address-size" || key == "--address-size") cmp_opts.rhs_context.address_size = parsed;
+            continue;
+        }
+        if (key == "--lhs-offset-size" || key == "--rhs-offset-size" || key == "--offset-size") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            uint8_t parsed = 0;
+            if (!parseByteSizedOption(val, parsed, 4, 8) || (parsed != 4 && parsed != 8)) {
+                std::cerr << "Error: invalid " << key << " value '" << val
+                          << "' (expected 4 or 8)\n";
+                return 1;
+            }
+            if (key == "--lhs-offset-size" || key == "--offset-size") cmp_opts.lhs_context.offset_size = parsed;
+            if (key == "--rhs-offset-size" || key == "--offset-size") cmp_opts.rhs_context.offset_size = parsed;
+            continue;
+        }
+        if (key == "--lhs-reg" || key == "--rhs-reg" || key == "--reg") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            size_t reg_index = 0;
+            uint64_t reg_value = 0;
+            if (!parseRegisterAssignment(val, reg_index, reg_value)) {
+                std::cerr << "Error: invalid " << key << " value '" << val
+                          << "' (expected IDX:VAL)\n";
+                return 1;
+            }
+            auto apply_reg = [&](std::vector<uint64_t>& regs) {
+                if (regs.size() <= reg_index) regs.resize(reg_index + 1, 0);
+                regs[reg_index] = reg_value;
+            };
+            if (key == "--lhs-reg" || key == "--reg") apply_reg(cmp_opts.lhs_registers);
+            if (key == "--rhs-reg" || key == "--reg") apply_reg(cmp_opts.rhs_registers);
+            continue;
+        }
+        if (key == "--differential-trials") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            uint64_t parsed = 0;
+            if (!parseUIntOption(val, parsed)) {
+                std::cerr << "Error: invalid --differential-trials value '" << val << "'\n";
+                return 1;
+            }
+            cmp_opts.verification_options.differential_trials = static_cast<size_t>(parsed);
+            continue;
+        }
+        if (key == "--register-count") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            uint64_t parsed = 0;
+            if (!parseUIntOption(val, parsed) || parsed == 0) {
+                std::cerr << "Error: invalid --register-count value '" << val
+                          << "' (expected positive integer)\n";
+                return 1;
+            }
+            cmp_opts.verification_options.register_count = static_cast<size_t>(parsed);
+            continue;
+        }
+        if (key == "--seed") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            uint64_t parsed = 0;
+            if (!parseUIntOption(val, parsed)) {
+                std::cerr << "Error: invalid --seed value '" << val << "'\n";
+                return 1;
+            }
+            cmp_opts.verification_options.seed = parsed;
+            continue;
+        }
+        if (key == "--no-differential") {
+            cmp_opts.verification_options.run_differential = false;
+            continue;
+        }
+        if (key == "--max-different") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            uint64_t parsed = 0;
+            if (!parseUIntOption(val, parsed)) {
+                std::cerr << "Error: invalid --max-different value '" << val << "'\n";
+                return 1;
+            }
+            gate_opts.max_different = static_cast<size_t>(parsed);
+            continue;
+        }
+        if (key == "--max-unknown") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            uint64_t parsed = 0;
+            if (!parseUIntOption(val, parsed)) {
+                std::cerr << "Error: invalid --max-unknown value '" << val << "'\n";
+                return 1;
+            }
+            gate_opts.max_unknown = static_cast<size_t>(parsed);
+            continue;
+        }
+        if (key == "--max-missing-lhs") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            uint64_t parsed = 0;
+            if (!parseUIntOption(val, parsed)) {
+                std::cerr << "Error: invalid --max-missing-lhs value '" << val << "'\n";
+                return 1;
+            }
+            gate_opts.max_missing_lhs = static_cast<size_t>(parsed);
+            continue;
+        }
+        if (key == "--max-missing-rhs") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            uint64_t parsed = 0;
+            if (!parseUIntOption(val, parsed)) {
+                std::cerr << "Error: invalid --max-missing-rhs value '" << val << "'\n";
+                return 1;
+            }
+            gate_opts.max_missing_rhs = static_cast<size_t>(parsed);
+            continue;
+        }
+        if (key == "--fail-on-unknown") {
+            gate_opts.fail_on_unknown = true;
+            continue;
+        }
+        if (key == "--fail-on-missing") {
+            gate_opts.fail_on_missing = true;
+            continue;
+        }
+        if (key == "--report-only") {
+            report_only = true;
+            continue;
+        }
+        if (key == "--strict") {
+            gate_opts.max_different = 0;
+            gate_opts.max_unknown = 0;
+            gate_opts.max_missing_lhs = 0;
+            gate_opts.max_missing_rhs = 0;
+            gate_opts.fail_on_unknown = true;
+            gate_opts.fail_on_missing = true;
+            continue;
+        }
+        if (key == "--allow-unknown") {
+            gate_opts.fail_on_unknown = false;
+            gate_opts.max_unknown = std::numeric_limits<size_t>::max();
+            continue;
+        }
+        if (key == "--allow-missing") {
+            gate_opts.fail_on_missing = false;
+            gate_opts.max_missing_lhs = std::numeric_limits<size_t>::max();
+            gate_opts.max_missing_rhs = std::numeric_limits<size_t>::max();
+            continue;
+        }
+        std::cerr << "Error: unknown compare-expr option '" << arg << "'\n";
+        return 1;
+    }
+
+    DwarfParser lhs(lhs_file);
+    DwarfParser rhs(rhs_file);
+    if (!lhs.load()) {
+        std::cerr << "Error: failed to load lhs ELF '" << lhs_file << "'\n";
+        return 1;
+    }
+    if (!rhs.load()) {
+        std::cerr << "Error: failed to load rhs ELF '" << rhs_file << "'\n";
+        return 1;
+    }
+
+    CrossBinaryExpressionComparator cmp;
+    std::vector<NamedExpressionComparison> comparisons;
+    if (!selected_names.empty()) {
+        std::set<std::string> seen;
+        for (const auto& name : selected_names) {
+            if (!seen.insert(name).second) continue;
+            comparisons.push_back(cmp.compareNamedInParsers(lhs, rhs, name, cmp_opts));
+        }
+    } else {
+        comparisons = cmp.compareParsersByName(lhs, rhs, cmp_opts);
+    }
+
+    if (!verdict_filters.empty()) {
+        std::vector<NamedExpressionComparison> filtered;
+        filtered.reserve(comparisons.size());
+        for (const auto& row : comparisons) {
+            if (verdict_filters.count(row.verification.verdict) != 0) {
+                filtered.push_back(row);
+            }
+        }
+        comparisons.swap(filtered);
+    }
+
+    if (!name_prefix_filter.empty() || !name_contains_filter.empty()) {
+        std::vector<NamedExpressionComparison> filtered;
+        filtered.reserve(comparisons.size());
+        for (const auto& row : comparisons) {
+            bool ok = true;
+            if (!name_prefix_filter.empty()) {
+                ok = row.name.rfind(name_prefix_filter, 0) == 0;
+            }
+            if (ok && !name_contains_filter.empty()) {
+                ok = row.name.find(name_contains_filter) != std::string::npos;
+            }
+            if (ok) filtered.push_back(row);
+        }
+        comparisons.swap(filtered);
+    }
+
+    if (sort_mode == "verdict") {
+        auto rank = [](ExpressionVerificationResult::Verdict v) {
+            switch (v) {
+                case ExpressionVerificationResult::Verdict::DIFFERENT: return 0;
+                case ExpressionVerificationResult::Verdict::UNKNOWN: return 1;
+                case ExpressionVerificationResult::Verdict::EQUIVALENT: return 2;
+            }
+            return 3;
+        };
+        std::sort(comparisons.begin(), comparisons.end(),
+                  [&](const NamedExpressionComparison& a, const NamedExpressionComparison& b) {
+                      int ar = rank(a.verification.verdict);
+                      int br = rank(b.verification.verdict);
+                      if (ar != br) return ar < br;
+                      return a.name < b.name;
+                  });
+    } else {
+        std::sort(comparisons.begin(), comparisons.end(),
+                  [](const NamedExpressionComparison& a, const NamedExpressionComparison& b) {
+                      return a.name < b.name;
+                  });
+    }
+
+    std::string report;
+    if (summary_only) {
+        auto s = cmp.summarize(comparisons);
+        if (format == "json") {
+            std::ostringstream oss;
+            oss << "{"
+                << "\"summary\":{"
+                << "\"total\":" << s.total << ","
+                << "\"equivalent\":" << s.equivalent << ","
+                << "\"different\":" << s.different << ","
+                << "\"unknown\":" << s.unknown << ","
+                << "\"missing_lhs\":" << s.missing_lhs << ","
+                << "\"missing_rhs\":" << s.missing_rhs
+                << "}"
+                << "}\n";
+            report = oss.str();
+        } else {
+            std::ostringstream oss;
+            oss << "summary total=" << s.total
+                << " equivalent=" << s.equivalent
+                << " different=" << s.different
+                << " unknown=" << s.unknown
+                << " missing_lhs=" << s.missing_lhs
+                << " missing_rhs=" << s.missing_rhs
+                << "\n";
+            report = oss.str();
+        }
+    } else if (format == "json") {
+        report = cmp.renderJsonReport(comparisons, max_rows) + "\n";
+    } else {
+        report = cmp.renderTextReport(comparisons, max_rows);
+    }
+
+    if (!output_path.empty()) {
+        std::ofstream out(output_path);
+        if (!out) {
+            std::cerr << "Error: cannot open output file '" << output_path << "'\n";
+            return 1;
+        }
+        out << report;
+    } else {
+        std::cout << report;
+    }
+
+    auto gate = cmp.evaluateGate(comparisons, gate_opts);
+    if (!report_only && !gate.pass) {
+        std::cerr << "compare-expr gate FAILED: " << gate.reason << "\n";
+        return 2;
+    }
+    return 0;
+}
+
 int main(int argc, char* argv[]) {
+    if (argc >= 2 && std::string(argv[1]) == "compare-expr") {
+        return runCompareExpr(argc, argv);
+    }
+
     Options opts;
 
     static struct option long_options[] = {
@@ -388,7 +1071,15 @@ int main(int argc, char* argv[]) {
             case 'v': opts.verbose = true; break;
             case 1001: opts.show_form = true; break;
             case 1002: opts.show_children = false; break;
-            case 1003: opts.die_offset = std::stoull(optarg, nullptr, 0); break;
+            case 1003: {
+                uint64_t parsed = 0;
+                if (!parseUIntOption(optarg ? std::string(optarg) : std::string(), parsed)) {
+                    std::cerr << "Error: invalid --die-offset value '" << (optarg ? optarg : "") << "'\n";
+                    return 1;
+                }
+                opts.die_offset = parsed;
+                break;
+            }
             case 1004: opts.find_name = optarg; break;
             case 1005: opts.summary = true; break;
             case 'h':

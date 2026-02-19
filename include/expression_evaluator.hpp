@@ -164,6 +164,8 @@ private:
     // the current implicit value so DW_OP_piece/DW_OP_bit_piece can emit IMPLICIT pieces.
     std::optional<std::vector<uint8_t>> pending_implicit_bytes_;
     int call_depth_ = 0;
+    mutable bool execution_error_ = false;
+    mutable std::string execution_error_message_;
     
     // Operation handlers
     void handleAddr(uint64_t& offset, const std::vector<uint8_t>& expression);
@@ -264,6 +266,9 @@ private:
     uint16_t readU16(uint64_t& offset, const std::vector<uint8_t>& data) const;
     uint32_t readU32(uint64_t& offset, const std::vector<uint8_t>& data) const;
     uint64_t readU64(uint64_t& offset, const std::vector<uint8_t>& data) const;
+    uint64_t readAddressSized(uint64_t& offset, const std::vector<uint8_t>& data) const;
+    uint64_t readOffsetSized(uint64_t& offset, const std::vector<uint8_t>& data) const;
+    size_t pointerByteSize(const char* op_name) const;
 
     bool executeInPlace(const std::vector<uint8_t>& expression);
     
@@ -271,6 +276,8 @@ private:
     using OpHandler = void (ExpressionEvaluator::*)(uint64_t&, const std::vector<uint8_t>&);
     std::map<DwarfOp, OpHandler> op_handlers_;
     void initializeOpHandlers();
+    void setExecutionError(std::string msg) const;
+    bool requireStack(size_t n, const char* op_name);
 };
 
 } // namespace dwarf

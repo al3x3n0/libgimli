@@ -67,6 +67,7 @@ public:
                       uint64_t addr_base, uint64_t str_offsets_base,
                       uint64_t base_address);
     void setCUOffset(uint64_t offset) { cu_debug_info_offset_ = offset; }
+    void setCUDebugInfoEnd(uint64_t end) { cu_debug_info_end_ = (end <= debug_info_.size()) ? end : debug_info_.size(); }
     void setAddressSize(uint8_t size) { address_size_ = size; }
     void setDwarfVersion(DwarfVersion version) { dwarf_version_ = version; }
     void setIsDwarf64(bool is_dwarf64) { is_dwarf64_ = is_dwarf64; }
@@ -124,6 +125,7 @@ private:
 
     // CU context for resolving DWARF 5 indexed forms and CU-relative references
     mutable uint64_t cu_debug_info_offset_ = 0;  // Offset of CU header in .debug_info
+    mutable uint64_t cu_debug_info_end_ = 0;     // End of CU contribution in .debug_info (exclusive)
     mutable uint64_t cu_rnglists_base_ = 0;
     mutable uint64_t cu_rnglists_end_ = 0;         // contribution end (exclusive)
     mutable uint64_t cu_rnglists_offsets_end_ = 0; // offsets array end (exclusive)
@@ -234,6 +236,12 @@ private:
     uint64_t getOffsetSize() const;
     std::string formatAddress(uint64_t address) const;
     std::string formatOffset(uint64_t offset) const;
+    uint64_t currentDebugInfoEnd() const;
+    void advanceOffsetBounded(uint64_t& offset, uint64_t amount) const;
+    std::string readCStringFromSection(const std::vector<uint8_t>& section,
+                                       uint64_t offset,
+                                       uint64_t* consumed = nullptr,
+                                       bool* terminated = nullptr) const;
 };
 
 // Specialized attribute value classes for complex attributes

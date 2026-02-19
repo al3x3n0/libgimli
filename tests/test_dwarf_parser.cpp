@@ -1,6 +1,9 @@
 #include "dwarf_parser.hpp"
 #include "type_system.hpp"
 #include "expression_evaluator.hpp"
+#include "symbolic_expression.hpp"
+#include "symbolic_verifier.hpp"
+#include "expression_compare.hpp"
 #include "dwarf_utils.hpp"
 #include "rnglists_parser.hpp"
 #include "loclists_parser.hpp"
@@ -22,6 +25,8 @@ using namespace dwarf;
 
 static void appendU64(std::vector<uint8_t>& out, uint64_t v);
 static void appendU32(std::vector<uint8_t>& out, uint32_t v);
+static void appendU16(std::vector<uint8_t>& out, uint16_t v);
+static void appendULEB(std::vector<uint8_t>& out, uint64_t v);
 
 void testDwarfUtils() {
     std::cout << "Testing DwarfUtils..." << std::endl;
@@ -168,6 +173,18 @@ void testExpressionEvaluator() {
     assert(result.value == 5);
     assert(evaluator.size() == 2); // Should have 2 values on stack
 
+    // Stack reorder ops sanity: rot should map (1,2,3) -> (2,3,1), so top is 1.
+    expression = {
+        static_cast<uint8_t>(DwarfOp::DW_OP_const1u), 0x01,
+        static_cast<uint8_t>(DwarfOp::DW_OP_const1u), 0x02,
+        static_cast<uint8_t>(DwarfOp::DW_OP_const1u), 0x03,
+        static_cast<uint8_t>(DwarfOp::DW_OP_rot),
+        static_cast<uint8_t>(DwarfOp::DW_OP_stack_value)
+    };
+    result = evaluator.evaluate(expression);
+    assert(result.type == ExpressionResult::VALUE);
+    assert(result.value == 1);
+
     // Test DW_OP_stack_value (should return VALUE type instead of ADDRESS)
     expression = {
         static_cast<uint8_t>(DwarfOp::DW_OP_const4u),
@@ -178,6 +195,267 @@ void testExpressionEvaluator() {
     result = evaluator.evaluate(expression);
     assert(result.type == ExpressionResult::VALUE);
     assert(result.value == 100);
+
+    // Test DW_OP_stack_value on a register location converts it to register VALUE.
+    expression = {
+        static_cast<uint8_t>(DwarfOp::DW_OP_reg0),
+        static_cast<uint8_t>(DwarfOp::DW_OP_stack_value)
+    };
+    result = evaluator.evaluate(expression, /*pc=*/0, /*registers=*/{0x12345678});
+    assert(result.type == ExpressionResult::VALUE);
+    assert(result.value == 0x12345678);
+
+    // Test DW_OP_stack_value + DW_OP_piece from register location emits IMPLICIT piece bytes.
+    expression = {
+        static_cast<uint8_t>(DwarfOp::DW_OP_reg0),
+        static_cast<uint8_t>(DwarfOp::DW_OP_stack_value),
+        static_cast<uint8_t>(DwarfOp::DW_OP_piece),
+        0x01, // piece size = 1 byte
+    };
+    result = evaluator.evaluate(expression, /*pc=*/0, /*registers=*/{0x12345678});
+    assert(result.type == ExpressionResult::COMPOSITE);
+    assert(result.pieces.size() == 1);
+    assert(result.pieces[0].kind == PieceDescriptor::IMPLICIT);
+    assert(result.pieces[0].implicit_value.size() == 1);
+    assert(result.pieces[0].implicit_value[0] == 0x78);
+
+    // Malformed stack_value with empty stack should be INVALID.
+    expression = {
+        static_cast<uint8_t>(DwarfOp::DW_OP_stack_value)
+    };
+    result = evaluator.evaluate(expression);
+    assert(result.type == ExpressionResult::INVALID);
+    assert(result.description.find("DW_OP_stack_value") != std::string::npos);
+
+    // Malformed plus_uconst with empty stack should be INVALID.
+    expression = {
+        static_cast<uint8_t>(DwarfOp::DW_OP_plus_uconst),
+        0x01
+    };
+    result = evaluator.evaluate(expression);
+    assert(result.type == ExpressionResult::INVALID);
+    assert(result.description.find("DW_OP_plus_uconst") != std::string::npos);
+
+    // Malformed bra with empty stack should be INVALID.
+    expression = {
+        static_cast<uint8_t>(DwarfOp::DW_OP_bra),
+        0x00, 0x00
+    };
+    result = evaluator.evaluate(expression);
+    assert(result.type == ExpressionResult::INVALID);
+    assert(result.description.find("DW_OP_bra") != std::string::npos);
+
+    // Malformed plus with empty stack should be INVALID.
+    expression = {
+        static_cast<uint8_t>(DwarfOp::DW_OP_plus)
+    };
+    result = evaluator.evaluate(expression);
+    assert(result.type == ExpressionResult::INVALID);
+    assert(result.description.find("DW_OP_plus") != std::string::npos);
+
+    // Malformed drop with empty stack should be INVALID.
+    expression = {
+        static_cast<uint8_t>(DwarfOp::DW_OP_drop)
+    };
+    result = evaluator.evaluate(expression);
+    assert(result.type == ExpressionResult::INVALID);
+    assert(result.description.find("DW_OP_drop") != std::string::npos);
+
+    // Malformed pick with out-of-range index should be INVALID.
+    expression = {
+        static_cast<uint8_t>(DwarfOp::DW_OP_const1u),
+        0x2a,
+        static_cast<uint8_t>(DwarfOp::DW_OP_pick),
+        0x01
+    };
+    result = evaluator.evaluate(expression);
+    assert(result.type == ExpressionResult::INVALID);
+    assert(result.description.find("DW_OP_pick") != std::string::npos);
+
+    // Malformed deref with empty stack should be INVALID.
+    expression = {
+        static_cast<uint8_t>(DwarfOp::DW_OP_deref)
+    };
+    result = evaluator.evaluate(expression);
+    assert(result.type == ExpressionResult::INVALID);
+    assert(result.description.find("DW_OP_deref") != std::string::npos);
+
+    // Malformed form_tls_address with empty stack should be INVALID.
+    expression = {
+        static_cast<uint8_t>(DwarfOp::DW_OP_form_tls_address)
+    };
+    result = evaluator.evaluate(expression);
+    assert(result.type == ExpressionResult::INVALID);
+    assert(result.description.find("DW_OP_form_tls_address") != std::string::npos);
+
+    // Truncated fixed-width operand should be INVALID.
+    expression = {
+        static_cast<uint8_t>(DwarfOp::DW_OP_const4u),
+        0x11, 0x22, 0x33 // missing one byte
+    };
+    result = evaluator.evaluate(expression);
+    assert(result.type == ExpressionResult::INVALID);
+    assert(result.description.find("truncated u32") != std::string::npos);
+
+    // Truncated branch displacement operand should be INVALID.
+    expression = {
+        static_cast<uint8_t>(DwarfOp::DW_OP_const1u),
+        0x01,
+        static_cast<uint8_t>(DwarfOp::DW_OP_bra),
+        0x10 // missing 2nd byte
+    };
+    result = evaluator.evaluate(expression);
+    assert(result.type == ExpressionResult::INVALID);
+    assert(result.description.find("truncated u16") != std::string::npos);
+
+    // Truncated ULEB128 operand should be INVALID.
+    expression = {
+        static_cast<uint8_t>(DwarfOp::DW_OP_const1u),
+        0x01,
+        static_cast<uint8_t>(DwarfOp::DW_OP_plus_uconst),
+        0x80 // continuation without terminator
+    };
+    result = evaluator.evaluate(expression);
+    assert(result.type == ExpressionResult::INVALID);
+    assert(result.description.find("truncated uleb128") != std::string::npos);
+
+    // Overflow ULEB128 operand should be INVALID.
+    expression = {
+        static_cast<uint8_t>(DwarfOp::DW_OP_const1u),
+        0x01,
+        static_cast<uint8_t>(DwarfOp::DW_OP_plus_uconst),
+        0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x02
+    };
+    result = evaluator.evaluate(expression);
+    assert(result.type == ExpressionResult::INVALID);
+    assert(result.description.find("uleb128 overflow") != std::string::npos);
+
+    // Truncated SLEB128 operand should be INVALID.
+    expression = {
+        static_cast<uint8_t>(DwarfOp::DW_OP_fbreg),
+        0x80 // continuation without terminator
+    };
+    result = evaluator.evaluate(expression);
+    assert(result.type == ExpressionResult::INVALID);
+    assert(result.description.find("truncated sleb128") != std::string::npos);
+
+    // Overflow SLEB128 operand should be INVALID.
+    expression = {
+        static_cast<uint8_t>(DwarfOp::DW_OP_bregx),
+        0x00, // register 0
+        0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x02
+    };
+    result = evaluator.evaluate(expression);
+    assert(result.type == ExpressionResult::INVALID);
+    assert(result.description.find("sleb128 overflow") != std::string::npos);
+
+    // Invalid address_size for DW_OP_addr should be INVALID.
+    {
+        EvaluationContext bad_addr_ctx;
+        bad_addr_ctx.address_size = 3;
+        expression = {
+            static_cast<uint8_t>(DwarfOp::DW_OP_addr),
+            0x00, 0x00, 0x00, 0x00
+        };
+        result = evaluator.evaluate(expression, bad_addr_ctx);
+        assert(result.type == ExpressionResult::INVALID);
+        assert(result.description.find("invalid address_size") != std::string::npos);
+    }
+
+    // Invalid offset_size for DW_OP_call_ref should be INVALID.
+    {
+        EvaluationContext bad_off_ctx;
+        bad_off_ctx.offset_size = 3;
+        expression = {
+            static_cast<uint8_t>(DwarfOp::DW_OP_call_ref),
+            0x00, 0x00, 0x00, 0x00
+        };
+        result = evaluator.evaluate(expression, bad_off_ctx);
+        assert(result.type == ExpressionResult::INVALID);
+        assert(result.description.find("invalid offset_size") != std::string::npos);
+    }
+
+    // Truncated DW_OP_implicit_value payload should be INVALID.
+    expression = {
+        static_cast<uint8_t>(DwarfOp::DW_OP_implicit_value),
+        0x02, // size = 2
+        0x11  // missing one byte
+    };
+    result = evaluator.evaluate(expression);
+    assert(result.type == ExpressionResult::INVALID);
+    assert(result.description.find("DW_OP_implicit_value") != std::string::npos);
+
+    // Truncated DW_OP_entry_value subexpression should be INVALID.
+    expression = {
+        static_cast<uint8_t>(DwarfOp::DW_OP_entry_value),
+        0x02, // subexpr size = 2
+        static_cast<uint8_t>(DwarfOp::DW_OP_lit1) // only 1 byte present
+    };
+    result = evaluator.evaluate(expression);
+    assert(result.type == ExpressionResult::INVALID);
+    assert(result.description.find("DW_OP_entry_value") != std::string::npos);
+
+    // Truncated DW_OP_const_type payload should be INVALID.
+    expression = {
+        static_cast<uint8_t>(DwarfOp::DW_OP_const_type),
+        0x00, // type offset
+        0x02, // size = 2
+        0x11  // missing one byte
+    };
+    result = evaluator.evaluate(expression);
+    assert(result.type == ExpressionResult::INVALID);
+    assert(result.description.find("DW_OP_const_type") != std::string::npos);
+
+    // Out-of-range DW_OP_skip target should be INVALID.
+    expression = {
+        static_cast<uint8_t>(DwarfOp::DW_OP_skip),
+        0x01, 0x00 // jump past end
+    };
+    result = evaluator.evaluate(expression);
+    assert(result.type == ExpressionResult::INVALID);
+    assert(result.description.find("DW_OP_skip target out of range") != std::string::npos);
+
+    // Out-of-range taken DW_OP_bra target should be INVALID.
+    expression = {
+        static_cast<uint8_t>(DwarfOp::DW_OP_const1u),
+        0x01, // condition true
+        static_cast<uint8_t>(DwarfOp::DW_OP_bra),
+        0x7f, 0x00 // jump far past end
+    };
+    result = evaluator.evaluate(expression);
+    assert(result.type == ExpressionResult::INVALID);
+    assert(result.description.find("DW_OP_bra target out of range") != std::string::npos);
+
+    // Malformed DW_OP_call2 subexpression failure should be INVALID (not silently ignored).
+    EvaluationContext bad_call_ctx;
+    bad_call_ctx.cu_base_offset = 0;
+    bad_call_ctx.resolve_dwarf_procedure = [](uint64_t die_offset, uint64_t pc) -> std::optional<std::vector<uint8_t>> {
+        (void)pc;
+        if (die_offset != 0x33) return std::nullopt;
+        return std::vector<uint8_t>{static_cast<uint8_t>(DwarfOp::DW_OP_plus)}; // underflow in callee
+    };
+    expression = {
+        static_cast<uint8_t>(DwarfOp::DW_OP_call2),
+        0x33, 0x00
+    };
+    result = evaluator.evaluate(expression, bad_call_ctx);
+    assert(result.type == ExpressionResult::INVALID);
+    assert(result.description.find("DW_OP_call2") != std::string::npos);
+
+    // Unsupported opcode inside DW_OP_call2 subexpression should surface as INVALID.
+    bad_call_ctx.resolve_dwarf_procedure = [](uint64_t die_offset, uint64_t pc) -> std::optional<std::vector<uint8_t>> {
+        (void)pc;
+        if (die_offset != 0x34) return std::nullopt;
+        return std::vector<uint8_t>{0xff}; // unsupported opcode in callee
+    };
+    expression = {
+        static_cast<uint8_t>(DwarfOp::DW_OP_call2),
+        0x34, 0x00
+    };
+    result = evaluator.evaluate(expression, bad_call_ctx);
+    assert(result.type == ExpressionResult::INVALID);
+    assert(result.description.find("DW_OP_call2") != std::string::npos);
+    assert(result.description.find("Unsupported operation") != std::string::npos);
 
     // Test DW_OP_implicit_value (should return VALUE type)
     expression = {
@@ -582,6 +860,62 @@ void testExpressionEvaluator() {
         assert(r0.value == 0xAA);
     }
 
+    // Signed comparison semantics for DW_OP_{lt,le,gt,ge}.
+    {
+        std::vector<uint8_t> expr = {
+            static_cast<uint8_t>(DwarfOp::DW_OP_const1s), 0xff, // -1
+            static_cast<uint8_t>(DwarfOp::DW_OP_const1u), 0x01, // 1
+            static_cast<uint8_t>(DwarfOp::DW_OP_lt),            // -1 < 1 => true
+            static_cast<uint8_t>(DwarfOp::DW_OP_stack_value),
+        };
+        auto r = evaluator.evaluate(expr, EvaluationContext{});
+        assert(r.type == ExpressionResult::VALUE);
+        assert(r.value == 1);
+
+        expr = {
+            static_cast<uint8_t>(DwarfOp::DW_OP_const1s), 0xff, // -1
+            static_cast<uint8_t>(DwarfOp::DW_OP_const1u), 0x01, // 1
+            static_cast<uint8_t>(DwarfOp::DW_OP_ge),            // -1 >= 1 => false
+            static_cast<uint8_t>(DwarfOp::DW_OP_stack_value),
+        };
+        r = evaluator.evaluate(expr, EvaluationContext{});
+        assert(r.type == ExpressionResult::VALUE);
+        assert(r.value == 0);
+    }
+
+    // Shift counts are masked to avoid undefined behavior for counts >= 64.
+    {
+        std::vector<uint8_t> expr = {
+            static_cast<uint8_t>(DwarfOp::DW_OP_const1u), 0x01,
+            static_cast<uint8_t>(DwarfOp::DW_OP_const1u), 0x41, // 65 -> 1
+            static_cast<uint8_t>(DwarfOp::DW_OP_shl),
+            static_cast<uint8_t>(DwarfOp::DW_OP_stack_value),
+        };
+        auto r = evaluator.evaluate(expr, EvaluationContext{});
+        assert(r.type == ExpressionResult::VALUE);
+        assert(r.value == 0x02);
+
+        expr = {
+            static_cast<uint8_t>(DwarfOp::DW_OP_const1u), 0x80,
+            static_cast<uint8_t>(DwarfOp::DW_OP_const1u), 0x41, // 65 -> 1
+            static_cast<uint8_t>(DwarfOp::DW_OP_shr),
+            static_cast<uint8_t>(DwarfOp::DW_OP_stack_value),
+        };
+        r = evaluator.evaluate(expr, EvaluationContext{});
+        assert(r.type == ExpressionResult::VALUE);
+        assert(r.value == 0x40);
+
+        expr = {
+            static_cast<uint8_t>(DwarfOp::DW_OP_const1s), 0xfe, // -2
+            static_cast<uint8_t>(DwarfOp::DW_OP_const1u), 0x41, // 65 -> 1
+            static_cast<uint8_t>(DwarfOp::DW_OP_shra),
+            static_cast<uint8_t>(DwarfOp::DW_OP_stack_value),
+        };
+        r = evaluator.evaluate(expr, EvaluationContext{});
+        assert(r.type == ExpressionResult::VALUE);
+        assert(r.value == static_cast<uint64_t>(-1));
+    }
+
     // Test literal operations (DW_OP_lit0 to DW_OP_lit31)
     expression = {
         static_cast<uint8_t>(DwarfOp::DW_OP_lit15)
@@ -590,6 +924,16 @@ void testExpressionEvaluator() {
     result = evaluator.evaluate(expression);
     assert(result.type == ExpressionResult::ADDRESS);
     assert(result.value == 15);
+
+    // expressionToString should decode DW_OP_consts as signed SLEB.
+    {
+        std::vector<uint8_t> expr = {
+            static_cast<uint8_t>(DwarfOp::DW_OP_consts),
+            0x7f // SLEB128(-1)
+        };
+        auto text = evaluator.expressionToString(expr);
+        assert(text.find("-1") != std::string::npos);
+    }
 
     std::cout << "ExpressionEvaluator tests passed!" << std::endl;
 }
@@ -940,6 +1284,18 @@ void testExpressionEvaluatorGnuEncodedAddr() {
         auto r = ev.evaluate(expr, ctx, /*pc=*/0x1000, /*registers=*/{});
         assert(r.type == ExpressionResult::VALUE);
         assert(r.value == 0x1020);
+    }
+
+    // Truncated encoding byte should be invalid.
+    {
+        ExpressionEvaluator ev;
+        EvaluationContext ctx;
+        std::vector<uint8_t> expr = {
+            static_cast<uint8_t>(DwarfOp::DW_OP_GNU_encoded_addr),
+        };
+        auto r = ev.evaluate(expr, ctx, /*pc=*/0, /*registers=*/{});
+        assert(r.type == ExpressionResult::INVALID);
+        assert(r.description.find("DW_OP_GNU_encoded_addr") != std::string::npos);
     }
 
     std::cout << "ExpressionEvaluator DW_OP_GNU_encoded_addr tests passed!" << std::endl;
@@ -1412,6 +1768,2625 @@ void testVariableLocationCompositeBitPieceOffsets() {
     std::cout << "VariableLocationEvaluator bit_piece offset tests passed!" << std::endl;
 }
 
+void testSymbolicExpressionEvaluatorBasic() {
+    std::cout << "Testing SymbolicExpressionEvaluator basic..." << std::endl;
+
+    SymbolicExpressionEvaluator se;
+    EvaluationContext ctx;
+    ctx.address_size = 8;
+    ctx.frame_base = 0x1000;
+
+    // fbreg(-0x20) => 0x1000 - 0x20 = 0xfe0 (const-folded)
+    std::vector<uint8_t> expr;
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_fbreg));
+    // SLEB(-32) = 0x60
+    expr.push_back(0x60);
+
+    auto r = se.evaluate(expr, ctx);
+    assert(r.type == SymbolicExpressionResult::Type::ADDRESS);
+    assert(r.expression);
+    assert(r.expression->toString() == "0xfe0");
+
+    std::cout << "SymbolicExpressionEvaluator basic tests passed!" << std::endl;
+}
+
+void testSymbolicExpressionEvaluatorMalformedOperands() {
+    std::cout << "Testing SymbolicExpressionEvaluator malformed/truncated operands..." << std::endl;
+
+    SymbolicExpressionEvaluator se;
+    EvaluationContext ctx;
+    ctx.address_size = 8;
+
+    // Truncated fixed-width operand (DW_OP_const4u expects 4 bytes).
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_const4u));
+        expr.push_back(0x11);
+        expr.push_back(0x22);
+        auto r = se.evaluate(expr, ctx);
+        assert(r.type == SymbolicExpressionResult::Type::INVALID);
+        assert(r.error.find("truncated u32") != std::string::npos);
+    }
+
+    // Truncated branch displacement operand (DW_OP_bra expects 2-byte S16).
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_lit1));
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_bra));
+        expr.push_back(0x01);
+        auto r = se.evaluate(expr, ctx);
+        assert(r.type == SymbolicExpressionResult::Type::INVALID);
+        assert(r.error.find("truncated u16") != std::string::npos);
+    }
+
+    // Truncated skip displacement operand (DW_OP_skip expects 2-byte S16).
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_skip));
+        expr.push_back(0x01);
+        auto r = se.evaluate(expr, ctx);
+        assert(r.type == SymbolicExpressionResult::Type::INVALID);
+        assert(r.error.find("truncated u16") != std::string::npos);
+    }
+
+    // Stack underflow on binary op.
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_lit1));
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_plus));
+        auto r = se.evaluate(expr, ctx);
+        assert(r.type == SymbolicExpressionResult::Type::INVALID);
+        assert(r.error.find("stack underflow") != std::string::npos);
+    }
+
+    // Stack underflow on conditional branch (missing condition operand).
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_bra));
+        appendU16(expr, 0);
+        auto r = se.evaluate(expr, ctx);
+        assert(r.type == SymbolicExpressionResult::Type::INVALID);
+        assert(r.error.find("stack underflow") != std::string::npos);
+    }
+
+    // Stack underflow on stack-manipulation op (OVER requires 2 stack entries).
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_lit1));
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_over));
+        auto r = se.evaluate(expr, ctx);
+        assert(r.type == SymbolicExpressionResult::Type::INVALID);
+        assert(r.error.find("stack underflow") != std::string::npos);
+    }
+
+    // Stack underflow on PICK out-of-range (needs idx+1 entries).
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_lit1));
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_pick));
+        expr.push_back(1);
+        auto r = se.evaluate(expr, ctx);
+        assert(r.type == SymbolicExpressionResult::Type::INVALID);
+        assert(r.error.find("stack underflow") != std::string::npos);
+    }
+
+    // Truncated PICK operand should report decode error before stack-underflow logic.
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_pick));
+        auto r = se.evaluate(expr, ctx);
+        assert(r.type == SymbolicExpressionResult::Type::INVALID);
+        assert(r.error.find("truncated u8") != std::string::npos);
+    }
+
+    // Stack underflow on stack_value without input value.
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_stack_value));
+        auto r = se.evaluate(expr, ctx);
+        assert(r.type == SymbolicExpressionResult::Type::INVALID);
+        assert(r.error.find("stack underflow") != std::string::npos);
+    }
+
+    // Truncated PLUS_UCONST operand should report decode error before stack-underflow logic.
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_plus_uconst));
+        expr.push_back(0x80); // unterminated ULEB
+        auto r = se.evaluate(expr, ctx);
+        assert(r.type == SymbolicExpressionResult::Type::INVALID);
+        assert(r.error.find("truncated uleb128") != std::string::npos);
+    }
+
+    // Truncated DEREF_SIZE immediate should report decode error before stack-underflow logic.
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_deref_size));
+        auto r = se.evaluate(expr, ctx);
+        assert(r.type == SymbolicExpressionResult::Type::INVALID);
+        assert(r.error.find("truncated u8") != std::string::npos);
+    }
+
+    // Unterminated ULEB128 operand.
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_constu));
+        expr.push_back(0x80); // continuation bit set, but no following byte
+        auto r = se.evaluate(expr, ctx);
+        assert(r.type == SymbolicExpressionResult::Type::INVALID);
+        assert(r.error.find("truncated uleb128") != std::string::npos);
+    }
+
+    // ULEB128 overflow (>64-bit payload).
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_constu));
+        for (int i = 0; i < 9; ++i) expr.push_back(0x80);
+        expr.push_back(0x02);
+        auto r = se.evaluate(expr, ctx);
+        assert(r.type == SymbolicExpressionResult::Type::INVALID);
+        assert(r.error.find("uleb128 overflow") != std::string::npos);
+    }
+
+    // Unterminated SLEB128 operand.
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_consts));
+        expr.push_back(0x80); // continuation bit set, but no following byte
+        auto r = se.evaluate(expr, ctx);
+        assert(r.type == SymbolicExpressionResult::Type::INVALID);
+        assert(r.error.find("truncated sleb128") != std::string::npos);
+    }
+
+    // SLEB128 overflow (>64-bit payload).
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_consts));
+        for (int i = 0; i < 9; ++i) expr.push_back(0x80);
+        expr.push_back(0x02);
+        auto r = se.evaluate(expr, ctx);
+        assert(r.type == SymbolicExpressionResult::Type::INVALID);
+        assert(r.error.find("sleb128 overflow") != std::string::npos);
+    }
+
+    // Truncated payload for DW_OP_implicit_value(len=2, only 1 byte present).
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_implicit_value));
+        appendULEB(expr, 2);
+        expr.push_back(0xaa);
+        auto r = se.evaluate(expr, ctx);
+        assert(r.type == SymbolicExpressionResult::Type::INVALID);
+        assert(r.error.find("truncated byte payload") != std::string::npos);
+    }
+
+    // Invalid address_size for pointer-sized operand decoding.
+    {
+        EvaluationContext bad = ctx;
+        bad.address_size = 3;
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_addr));
+        appendU64(expr, 0x1234);
+        auto r = se.evaluate(expr, bad);
+        assert(r.type == SymbolicExpressionResult::Type::INVALID);
+        assert(r.error.find("invalid address_size") != std::string::npos);
+    }
+
+    // Invalid address_size for deref-family pointer-width loads.
+    {
+        EvaluationContext bad = ctx;
+        bad.address_size = 3;
+        std::vector<uint8_t> expr = {
+            static_cast<uint8_t>(DwarfOp::DW_OP_lit1),
+            static_cast<uint8_t>(DwarfOp::DW_OP_deref),
+        };
+        auto r = se.evaluate(expr, bad);
+        assert(r.type == SymbolicExpressionResult::Type::INVALID);
+        assert(r.error.find("invalid address_size") != std::string::npos);
+
+        expr = {
+            static_cast<uint8_t>(DwarfOp::DW_OP_lit1), // addr-space
+            static_cast<uint8_t>(DwarfOp::DW_OP_lit2), // addr
+            static_cast<uint8_t>(DwarfOp::DW_OP_xderef),
+        };
+        r = se.evaluate(expr, bad);
+        assert(r.type == SymbolicExpressionResult::Type::INVALID);
+        assert(r.error.find("invalid address_size") != std::string::npos);
+    }
+
+    // Invalid address_size for GNU encoded addr with indirect flag.
+    {
+        EvaluationContext bad = ctx;
+        bad.address_size = 3;
+        std::vector<uint8_t> expr = {
+            static_cast<uint8_t>(DwarfOp::DW_OP_GNU_encoded_addr),
+            0x80, // DW_EH_PE_absptr | DW_EH_PE_indirect
+            0x00, 0x00, 0x00, 0x00
+        };
+        auto r = se.evaluate(expr, bad);
+        assert(r.type == SymbolicExpressionResult::Type::INVALID);
+        assert(r.error.find("invalid address_size") != std::string::npos);
+    }
+
+    // Invalid offset_size for section-relative reference decoding.
+    {
+        EvaluationContext bad = ctx;
+        bad.offset_size = 3;
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_call_ref));
+        appendU32(expr, 0x20);
+        auto r = se.evaluate(expr, bad);
+        assert(r.type == SymbolicExpressionResult::Type::INVALID);
+        assert(r.error.find("invalid offset_size") != std::string::npos);
+    }
+
+    std::cout << "SymbolicExpressionEvaluator malformed/truncated operand tests passed!" << std::endl;
+}
+
+void testSymbolicExpressionEvaluatorLoad() {
+    std::cout << "Testing SymbolicExpressionEvaluator load modeling..." << std::endl;
+
+    SymbolicExpressionEvaluator se;
+    EvaluationContext ctx;
+    ctx.address_size = 8;
+
+    std::vector<uint8_t> expr;
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_addr));
+    appendU64(expr, 0x1000);
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_deref_size));
+    expr.push_back(4);
+
+    auto r = se.evaluate(expr, ctx);
+    assert(r.type == SymbolicExpressionResult::Type::VALUE);
+    assert(r.expression);
+    assert(r.expression->toString() == "load(0x1000,4)");
+
+    std::cout << "SymbolicExpressionEvaluator load tests passed!" << std::endl;
+}
+
+void testSymbolicExpressionEvaluatorPieces() {
+    std::cout << "Testing SymbolicExpressionEvaluator pieces..." << std::endl;
+
+    SymbolicExpressionEvaluator se;
+    EvaluationContext ctx;
+    ctx.address_size = 8;
+
+    std::vector<uint8_t> expr;
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_reg5));
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_piece));
+    appendULEB(expr, 8);
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_addr));
+    appendU64(expr, 0x2000);
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_piece));
+    appendULEB(expr, 8);
+
+    auto r = se.evaluate(expr, ctx);
+    assert(r.type == SymbolicExpressionResult::Type::COMPOSITE);
+    assert(r.pieces.size() == 2);
+    assert(r.pieces[0].kind == SymPiece::Kind::REGISTER);
+    assert(r.pieces[0].location);
+    assert(r.pieces[0].location->toString() == "0x5");
+    assert(r.pieces[0].byte_size == 8);
+    assert(r.pieces[1].kind == SymPiece::Kind::MEMORY);
+    assert(r.pieces[1].location);
+    assert(r.pieces[1].location->toString() == "0x2000");
+    assert(r.pieces[1].byte_size == 8);
+
+    std::cout << "SymbolicExpressionEvaluator pieces tests passed!" << std::endl;
+}
+
+void testSymbolicExpressionEvaluatorUnavailablePieces() {
+    std::cout << "Testing SymbolicExpressionEvaluator unavailable piece semantics..." << std::endl;
+
+    SymbolicExpressionEvaluator se;
+    EvaluationContext ctx;
+    ctx.address_size = 8;
+
+    // DW_OP_piece with empty stack means unavailable piece.
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_piece));
+        appendULEB(expr, 4);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_piece));
+        appendULEB(expr, 2);
+        auto r = se.evaluate(expr, ctx);
+        assert(r.type == SymbolicExpressionResult::Type::COMPOSITE);
+        assert(r.pieces.size() == 2);
+        assert(r.pieces[0].kind == SymPiece::Kind::EMPTY);
+        assert(r.pieces[0].byte_size == 4);
+        assert(r.pieces[1].kind == SymPiece::Kind::EMPTY);
+        assert(r.pieces[1].byte_size == 2);
+    }
+
+    // bit_piece with empty stack means unavailable piece bits.
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_bit_piece));
+        appendULEB(expr, 3);
+        appendULEB(expr, 1);
+        auto r = se.evaluate(expr, ctx);
+        assert(r.type == SymbolicExpressionResult::Type::COMPOSITE);
+        assert(r.pieces.size() == 1);
+        assert(r.pieces[0].kind == SymPiece::Kind::EMPTY);
+        assert(r.pieces[0].bit_size == 3);
+        assert(r.pieces[0].bit_offset == 1);
+    }
+
+    // Mixed available/unavailable pieces.
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_addr));
+        appendU64(expr, 0x2000);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_piece));
+        appendULEB(expr, 8);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_piece));
+        appendULEB(expr, 4);
+        auto r = se.evaluate(expr, ctx);
+        assert(r.type == SymbolicExpressionResult::Type::COMPOSITE);
+        assert(r.pieces.size() == 2);
+        assert(r.pieces[0].kind == SymPiece::Kind::MEMORY);
+        assert(r.pieces[0].location && r.pieces[0].location->toString() == "0x2000");
+        assert(r.pieces[1].kind == SymPiece::Kind::EMPTY);
+        assert(r.pieces[1].byte_size == 4);
+    }
+
+    std::cout << "SymbolicExpressionEvaluator unavailable piece tests passed!" << std::endl;
+}
+
+void testSymbolicExpressionEvaluatorStackValuePieces() {
+    std::cout << "Testing SymbolicExpressionEvaluator stack_value piece semantics..." << std::endl;
+
+    SymbolicExpressionEvaluator se;
+    EvaluationContext ctx;
+    ctx.address_size = 8;
+
+    // Constant value + stack_value + piece => implicit value piece.
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_lit7));
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_stack_value));
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_piece));
+        appendULEB(expr, 1);
+        auto r = se.evaluate(expr, ctx);
+        assert(r.type == SymbolicExpressionResult::Type::COMPOSITE);
+        assert(r.pieces.size() == 1);
+        assert(r.pieces[0].kind == SymPiece::Kind::IMPLICIT);
+        assert(r.pieces[0].byte_size == 1);
+        assert(r.pieces[0].location && r.pieces[0].location->toString() == "0x7");
+    }
+
+    // Register location + stack_value + piece => implicit piece with register value.
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_reg0));
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_stack_value));
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_piece));
+        appendULEB(expr, 8);
+        auto r = se.evaluate(expr, ctx, 0, {0x1234});
+        assert(r.type == SymbolicExpressionResult::Type::COMPOSITE);
+        assert(r.pieces.size() == 1);
+        assert(r.pieces[0].kind == SymPiece::Kind::IMPLICIT);
+        assert(r.pieces[0].byte_size == 8);
+        assert(r.pieces[0].location && r.pieces[0].location->toString() == "0x1234");
+    }
+
+    // Address-like value explicitly marked with stack_value should remain an implicit value piece.
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_addr));
+        appendU64(expr, 0x2000);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_stack_value));
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_piece));
+        appendULEB(expr, 8);
+        auto r = se.evaluate(expr, ctx);
+        assert(r.type == SymbolicExpressionResult::Type::COMPOSITE);
+        assert(r.pieces.size() == 1);
+        assert(r.pieces[0].kind == SymPiece::Kind::IMPLICIT);
+        assert(r.pieces[0].byte_size == 8);
+        assert(r.pieces[0].location && r.pieces[0].location->toString() == "0x2000");
+    }
+
+    std::cout << "SymbolicExpressionEvaluator stack_value piece tests passed!" << std::endl;
+}
+
+void testSymbolicExpressionEvaluatorAddrxConstx() {
+    std::cout << "Testing SymbolicExpressionEvaluator addrx/constx..." << std::endl;
+
+    SymbolicExpressionEvaluator se;
+    EvaluationContext ctx;
+    ctx.address_size = 8;
+    std::vector<uint64_t> addr_table = {0x1111, 0x2222};
+    ctx.debug_addr_table = &addr_table;
+
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_addrx));
+        appendULEB(expr, 1);
+        auto r = se.evaluate(expr, ctx);
+        assert(r.type == SymbolicExpressionResult::Type::ADDRESS);
+        assert(r.expression && r.expression->toString() == "0x2222");
+    }
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_constx));
+        appendULEB(expr, 0);
+        auto r = se.evaluate(expr, ctx);
+        assert(r.type == SymbolicExpressionResult::Type::ADDRESS);
+        assert(r.expression && r.expression->toString() == "0x1111");
+    }
+    {
+        EvaluationContext ctx2;
+        ctx2.address_size = 8;
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_addrx));
+        appendULEB(expr, 7);
+        auto r = se.evaluate(expr, ctx2);
+        assert(r.type == SymbolicExpressionResult::Type::ADDRESS);
+        assert(r.expression && r.expression->toString() == "addrx(7)");
+    }
+
+    std::cout << "SymbolicExpressionEvaluator addrx/constx tests passed!" << std::endl;
+}
+
+void testSymbolicExpressionEvaluatorEntryValue() {
+    std::cout << "Testing SymbolicExpressionEvaluator entry_value..." << std::endl;
+
+    SymbolicExpressionEvaluator se;
+    EvaluationContext ctx;
+    ctx.address_size = 8;
+    ctx.entry_registers = std::vector<uint64_t>(64, 0);
+    ctx.entry_registers[5] = 0xdeadbeef;
+
+    // entry_value({reg5})
+    std::vector<uint8_t> expr;
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_entry_value));
+    // subexpr bytes:
+    std::vector<uint8_t> sub;
+    sub.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_reg5));
+    appendULEB(expr, sub.size());
+    expr.insert(expr.end(), sub.begin(), sub.end());
+
+    auto r = se.evaluate(expr, ctx);
+    assert(r.type == SymbolicExpressionResult::Type::VALUE);
+    assert(r.expression && r.expression->toString() == "0xdeadbeef");
+
+    std::cout << "SymbolicExpressionEvaluator entry_value tests passed!" << std::endl;
+}
+
+void testSymbolicExpressionEvaluatorImplicitValueLarge() {
+    std::cout << "Testing SymbolicExpressionEvaluator implicit_value large..." << std::endl;
+
+    SymbolicExpressionEvaluator se;
+    EvaluationContext ctx;
+    ctx.address_size = 8;
+
+    std::vector<uint8_t> expr;
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_implicit_value));
+    appendULEB(expr, 9);
+    for (int i = 0; i < 9; ++i) expr.push_back(static_cast<uint8_t>(i));
+
+    auto r = se.evaluate(expr, ctx);
+    assert(r.type == SymbolicExpressionResult::Type::VALUE);
+    assert(r.expression);
+    assert(r.expression->toString() == "bytes(0x000102030405060708)");
+
+    std::cout << "SymbolicExpressionEvaluator implicit_value large tests passed!" << std::endl;
+}
+
+void testSymbolicExpressionEvaluatorBytesComparisons() {
+    std::cout << "Testing SymbolicExpressionEvaluator bytes comparisons..." << std::endl;
+
+    SymbolicExpressionEvaluator se;
+    EvaluationContext ctx;
+    ctx.address_size = 8;
+
+    auto appendImplicit9 = [](std::vector<uint8_t>& expr, uint8_t seed) {
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_implicit_value));
+        appendULEB(expr, 9);
+        for (int i = 0; i < 9; ++i) expr.push_back(static_cast<uint8_t>(seed + i));
+    };
+
+    // bytes == bytes (same payload) should fold to const true.
+    {
+        std::vector<uint8_t> expr;
+        appendImplicit9(expr, 0x10);
+        appendImplicit9(expr, 0x10);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_eq));
+
+        auto r = se.evaluate(expr, ctx);
+        assert(r.type == SymbolicExpressionResult::Type::VALUE);
+        assert(r.expression && r.expression->toString() == "0x1");
+    }
+
+    // bytes != bytes (different payload) should fold to const true.
+    {
+        std::vector<uint8_t> expr;
+        appendImplicit9(expr, 0x10);
+        appendImplicit9(expr, 0x20);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_ne));
+
+        auto r = se.evaluate(expr, ctx);
+        assert(r.type == SymbolicExpressionResult::Type::VALUE);
+        assert(r.expression && r.expression->toString() == "0x1");
+    }
+
+    // Folded bytes equality should drive concrete branch selection.
+    {
+        std::vector<uint8_t> expr;
+        appendImplicit9(expr, 0x10);
+        appendImplicit9(expr, 0x10);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_eq));
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_bra));
+        appendU16(expr, 4); // jump to true arm
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_lit1)); // false arm
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_skip));
+        appendU16(expr, 1); // skip true arm
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_lit2)); // true arm
+
+        auto r = se.evaluate(expr, ctx);
+        assert(r.type == SymbolicExpressionResult::Type::ADDRESS);
+        assert(r.expression && r.expression->toString() == "0x2");
+    }
+
+    std::cout << "SymbolicExpressionEvaluator bytes comparison tests passed!" << std::endl;
+}
+
+void testSymbolicExpressionEvaluatorImplicitBytesDoNotBleed() {
+    std::cout << "Testing SymbolicExpressionEvaluator implicit bytes do not bleed..." << std::endl;
+
+    SymbolicExpressionEvaluator se;
+    EvaluationContext ctx;
+    ctx.address_size = 8;
+
+    // implicit_value bytes should not be reused after a new top-of-stack push.
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_implicit_value));
+        appendULEB(expr, 1);
+        expr.push_back(0x12);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_const1u));
+        expr.push_back(0x34);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_piece));
+        appendULEB(expr, 1);
+
+        auto r = se.evaluate(expr, ctx);
+        assert(r.type == SymbolicExpressionResult::Type::COMPOSITE);
+        assert(r.pieces.size() == 1);
+        assert(r.pieces[0].kind == SymPiece::Kind::MEMORY);
+        assert(r.pieces[0].location);
+        assert(r.pieces[0].location->toString() == "0x34");
+        assert(r.pieces[0].implicit_bytes.empty());
+    }
+
+    // const_type bytes should also stop applying once top-of-stack changes.
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_const_type));
+        appendULEB(expr, 0);
+        expr.push_back(2);
+        expr.push_back(0x34);
+        expr.push_back(0x12);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_reg0));
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_piece));
+        appendULEB(expr, 8);
+
+        auto r = se.evaluate(expr, ctx);
+        assert(r.type == SymbolicExpressionResult::Type::COMPOSITE);
+        assert(r.pieces.size() == 1);
+        assert(r.pieces[0].kind == SymPiece::Kind::REGISTER);
+        assert(r.pieces[0].location);
+        assert(r.pieces[0].location->toString() == "0x0");
+        assert(r.pieces[0].implicit_bytes.empty());
+    }
+
+    std::cout << "SymbolicExpressionEvaluator implicit bytes bleed tests passed!" << std::endl;
+}
+
+void testSymbolicExpressionEvaluatorImplicitBytesPerStackEntryOps() {
+    std::cout << "Testing SymbolicExpressionEvaluator implicit bytes per-stack ops..." << std::endl;
+
+    SymbolicExpressionEvaluator se;
+    EvaluationContext ctx;
+    ctx.address_size = 8;
+
+    // DUP should duplicate implicit-byte metadata for the duplicated stack entry.
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_implicit_value));
+        appendULEB(expr, 1);
+        expr.push_back(0xab);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_dup));
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_piece));
+        appendULEB(expr, 1);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_piece));
+        appendULEB(expr, 1);
+
+        auto r = se.evaluate(expr, ctx);
+        assert(r.type == SymbolicExpressionResult::Type::COMPOSITE);
+        assert(r.pieces.size() == 2);
+        assert(r.pieces[0].kind == SymPiece::Kind::IMPLICIT);
+        assert(r.pieces[1].kind == SymPiece::Kind::IMPLICIT);
+        assert(r.pieces[0].implicit_bytes.size() == 1 && r.pieces[0].implicit_bytes[0] == 0xab);
+        assert(r.pieces[1].implicit_bytes.size() == 1 && r.pieces[1].implicit_bytes[0] == 0xab);
+    }
+
+    // SWAP should swap implicit-byte metadata alongside stack values.
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_implicit_value));
+        appendULEB(expr, 1);
+        expr.push_back(0x11);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_implicit_value));
+        appendULEB(expr, 1);
+        expr.push_back(0x22);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_swap));
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_piece));
+        appendULEB(expr, 1);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_piece));
+        appendULEB(expr, 1);
+
+        auto r = se.evaluate(expr, ctx);
+        assert(r.type == SymbolicExpressionResult::Type::COMPOSITE);
+        assert(r.pieces.size() == 2);
+        assert(r.pieces[0].kind == SymPiece::Kind::IMPLICIT);
+        assert(r.pieces[1].kind == SymPiece::Kind::IMPLICIT);
+        assert(r.pieces[0].implicit_bytes.size() == 1 && r.pieces[0].implicit_bytes[0] == 0x11);
+        assert(r.pieces[1].implicit_bytes.size() == 1 && r.pieces[1].implicit_bytes[0] == 0x22);
+    }
+
+    // OVER should duplicate second-from-top with its implicit bytes.
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_implicit_value));
+        appendULEB(expr, 1);
+        expr.push_back(0x11);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_implicit_value));
+        appendULEB(expr, 1);
+        expr.push_back(0x22);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_over));
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_piece)); appendULEB(expr, 1);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_piece)); appendULEB(expr, 1);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_piece)); appendULEB(expr, 1);
+
+        auto r = se.evaluate(expr, ctx);
+        assert(r.type == SymbolicExpressionResult::Type::COMPOSITE);
+        assert(r.pieces.size() == 3);
+        assert(r.pieces[0].implicit_bytes.size() == 1 && r.pieces[0].implicit_bytes[0] == 0x11);
+        assert(r.pieces[1].implicit_bytes.size() == 1 && r.pieces[1].implicit_bytes[0] == 0x22);
+        assert(r.pieces[2].implicit_bytes.size() == 1 && r.pieces[2].implicit_bytes[0] == 0x11);
+    }
+
+    // PICK should duplicate the chosen entry with its implicit bytes.
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_implicit_value));
+        appendULEB(expr, 1);
+        expr.push_back(0x11);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_implicit_value));
+        appendULEB(expr, 1);
+        expr.push_back(0x22);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_implicit_value));
+        appendULEB(expr, 1);
+        expr.push_back(0x33);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_pick));
+        expr.push_back(2); // duplicate bottom value (0x11)
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_piece)); appendULEB(expr, 1);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_piece)); appendULEB(expr, 1);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_piece)); appendULEB(expr, 1);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_piece)); appendULEB(expr, 1);
+
+        auto r = se.evaluate(expr, ctx);
+        assert(r.type == SymbolicExpressionResult::Type::COMPOSITE);
+        assert(r.pieces.size() == 4);
+        assert(r.pieces[0].implicit_bytes.size() == 1 && r.pieces[0].implicit_bytes[0] == 0x11);
+        assert(r.pieces[1].implicit_bytes.size() == 1 && r.pieces[1].implicit_bytes[0] == 0x33);
+        assert(r.pieces[2].implicit_bytes.size() == 1 && r.pieces[2].implicit_bytes[0] == 0x22);
+        assert(r.pieces[3].implicit_bytes.size() == 1 && r.pieces[3].implicit_bytes[0] == 0x11);
+    }
+
+    // ROT should rotate value+metadata in lockstep.
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_implicit_value));
+        appendULEB(expr, 1);
+        expr.push_back(0x11);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_implicit_value));
+        appendULEB(expr, 1);
+        expr.push_back(0x22);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_implicit_value));
+        appendULEB(expr, 1);
+        expr.push_back(0x33);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_rot));
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_piece)); appendULEB(expr, 1);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_piece)); appendULEB(expr, 1);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_piece)); appendULEB(expr, 1);
+
+        auto r = se.evaluate(expr, ctx);
+        assert(r.type == SymbolicExpressionResult::Type::COMPOSITE);
+        assert(r.pieces.size() == 3);
+        assert(r.pieces[0].implicit_bytes.size() == 1 && r.pieces[0].implicit_bytes[0] == 0x11);
+        assert(r.pieces[1].implicit_bytes.size() == 1 && r.pieces[1].implicit_bytes[0] == 0x33);
+        assert(r.pieces[2].implicit_bytes.size() == 1 && r.pieces[2].implicit_bytes[0] == 0x22);
+    }
+
+    std::cout << "SymbolicExpressionEvaluator implicit bytes per-stack ops tests passed!" << std::endl;
+}
+
+void testSymbolicExpressionEvaluatorStackKindsPerEntryOps() {
+    std::cout << "Testing SymbolicExpressionEvaluator stack kinds per-stack ops..." << std::endl;
+
+    SymbolicExpressionEvaluator se;
+    EvaluationContext ctx;
+    ctx.address_size = 8;
+
+    // OVER should duplicate REGISTER kind when source is a register location.
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_reg1));
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_implicit_value));
+        appendULEB(expr, 1);
+        expr.push_back(0x22);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_over));
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_piece)); appendULEB(expr, 8);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_piece)); appendULEB(expr, 1);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_piece)); appendULEB(expr, 8);
+
+        auto r = se.evaluate(expr, ctx);
+        assert(r.type == SymbolicExpressionResult::Type::COMPOSITE);
+        assert(r.pieces.size() == 3);
+        assert(r.pieces[0].kind == SymPiece::Kind::REGISTER);
+        assert(r.pieces[0].location && r.pieces[0].location->toString() == "0x1");
+        assert(r.pieces[1].kind == SymPiece::Kind::IMPLICIT);
+        assert(r.pieces[1].implicit_bytes.size() == 1 && r.pieces[1].implicit_bytes[0] == 0x22);
+        assert(r.pieces[2].kind == SymPiece::Kind::REGISTER);
+        assert(r.pieces[2].location && r.pieces[2].location->toString() == "0x1");
+    }
+
+    // PICK should duplicate chosen REGISTER kind.
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_reg2)); // bottom
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_implicit_value));
+        appendULEB(expr, 1);
+        expr.push_back(0x33);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_reg4)); // top
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_pick));
+        expr.push_back(2); // duplicate bottom reg2
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_piece)); appendULEB(expr, 8);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_piece)); appendULEB(expr, 8);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_piece)); appendULEB(expr, 1);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_piece)); appendULEB(expr, 8);
+
+        auto r = se.evaluate(expr, ctx);
+        assert(r.type == SymbolicExpressionResult::Type::COMPOSITE);
+        assert(r.pieces.size() == 4);
+        assert(r.pieces[0].kind == SymPiece::Kind::REGISTER);
+        assert(r.pieces[0].location && r.pieces[0].location->toString() == "0x2");
+        assert(r.pieces[1].kind == SymPiece::Kind::REGISTER);
+        assert(r.pieces[1].location && r.pieces[1].location->toString() == "0x4");
+        assert(r.pieces[2].kind == SymPiece::Kind::IMPLICIT);
+        assert(r.pieces[2].implicit_bytes.size() == 1 && r.pieces[2].implicit_bytes[0] == 0x33);
+        assert(r.pieces[3].kind == SymPiece::Kind::REGISTER);
+        assert(r.pieces[3].location && r.pieces[3].location->toString() == "0x2");
+    }
+
+    // ROT should rotate stack kinds in lockstep with values.
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_reg1));
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_implicit_value));
+        appendULEB(expr, 1);
+        expr.push_back(0x44);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_reg3));
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_rot));
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_piece)); appendULEB(expr, 8);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_piece)); appendULEB(expr, 8);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_piece)); appendULEB(expr, 1);
+
+        auto r = se.evaluate(expr, ctx);
+        assert(r.type == SymbolicExpressionResult::Type::COMPOSITE);
+        assert(r.pieces.size() == 3);
+        assert(r.pieces[0].kind == SymPiece::Kind::REGISTER);
+        assert(r.pieces[0].location && r.pieces[0].location->toString() == "0x1");
+        assert(r.pieces[1].kind == SymPiece::Kind::REGISTER);
+        assert(r.pieces[1].location && r.pieces[1].location->toString() == "0x3");
+        assert(r.pieces[2].kind == SymPiece::Kind::IMPLICIT);
+        assert(r.pieces[2].implicit_bytes.size() == 1 && r.pieces[2].implicit_bytes[0] == 0x44);
+    }
+
+    // Final result kind should come from top-of-stack kind after swap.
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_implicit_value));
+        appendULEB(expr, 1);
+        expr.push_back(0x55);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_reg0));
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_swap)); // top becomes implicit value
+
+        auto r = se.evaluate(expr, ctx);
+        assert(r.type == SymbolicExpressionResult::Type::VALUE);
+        assert(r.expression && r.expression->toString() == "0x55");
+    }
+
+    std::cout << "SymbolicExpressionEvaluator stack kinds per-stack ops tests passed!" << std::endl;
+}
+
+void testSymbolicExpressionEvaluatorComputationMaterializationAndKinds() {
+    std::cout << "Testing SymbolicExpressionEvaluator computation materialization/kinds..." << std::endl;
+
+    SymbolicExpressionEvaluator se;
+    EvaluationContext ctx;
+    ctx.address_size = 8;
+
+    // Arithmetic should materialize register locations to register values.
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_reg1));
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_const1u));
+        expr.push_back(8);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_plus));
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_stack_value));
+
+        std::vector<uint64_t> regs = {0, 0x1000};
+        auto r = se.evaluate(expr, ctx, 0, regs);
+        assert(r.type == SymbolicExpressionResult::Type::VALUE);
+        assert(r.expression && r.expression->toString() == "0x1008");
+    }
+
+    // Branch condition should use register value, not register number.
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_reg0));
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_bra));
+        appendU16(expr, 4); // jump to lit2 when cond != 0
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_lit1));
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_skip));
+        appendU16(expr, 1); // skip over lit2
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_lit2));
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_nop));
+
+        auto r_true = se.evaluate(expr, ctx, 0, {7});
+        assert(r_true.expression && r_true.expression->toString() == "0x2");
+
+        auto r_false = se.evaluate(expr, ctx, 0, {0});
+        assert(r_false.expression && r_false.expression->toString() == "0x1");
+    }
+
+    // plus_uconst over a value should keep VALUE kind, so piece becomes implicit.
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_breg0));
+        expr.push_back(0x00); // sleb128(0)
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_deref));
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_plus_uconst));
+        appendULEB(expr, 1);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_piece));
+        appendULEB(expr, 8);
+
+        auto r = se.evaluate(expr, ctx, 0, {0x1000});
+        assert(r.type == SymbolicExpressionResult::Type::COMPOSITE);
+        assert(r.pieces.size() == 1);
+        assert(r.pieces[0].kind == SymPiece::Kind::IMPLICIT);
+        assert(r.pieces[0].byte_size == 8);
+        assert(r.pieces[0].location);
+    }
+
+    // Unary arithmetic should also materialize register values.
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_reg1));
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_neg));
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_stack_value));
+
+        auto r = se.evaluate(expr, ctx, 0, {0, 3});
+        assert(r.type == SymbolicExpressionResult::Type::VALUE);
+        assert(r.expression && r.expression->toString() == "0xfffffffffffffffd");
+    }
+
+    // convert/reinterpret should materialize register values before type operation.
+    {
+        EvaluationContext tctx = ctx;
+        tctx.resolve_base_type = [](uint64_t off) -> std::optional<EvaluationContext::BaseTypeInfo> {
+            EvaluationContext::BaseTypeInfo ti;
+            if (off == 0x11) {
+                ti.byte_size = 1;
+                ti.is_integer = true;
+                ti.is_signed = true;
+                ti.encoding = DW_ATE::DW_ATE_signed;
+                return ti;
+            }
+            if (off == 0x12) {
+                ti.byte_size = 1;
+                ti.is_integer = true;
+                ti.is_signed = false;
+                ti.encoding = DW_ATE::DW_ATE_unsigned;
+                return ti;
+            }
+            return std::nullopt;
+        };
+
+        std::vector<uint8_t> expr_convert;
+        expr_convert.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_reg1));
+        expr_convert.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_convert));
+        appendULEB(expr_convert, 0x11);
+        auto rc = se.evaluate(expr_convert, tctx, 0, {0, 0xff80});
+        assert(rc.type == SymbolicExpressionResult::Type::VALUE);
+        assert(rc.expression && rc.expression->toString() == "0xffffffffffffff80");
+
+        std::vector<uint8_t> expr_reinterpret;
+        expr_reinterpret.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_reg1));
+        expr_reinterpret.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_reinterpret));
+        appendULEB(expr_reinterpret, 0x12);
+        auto rr = se.evaluate(expr_reinterpret, tctx, 0, {0, 0xff80});
+        assert(rr.type == SymbolicExpressionResult::Type::VALUE);
+        assert(rr.expression && rr.expression->toString() == "0x80");
+    }
+
+    std::cout << "SymbolicExpressionEvaluator computation materialization/kinds tests passed!" << std::endl;
+}
+
+void testSymbolicExpressionEvaluatorImplicitPointer() {
+    std::cout << "Testing SymbolicExpressionEvaluator implicit_pointer..." << std::endl;
+
+    SymbolicExpressionEvaluator se;
+    EvaluationContext ctx;
+    ctx.address_size = 8;
+    ctx.offset_size = 4;
+
+    // implicit_pointer(die_ref=0x12345678, off=-8)
+    std::vector<uint8_t> expr;
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_implicit_pointer));
+    appendU32(expr, 0x12345678);
+    // SLEB(-8) = 0x78
+    expr.push_back(0x78);
+
+    auto r = se.evaluate(expr, ctx);
+    assert(r.type == SymbolicExpressionResult::Type::VALUE);
+    assert(r.expression);
+    assert(r.expression->toString() == "0x12345670");
+
+    // Resolver path with section-bias and GNU alias.
+    EvaluationContext ctx2 = ctx;
+    ctx2.cu_base_offset = (1ULL << 63) | 0x500;
+    ctx2.resolve_dwarf_procedure = [](uint64_t off, uint64_t /*pc*/) -> std::optional<std::vector<uint8_t>> {
+        if (off == ((1ULL << 63) + 0x20)) {
+            std::vector<uint8_t> sub;
+            sub.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_addr));
+            appendU64(sub, 0x4000);
+            return sub;
+        }
+        return std::nullopt;
+    };
+
+    std::vector<uint8_t> gnu_expr;
+    gnu_expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_GNU_implicit_pointer));
+    appendU32(gnu_expr, 0x20);
+    gnu_expr.push_back(0x08); // SLEB(+8)
+    auto r2 = se.evaluate(gnu_expr, ctx2);
+    assert(r2.type == SymbolicExpressionResult::Type::VALUE);
+    assert(r2.expression && r2.expression->toString() == "0x4008");
+
+    std::cout << "SymbolicExpressionEvaluator implicit_pointer tests passed!" << std::endl;
+}
+
+void testSymbolicExpressionEvaluatorTypedOpsAndBranches() {
+    std::cout << "Testing SymbolicExpressionEvaluator typed ops and branches..." << std::endl;
+
+    SymbolicExpressionEvaluator se;
+    EvaluationContext ctx;
+    ctx.address_size = 8;
+    ctx.cu_base_offset = 0;
+    ctx.resolve_base_type = [](uint64_t off) -> std::optional<EvaluationContext::BaseTypeInfo> {
+        EvaluationContext::BaseTypeInfo ti;
+        if (off == 0x10) {
+            ti.byte_size = 4;
+            ti.is_integer = true;
+            ti.is_signed = false;
+            ti.encoding = DW_ATE::DW_ATE_unsigned;
+            return ti;
+        }
+        if (off == 0x20) {
+            ti.byte_size = 2;
+            ti.is_integer = true;
+            ti.is_signed = true;
+            ti.encoding = DW_ATE::DW_ATE_signed;
+            return ti;
+        }
+        return std::nullopt;
+    };
+
+    // regval_type(reg=5, type=0x10) with concrete reg value -> mask4(0x...) => const fold.
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_regval_type));
+        appendULEB(expr, 5);
+        appendULEB(expr, 0x10);
+        std::vector<uint64_t> regs(16, 0);
+        regs[5] = 0x1122334455667788ULL;
+        auto r = se.evaluate(expr, ctx, 0, regs);
+        assert(r.type == SymbolicExpressionResult::Type::VALUE);
+        assert(r.expression && r.expression->toString() == "0x55667788");
+    }
+
+    // convert(type=0x20) should sign-extend from 2 bytes.
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_const4u));
+        appendU32(expr, 0x0000ff80); // low 16 = 0xff80 (-128 in int16)
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_convert));
+        appendULEB(expr, 0x20);
+        auto r = se.evaluate(expr, ctx);
+        assert(r.type == SymbolicExpressionResult::Type::VALUE || r.type == SymbolicExpressionResult::Type::ADDRESS);
+        assert(r.expression && r.expression->toString() == "0xffffffffffffff80");
+    }
+
+    // bra with concrete true condition: skip over const1u 1 and take const1u 2.
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_lit1)); // cond=true
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_bra));
+        appendU16(expr, 2); // jump over next const1u operand pair
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_const1u));
+        expr.push_back(1);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_const1u));
+        expr.push_back(2);
+        auto r = se.evaluate(expr, ctx);
+        assert(r.type == SymbolicExpressionResult::Type::ADDRESS);
+        assert(r.expression && r.expression->toString() == "0x2");
+    }
+
+    std::cout << "SymbolicExpressionEvaluator typed/branch tests passed!" << std::endl;
+}
+
+void testSymbolicExpressionEvaluatorSymbolicBraITE() {
+    std::cout << "Testing SymbolicExpressionEvaluator symbolic bra ITE merge..." << std::endl;
+
+    SymbolicExpressionEvaluator se;
+    EvaluationContext ctx;
+    ctx.address_size = 8;
+
+    // if (reg5 != 0) then 2 else 1
+    std::vector<uint8_t> expr;
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_breg5));
+    expr.push_back(0x00); // SLEB(0)
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_lit0));
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_ne));
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_bra));
+    appendU16(expr, 4); // to true arm
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_lit1)); // false arm
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_skip));
+    appendU16(expr, 1); // skip true arm
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_lit2)); // true arm
+
+    auto r = se.evaluate(expr, ctx);
+    assert(r.type == SymbolicExpressionResult::Type::ADDRESS);
+    assert(r.expression);
+    assert(r.expression->toString() == "ite((reg5 != 0x0),0x2,0x1)");
+
+    std::cout << "SymbolicExpressionEvaluator symbolic bra ITE tests passed!" << std::endl;
+}
+
+void testSymbolicExpressionEvaluatorSymbolicBraDepthLimit() {
+    std::cout << "Testing SymbolicExpressionEvaluator symbolic bra depth limit..." << std::endl;
+
+    SymbolicExpressionEvaluator se;
+    EvaluationContext ctx;
+    ctx.address_size = 8;
+
+    // Symbolic condition with self-branch:
+    //   reg0; stack_value; bra -5; lit1
+    // The taken edge loops to start with symbolic condition.
+    std::vector<uint8_t> expr = {
+        static_cast<uint8_t>(DwarfOp::DW_OP_reg0),
+        static_cast<uint8_t>(DwarfOp::DW_OP_stack_value),
+        static_cast<uint8_t>(DwarfOp::DW_OP_bra),
+        0xfb, 0xff, // -5
+        static_cast<uint8_t>(DwarfOp::DW_OP_lit1),
+    };
+
+    auto r = se.evaluate(expr, ctx);
+    assert(r.type == SymbolicExpressionResult::Type::INVALID);
+    assert(r.error.find("symbolic bra depth limit") != std::string::npos);
+
+    std::cout << "SymbolicExpressionEvaluator symbolic bra depth limit tests passed!" << std::endl;
+}
+
+void testSymbolicExpressionEvaluatorSymbolicBraWithStackState() {
+    std::cout << "Testing SymbolicExpressionEvaluator symbolic bra with pre-existing stack..." << std::endl;
+
+    SymbolicExpressionEvaluator se;
+    EvaluationContext ctx;
+    ctx.address_size = 8;
+
+    // if (reg5 != 0) then (10 + 2) else (10 + 1)
+    std::vector<uint8_t> expr;
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_lit10));  // preserved stack value
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_breg5));
+    expr.push_back(0x00); // SLEB(0)
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_lit0));
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_ne));
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_bra));
+    appendU16(expr, 5);   // to true arm
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_lit1));   // false arm
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_plus));
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_skip));
+    appendU16(expr, 2);   // skip true arm
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_lit2));   // true arm
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_plus));
+
+    auto r = se.evaluate(expr, ctx);
+    assert(r.type == SymbolicExpressionResult::Type::VALUE);
+    assert(r.expression);
+    assert(r.expression->toString() == "ite((reg5 != 0x0),0xc,0xb)");
+
+    std::cout << "SymbolicExpressionEvaluator symbolic bra stack-state tests passed!" << std::endl;
+}
+
+void testSymbolicExpressionEvaluatorSymbolicBraCompositePieces() {
+    std::cout << "Testing SymbolicExpressionEvaluator symbolic bra composite merge..." << std::endl;
+
+    SymbolicExpressionEvaluator se;
+    EvaluationContext ctx;
+    ctx.address_size = 8;
+
+    // if (reg5 != 0):
+    //   then  -> piece(reg0,8) + piece(reg1,8)
+    //   else  -> piece(reg2,8) + piece(reg3,8)
+    std::vector<uint8_t> expr;
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_breg5));
+    expr.push_back(0x00); // SLEB(0)
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_lit0));
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_ne));
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_bra));
+    appendU16(expr, 9); // jump to true arm
+
+    // false arm
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_reg2));
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_piece));
+    appendULEB(expr, 8);
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_reg3));
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_piece));
+    appendULEB(expr, 8);
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_skip));
+    appendU16(expr, 6); // skip true arm
+
+    // true arm
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_reg0));
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_piece));
+    appendULEB(expr, 8);
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_reg1));
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_piece));
+    appendULEB(expr, 8);
+
+    auto r = se.evaluate(expr, ctx);
+    assert(r.type == SymbolicExpressionResult::Type::COMPOSITE);
+    assert(r.pieces.size() == 2);
+    assert(r.pieces[0].kind == SymPiece::Kind::REGISTER);
+    assert(r.pieces[0].byte_size == 8);
+    assert(r.pieces[0].location);
+    assert(r.pieces[0].location->toString() == "ite((reg5 != 0x0),0x0,0x2)");
+    assert(r.pieces[1].kind == SymPiece::Kind::REGISTER);
+    assert(r.pieces[1].byte_size == 8);
+    assert(r.pieces[1].location);
+    assert(r.pieces[1].location->toString() == "ite((reg5 != 0x0),0x1,0x3)");
+
+    std::cout << "SymbolicExpressionEvaluator symbolic bra composite tests passed!" << std::endl;
+}
+
+void testSymbolicExpressionEvaluatorSymbolicBraRegisterMismatchIsInvalid() {
+    std::cout << "Testing SymbolicExpressionEvaluator symbolic bra register mismatch..." << std::endl;
+
+    SymbolicExpressionEvaluator se;
+    EvaluationContext ctx;
+    ctx.address_size = 8;
+
+    // if (reg5 != 0): then reg0 else reg2
+    std::vector<uint8_t> expr;
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_breg5));
+    expr.push_back(0x00); // SLEB(0)
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_lit0));
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_ne));
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_bra));
+    appendU16(expr, 4); // jump to true arm
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_reg2)); // false arm
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_skip));
+    appendU16(expr, 1); // skip true arm
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_reg0)); // true arm
+
+    auto r = se.evaluate(expr, ctx);
+    assert(r.type == SymbolicExpressionResult::Type::INVALID);
+    assert(r.error.find("register mismatch") != std::string::npos);
+
+    std::cout << "SymbolicExpressionEvaluator symbolic bra register mismatch tests passed!" << std::endl;
+}
+
+void testSymbolicExpressionEvaluatorSymbolicBraAddressValueMerge() {
+    std::cout << "Testing SymbolicExpressionEvaluator symbolic bra address/value merge..." << std::endl;
+
+    SymbolicExpressionEvaluator se;
+    EvaluationContext ctx;
+    ctx.address_size = 8;
+
+    // if (reg5 != 0): then value(7) else address(0x1000)
+    std::vector<uint8_t> expr;
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_breg5));
+    expr.push_back(0x00); // SLEB(0)
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_lit0));
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_ne));
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_bra));
+    appendU16(expr, 12); // jump over false arm to true arm
+
+    // false arm: address
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_addr));
+    appendU64(expr, 0x1000);
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_skip));
+    appendU16(expr, 2); // skip true arm
+
+    // true arm: stack value
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_lit7));
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_stack_value));
+
+    auto r = se.evaluate(expr, ctx);
+    assert(r.type == SymbolicExpressionResult::Type::VALUE);
+    assert(r.expression);
+    assert(r.expression->toString() == "ite((reg5 != 0x0),0x7,load(0x1000,8))");
+
+    std::cout << "SymbolicExpressionEvaluator symbolic bra address/value tests passed!" << std::endl;
+}
+
+void testSymbolicExpressionEvaluatorSymbolicBraRegisterValueMerge() {
+    std::cout << "Testing SymbolicExpressionEvaluator symbolic bra register/value merge..." << std::endl;
+
+    SymbolicExpressionEvaluator se;
+    EvaluationContext ctx;
+    ctx.address_size = 8;
+
+    // if (reg5 != 0): then register-location(reg0) else value(7)
+    std::vector<uint8_t> expr;
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_breg5));
+    expr.push_back(0x00); // SLEB(0)
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_lit0));
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_ne));
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_bra));
+    appendU16(expr, 5); // jump over false arm to true arm
+
+    // false arm: value
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_lit7));
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_stack_value));
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_skip));
+    appendU16(expr, 1); // skip true arm
+
+    // true arm: register location
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_reg0));
+
+    auto r = se.evaluate(expr, ctx);
+    assert(r.type == SymbolicExpressionResult::Type::VALUE);
+    assert(r.expression);
+    assert(r.expression->toString() == "ite((reg5 != 0x0),reg0,0x7)");
+
+    std::cout << "SymbolicExpressionEvaluator symbolic bra register/value tests passed!" << std::endl;
+}
+
+void testSymbolicExpressionEvaluatorSymbolicBraRegisterAddressMerge() {
+    std::cout << "Testing SymbolicExpressionEvaluator symbolic bra register/address merge..." << std::endl;
+
+    SymbolicExpressionEvaluator se;
+    EvaluationContext ctx;
+    ctx.address_size = 8;
+
+    // if (reg5 != 0): then register-location(reg0) else address(0x1000)
+    std::vector<uint8_t> expr;
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_breg5));
+    expr.push_back(0x00); // SLEB(0)
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_lit0));
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_ne));
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_bra));
+    appendU16(expr, 12); // jump over false arm to true arm
+
+    // false arm: address
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_addr));
+    appendU64(expr, 0x1000);
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_skip));
+    appendU16(expr, 1); // skip true arm
+
+    // true arm: register location
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_reg0));
+
+    auto r = se.evaluate(expr, ctx);
+    assert(r.type == SymbolicExpressionResult::Type::VALUE);
+    assert(r.expression);
+    assert(r.expression->toString() == "ite((reg5 != 0x0),reg0,load(0x1000,8))");
+
+    std::cout << "SymbolicExpressionEvaluator symbolic bra register/address tests passed!" << std::endl;
+}
+
+void testSymbolicExpressionEvaluatorSymbolicBraRegisterSameMerge() {
+    std::cout << "Testing SymbolicExpressionEvaluator symbolic bra same-register merge..." << std::endl;
+
+    SymbolicExpressionEvaluator se;
+    EvaluationContext ctx;
+    ctx.address_size = 8;
+
+    // if (reg5 != 0): then reg0 else reg0
+    std::vector<uint8_t> expr;
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_breg5));
+    expr.push_back(0x00); // SLEB(0)
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_lit0));
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_ne));
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_bra));
+    appendU16(expr, 4); // jump to true arm
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_reg0)); // false arm
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_skip));
+    appendU16(expr, 1); // skip true arm
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_reg0)); // true arm
+
+    auto r = se.evaluate(expr, ctx);
+    assert(r.type == SymbolicExpressionResult::Type::REGISTER);
+    assert(r.expression);
+    assert(r.expression->toString() == "0x0");
+
+    std::cout << "SymbolicExpressionEvaluator symbolic bra same-register tests passed!" << std::endl;
+}
+
+void testSymbolicExpressionEvaluatorSymbolicBraCompositeKindMismatchMerge() {
+    std::cout << "Testing SymbolicExpressionEvaluator symbolic bra composite kind-mismatch merge..." << std::endl;
+
+    SymbolicExpressionEvaluator se;
+    EvaluationContext ctx;
+    ctx.address_size = 8;
+
+    // if (reg5 != 0):
+    //   then  -> register piece (reg0, size 8)
+    //   else  -> memory piece (addr 0x1000, size 8)
+    std::vector<uint8_t> expr;
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_breg5));
+    expr.push_back(0x00); // SLEB(0)
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_lit0));
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_ne));
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_bra));
+    appendU16(expr, 14); // jump over false arm to true arm
+
+    // false arm: memory piece
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_addr));
+    appendU64(expr, 0x1000);
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_piece));
+    appendULEB(expr, 8);
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_skip));
+    appendU16(expr, 3); // skip true arm
+
+    // true arm: register piece
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_reg0));
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_piece));
+    appendULEB(expr, 8);
+
+    auto r = se.evaluate(expr, ctx);
+    assert(r.type == SymbolicExpressionResult::Type::COMPOSITE);
+    assert(r.pieces.size() == 1);
+    assert(r.pieces[0].kind == SymPiece::Kind::IMPLICIT);
+    assert(r.pieces[0].byte_size == 8);
+    assert(r.pieces[0].implicit_bytes.empty());
+    assert(r.pieces[0].location);
+    assert(r.pieces[0].location->toString() == "ite((reg5 != 0x0),reg0,load(0x1000,8))");
+
+    std::cout << "SymbolicExpressionEvaluator symbolic bra composite kind-mismatch tests passed!" << std::endl;
+}
+
+void testSymbolicExpressionEvaluatorSymbolicBraCompositeUnavailableMerge() {
+    std::cout << "Testing SymbolicExpressionEvaluator symbolic bra composite unavailable-piece merge..." << std::endl;
+
+    SymbolicExpressionEvaluator se;
+    EvaluationContext ctx;
+    ctx.address_size = 8;
+
+    // if (reg5 != 0):
+    //   then  -> unavailable piece(8)
+    //   else  -> memory piece(8) at 0x1000
+    std::vector<uint8_t> expr;
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_breg5));
+    expr.push_back(0x00); // SLEB(0)
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_lit0));
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_ne));
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_bra));
+    appendU16(expr, 14); // jump over false arm to true arm
+
+    // false arm: memory piece
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_addr));
+    appendU64(expr, 0x1000);
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_piece));
+    appendULEB(expr, 8);
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_skip));
+    appendU16(expr, 2); // skip true arm
+
+    // true arm: unavailable piece
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_piece));
+    appendULEB(expr, 8);
+
+    auto r = se.evaluate(expr, ctx);
+    assert(r.type == SymbolicExpressionResult::Type::COMPOSITE);
+    assert(r.pieces.size() == 1);
+    assert(r.pieces[0].kind == SymPiece::Kind::IMPLICIT);
+    assert(r.pieces[0].byte_size == 8);
+    assert(r.pieces[0].location);
+    assert(r.pieces[0].location->toString() ==
+           "ite((reg5 != 0x0),unknown(unavail_piece8),load(0x1000,8))");
+
+    std::cout << "SymbolicExpressionEvaluator symbolic bra composite unavailable-piece tests passed!" << std::endl;
+}
+
+void testSymbolicExpressionEvaluatorSymbolicBraCompositeBitPieceUnavailableMerge() {
+    std::cout << "Testing SymbolicExpressionEvaluator symbolic bra bit_piece unavailable merge..." << std::endl;
+
+    SymbolicExpressionEvaluator se;
+    EvaluationContext ctx;
+    ctx.address_size = 8;
+
+    // if (reg5 != 0):
+    //   then  -> unavailable bit_piece(3,1)
+    //   else  -> memory bit_piece(3,1) at 0x1000
+    std::vector<uint8_t> expr;
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_breg5));
+    expr.push_back(0x00); // SLEB(0)
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_lit0));
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_ne));
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_bra));
+    appendU16(expr, 15); // jump over false arm to true arm
+
+    // false arm: memory bit_piece
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_addr));
+    appendU64(expr, 0x1000);
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_bit_piece));
+    appendULEB(expr, 3);
+    appendULEB(expr, 1);
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_skip));
+    appendU16(expr, 3); // skip true arm
+
+    // true arm: unavailable bit_piece
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_bit_piece));
+    appendULEB(expr, 3);
+    appendULEB(expr, 1);
+
+    auto r = se.evaluate(expr, ctx);
+    assert(r.type == SymbolicExpressionResult::Type::COMPOSITE);
+    assert(r.pieces.size() == 1);
+    assert(r.pieces[0].kind == SymPiece::Kind::IMPLICIT);
+    assert(r.pieces[0].bit_size == 3);
+    assert(r.pieces[0].bit_offset == 1);
+    assert(r.pieces[0].location);
+    assert(r.pieces[0].location->toString() ==
+           "ite((reg5 != 0x0),unknown(unavail_bit_piece3),load(0x1000,1))");
+
+    std::cout << "SymbolicExpressionEvaluator symbolic bra bit_piece unavailable tests passed!" << std::endl;
+}
+
+void testSymbolicExpressionEvaluatorSymbolicBraCompositeImplicitMerge() {
+    std::cout << "Testing SymbolicExpressionEvaluator symbolic bra implicit-piece merge..." << std::endl;
+
+    SymbolicExpressionEvaluator se;
+    EvaluationContext ctx;
+    ctx.address_size = 8;
+
+    // if (reg5 != 0):
+    //   then  -> implicit_value(0x22), piece(1)
+    //   else  -> implicit_value(0x11), piece(1)
+    std::vector<uint8_t> expr;
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_breg5));
+    expr.push_back(0x00); // SLEB(0)
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_lit0));
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_ne));
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_bra));
+    appendU16(expr, 8); // jump over false arm to true arm
+
+    // false arm
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_implicit_value));
+    appendULEB(expr, 1);
+    expr.push_back(0x11);
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_piece));
+    appendULEB(expr, 1);
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_skip));
+    appendU16(expr, 5); // skip true arm
+
+    // true arm
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_implicit_value));
+    appendULEB(expr, 1);
+    expr.push_back(0x22);
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_piece));
+    appendULEB(expr, 1);
+
+    auto r = se.evaluate(expr, ctx);
+    assert(r.type == SymbolicExpressionResult::Type::COMPOSITE);
+    assert(r.pieces.size() == 1);
+    assert(r.pieces[0].kind == SymPiece::Kind::IMPLICIT);
+    assert(r.pieces[0].byte_size == 1);
+    assert(r.pieces[0].implicit_bytes.empty());
+    assert(r.pieces[0].location);
+    assert(r.pieces[0].location->toString() == "ite((reg5 != 0x0),0x22,0x11)");
+
+    std::cout << "SymbolicExpressionEvaluator symbolic bra implicit-piece tests passed!" << std::endl;
+}
+
+void testSymbolicExpressionEvaluatorSymbolicBraCompositeImplicitMergeLargeBytes() {
+    std::cout << "Testing SymbolicExpressionEvaluator symbolic bra implicit-piece merge (large bytes)..." << std::endl;
+
+    SymbolicExpressionEvaluator se;
+    EvaluationContext ctx;
+    ctx.address_size = 8;
+
+    std::vector<uint8_t> false_arm;
+    false_arm.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_implicit_value));
+    appendULEB(false_arm, 9);
+    false_arm.push_back(0x10);
+    false_arm.push_back(0x11);
+    false_arm.push_back(0x12);
+    false_arm.push_back(0x13);
+    false_arm.push_back(0x14);
+    false_arm.push_back(0x15);
+    false_arm.push_back(0x16);
+    false_arm.push_back(0x17);
+    false_arm.push_back(0x18);
+    false_arm.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_piece));
+    appendULEB(false_arm, 9);
+
+    std::vector<uint8_t> true_arm;
+    true_arm.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_implicit_value));
+    appendULEB(true_arm, 9);
+    true_arm.push_back(0xaa);
+    true_arm.push_back(0xbb);
+    true_arm.push_back(0xcc);
+    true_arm.push_back(0xdd);
+    true_arm.push_back(0xee);
+    true_arm.push_back(0xff);
+    true_arm.push_back(0x01);
+    true_arm.push_back(0x02);
+    true_arm.push_back(0x03);
+    true_arm.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_piece));
+    appendULEB(true_arm, 9);
+
+    // if (reg5 != 0): then true_arm else false_arm
+    std::vector<uint8_t> expr;
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_breg5));
+    expr.push_back(0x00); // SLEB(0)
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_lit0));
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_ne));
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_bra));
+    size_t bra_rel_off = expr.size();
+    appendU16(expr, 0); // patched below
+
+    size_t false_start = expr.size();
+    expr.insert(expr.end(), false_arm.begin(), false_arm.end());
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_skip));
+    size_t skip_rel_off = expr.size();
+    appendU16(expr, 0); // patched below
+
+    size_t true_start = expr.size();
+    expr.insert(expr.end(), true_arm.begin(), true_arm.end());
+    size_t end_off = expr.size();
+
+    uint16_t bra_rel = static_cast<uint16_t>(true_start - false_start);
+    expr[bra_rel_off] = static_cast<uint8_t>(bra_rel & 0xff);
+    expr[bra_rel_off + 1] = static_cast<uint8_t>((bra_rel >> 8) & 0xff);
+
+    uint16_t skip_rel = static_cast<uint16_t>(end_off - true_start);
+    expr[skip_rel_off] = static_cast<uint8_t>(skip_rel & 0xff);
+    expr[skip_rel_off + 1] = static_cast<uint8_t>((skip_rel >> 8) & 0xff);
+
+    auto r = se.evaluate(expr, ctx);
+    assert(r.type == SymbolicExpressionResult::Type::COMPOSITE);
+    assert(r.pieces.size() == 1);
+    assert(r.pieces[0].kind == SymPiece::Kind::IMPLICIT);
+    assert(r.pieces[0].byte_size == 9);
+    assert(r.pieces[0].implicit_bytes.empty());
+    assert(r.pieces[0].location);
+    assert(r.pieces[0].location->toString() ==
+           "ite((reg5 != 0x0),bytes(0xaabbccddeeff010203),bytes(0x101112131415161718))");
+
+    std::cout << "SymbolicExpressionEvaluator symbolic bra implicit-piece large-byte tests passed!" << std::endl;
+}
+
+void testSymbolicExpressionEvaluatorSymbolicBraCompositeImplicitNestedMerge() {
+    std::cout << "Testing SymbolicExpressionEvaluator symbolic bra implicit-piece nested merge..." << std::endl;
+
+    SymbolicExpressionEvaluator se;
+    EvaluationContext ctx;
+    ctx.address_size = 8;
+
+    // if (reg5 != 0):
+    //   if (reg6 != 0): implicit 0x22 else implicit 0x33
+    // else:
+    //   implicit 0x11
+    std::vector<uint8_t> false_outer;
+    false_outer.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_implicit_value));
+    appendULEB(false_outer, 1);
+    false_outer.push_back(0x11);
+    false_outer.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_piece));
+    appendULEB(false_outer, 1);
+
+    std::vector<uint8_t> false_inner;
+    false_inner.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_implicit_value));
+    appendULEB(false_inner, 1);
+    false_inner.push_back(0x33);
+    false_inner.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_piece));
+    appendULEB(false_inner, 1);
+
+    std::vector<uint8_t> true_inner;
+    true_inner.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_implicit_value));
+    appendULEB(true_inner, 1);
+    true_inner.push_back(0x22);
+    true_inner.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_piece));
+    appendULEB(true_inner, 1);
+
+    std::vector<uint8_t> true_outer;
+    true_outer.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_breg6));
+    true_outer.push_back(0x00); // SLEB(0)
+    true_outer.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_lit0));
+    true_outer.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_ne));
+    true_outer.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_bra));
+    size_t inner_bra_rel_off = true_outer.size();
+    appendU16(true_outer, 0); // patch
+    size_t inner_false_start = true_outer.size();
+    true_outer.insert(true_outer.end(), false_inner.begin(), false_inner.end());
+    true_outer.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_skip));
+    size_t inner_skip_rel_off = true_outer.size();
+    appendU16(true_outer, 0); // patch
+    size_t inner_true_start = true_outer.size();
+    true_outer.insert(true_outer.end(), true_inner.begin(), true_inner.end());
+    size_t inner_end = true_outer.size();
+
+    uint16_t inner_bra_rel = static_cast<uint16_t>(inner_true_start - inner_false_start);
+    true_outer[inner_bra_rel_off] = static_cast<uint8_t>(inner_bra_rel & 0xff);
+    true_outer[inner_bra_rel_off + 1] = static_cast<uint8_t>((inner_bra_rel >> 8) & 0xff);
+    uint16_t inner_skip_rel = static_cast<uint16_t>(inner_end - inner_true_start);
+    true_outer[inner_skip_rel_off] = static_cast<uint8_t>(inner_skip_rel & 0xff);
+    true_outer[inner_skip_rel_off + 1] = static_cast<uint8_t>((inner_skip_rel >> 8) & 0xff);
+
+    std::vector<uint8_t> expr;
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_breg5));
+    expr.push_back(0x00); // SLEB(0)
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_lit0));
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_ne));
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_bra));
+    size_t outer_bra_rel_off = expr.size();
+    appendU16(expr, 0); // patch
+    size_t outer_false_start = expr.size();
+    expr.insert(expr.end(), false_outer.begin(), false_outer.end());
+    expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_skip));
+    size_t outer_skip_rel_off = expr.size();
+    appendU16(expr, 0); // patch
+    size_t outer_true_start = expr.size();
+    expr.insert(expr.end(), true_outer.begin(), true_outer.end());
+    size_t outer_end = expr.size();
+
+    uint16_t outer_bra_rel = static_cast<uint16_t>(outer_true_start - outer_false_start);
+    expr[outer_bra_rel_off] = static_cast<uint8_t>(outer_bra_rel & 0xff);
+    expr[outer_bra_rel_off + 1] = static_cast<uint8_t>((outer_bra_rel >> 8) & 0xff);
+    uint16_t outer_skip_rel = static_cast<uint16_t>(outer_end - outer_true_start);
+    expr[outer_skip_rel_off] = static_cast<uint8_t>(outer_skip_rel & 0xff);
+    expr[outer_skip_rel_off + 1] = static_cast<uint8_t>((outer_skip_rel >> 8) & 0xff);
+
+    auto r = se.evaluate(expr, ctx);
+    assert(r.type == SymbolicExpressionResult::Type::COMPOSITE);
+    assert(r.pieces.size() == 1);
+    assert(r.pieces[0].kind == SymPiece::Kind::IMPLICIT);
+    assert(r.pieces[0].byte_size == 1);
+    assert(r.pieces[0].implicit_bytes.empty());
+    assert(r.pieces[0].location);
+    assert(r.pieces[0].location->toString() ==
+           "ite((reg5 != 0x0),ite((reg6 != 0x0),0x22,0x33),0x11)");
+
+    std::cout << "SymbolicExpressionEvaluator symbolic bra implicit-piece nested tests passed!" << std::endl;
+}
+
+void testSymbolicExpressionEvaluatorXderefAndXderefType() {
+    std::cout << "Testing SymbolicExpressionEvaluator xderef ops..." << std::endl;
+
+    SymbolicExpressionEvaluator se;
+    EvaluationContext ctx;
+    ctx.address_size = 8;
+    ctx.cu_base_offset = 0;
+    ctx.resolve_base_type = [](uint64_t off) -> std::optional<EvaluationContext::BaseTypeInfo> {
+        if (off == 0x20) {
+            EvaluationContext::BaseTypeInfo ti;
+            ti.byte_size = 2;
+            ti.is_integer = true;
+            ti.is_signed = true;
+            ti.encoding = DW_ATE::DW_ATE_signed;
+            return ti;
+        }
+        return std::nullopt;
+    };
+
+    // xderef_size: pops addr-space then addr, models load(addr, size).
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_const1u)); // addr-space
+        expr.push_back(7);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_addr));    // addr
+        appendU64(expr, 0x3000);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_xderef_size));
+        expr.push_back(4);
+
+        auto r = se.evaluate(expr, ctx);
+        assert(r.type == SymbolicExpressionResult::Type::VALUE);
+        assert(r.expression && r.expression->toString() == "load(0x3000,4)");
+    }
+
+    // xderef_type: typed load + sign extension.
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_const1u)); // addr-space
+        expr.push_back(1);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_addr));    // addr
+        appendU64(expr, 0x3000);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_xderef_type));
+        expr.push_back(1);     // load size=1
+        appendULEB(expr, 0x20); // type offset -> signed 2-byte type
+
+        auto r = se.evaluate(expr, ctx);
+        assert(r.type == SymbolicExpressionResult::Type::VALUE);
+        assert(r.expression && r.expression->toString() == "sext2(load(0x3000,1))");
+    }
+
+    std::cout << "SymbolicExpressionEvaluator xderef tests passed!" << std::endl;
+}
+
+void testSymbolicExpressionEvaluatorCallOpsAndGnuIndices() {
+    std::cout << "Testing SymbolicExpressionEvaluator call ops and GNU indices..." << std::endl;
+
+    SymbolicExpressionEvaluator se;
+    EvaluationContext ctx;
+    ctx.address_size = 8;
+    ctx.offset_size = 4;
+    ctx.cu_base_offset = 0x1000;
+
+    std::vector<uint64_t> addr_table = {0x4444};
+    ctx.debug_addr_table = &addr_table;
+
+    // GNU addr/const index aliases.
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_GNU_addr_index));
+        appendULEB(expr, 0);
+        auto r = se.evaluate(expr, ctx);
+        assert(r.type == SymbolicExpressionResult::Type::ADDRESS);
+        assert(r.expression && r.expression->toString() == "0x4444");
+    }
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_GNU_const_index));
+        appendULEB(expr, 0);
+        auto r = se.evaluate(expr, ctx);
+        assert(r.type == SymbolicExpressionResult::Type::ADDRESS);
+        assert(r.expression && r.expression->toString() == "0x4444");
+    }
+
+    // call2: resolver gets CU-relative absolute offset.
+    ctx.resolve_dwarf_procedure = [](uint64_t off, uint64_t /*pc*/) -> std::optional<std::vector<uint8_t>> {
+        if (off == 0x1010) {
+            return std::vector<uint8_t>{static_cast<uint8_t>(DwarfOp::DW_OP_lit3)};
+        }
+        if (off == 0x1014) {
+            return std::vector<uint8_t>{static_cast<uint8_t>(DwarfOp::DW_OP_reg3)};
+        }
+        if (off == 0x1018) {
+            return std::vector<uint8_t>{static_cast<uint8_t>(DwarfOp::DW_OP_breg1), 0x00};
+        }
+        if (off == 0x1020) {
+            return std::vector<uint8_t>{
+                static_cast<uint8_t>(DwarfOp::DW_OP_lit2),
+                static_cast<uint8_t>(DwarfOp::DW_OP_plus),
+            };
+        }
+        if (off == 0x1024) {
+            return std::vector<uint8_t>{
+                static_cast<uint8_t>(DwarfOp::DW_OP_lit4),
+                static_cast<uint8_t>(DwarfOp::DW_OP_plus),
+            };
+        }
+        if (off == 0x101c) {
+            // Malformed subexpression (truncated const4u operand).
+            return std::vector<uint8_t>{static_cast<uint8_t>(DwarfOp::DW_OP_const4u), 0xaa};
+        }
+        return std::nullopt;
+    };
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_lit1));
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_call2));
+        appendU16(expr, 0x10);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_plus));
+        auto r = se.evaluate(expr, ctx);
+        assert(r.type == SymbolicExpressionResult::Type::VALUE || r.type == SymbolicExpressionResult::Type::ADDRESS);
+        assert(r.expression && r.expression->toString() == "0x4");
+    }
+    // call2 executes subexpression in-place over caller stack.
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_lit1));
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_call2));
+        appendU16(expr, 0x20); // subexpr: lit2; plus
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_stack_value));
+        auto r = se.evaluate(expr, ctx);
+        assert(r.type == SymbolicExpressionResult::Type::VALUE);
+        assert(r.expression && r.expression->toString() == "0x3");
+    }
+    // call4 executes subexpression in-place over caller stack.
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_lit3));
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_call4));
+        appendU32(expr, 0x24); // subexpr: lit4; plus
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_stack_value));
+        auto r = se.evaluate(expr, ctx);
+        assert(r.type == SymbolicExpressionResult::Type::VALUE);
+        assert(r.expression && r.expression->toString() == "0x7");
+    }
+    // call2 should preserve REGISTER kind from subexpression.
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_call2));
+        appendU16(expr, 0x14);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_piece));
+        appendULEB(expr, 8);
+        auto r = se.evaluate(expr, ctx);
+        assert(r.type == SymbolicExpressionResult::Type::COMPOSITE);
+        assert(r.pieces.size() == 1);
+        assert(r.pieces[0].kind == SymPiece::Kind::REGISTER);
+        assert(r.pieces[0].byte_size == 8);
+        assert(r.pieces[0].location && r.pieces[0].location->toString() == "0x3");
+    }
+    // call4 should preserve ADDRESS kind from subexpression.
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_call4));
+        appendU32(expr, 0x18);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_piece));
+        appendULEB(expr, 8);
+        auto r = se.evaluate(expr, ctx);
+        assert(r.type == SymbolicExpressionResult::Type::COMPOSITE);
+        assert(r.pieces.size() == 1);
+        assert(r.pieces[0].kind == SymPiece::Kind::MEMORY);
+        assert(r.pieces[0].byte_size == 8);
+        assert(r.pieces[0].location && r.pieces[0].location->toString() == "reg1");
+    }
+
+    // call_ref: resolver gets section-bias + reference offset.
+    {
+        EvaluationContext ctx_ref = ctx;
+        ctx_ref.cu_base_offset = (1ULL << 63) | 0x500; // DWO-biased CU base
+        ctx_ref.resolve_dwarf_procedure = [](uint64_t off, uint64_t /*pc*/) -> std::optional<std::vector<uint8_t>> {
+            if (off == ((1ULL << 63) + 0x20)) {
+                return std::vector<uint8_t>{static_cast<uint8_t>(DwarfOp::DW_OP_lit4)};
+            }
+            return std::nullopt;
+        };
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_call_ref));
+        appendU32(expr, 0x20);
+        auto r = se.evaluate(expr, ctx_ref);
+        assert(r.type == SymbolicExpressionResult::Type::VALUE || r.type == SymbolicExpressionResult::Type::ADDRESS);
+        assert(r.expression && r.expression->toString() == "0x4");
+    }
+    // call_ref also executes subexpression in-place over caller stack.
+    {
+        EvaluationContext ctx_ref = ctx;
+        ctx_ref.resolve_dwarf_procedure = [](uint64_t off, uint64_t /*pc*/) -> std::optional<std::vector<uint8_t>> {
+            if (off == 0x24) {
+                return std::vector<uint8_t>{
+                    static_cast<uint8_t>(DwarfOp::DW_OP_lit5),
+                    static_cast<uint8_t>(DwarfOp::DW_OP_plus),
+                };
+            }
+            return std::nullopt;
+        };
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_lit2));
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_call_ref));
+        appendU32(expr, 0x24);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_stack_value));
+        auto r = se.evaluate(expr, ctx_ref);
+        assert(r.type == SymbolicExpressionResult::Type::VALUE);
+        assert(r.expression && r.expression->toString() == "0x7");
+    }
+
+    // Malformed call subexpression is fatal (matches concrete evaluator behavior).
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_call2));
+        appendU16(expr, 0x1c);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_stack_value));
+        auto r = se.evaluate(expr, ctx);
+        assert(r.type == SymbolicExpressionResult::Type::INVALID);
+        assert(r.error.find("DW_OP_call2") != std::string::npos);
+    }
+
+    // call_ref without resolver is a no-op (matches concrete evaluator).
+    {
+        EvaluationContext ctx_no_resolver = ctx;
+        ctx_no_resolver.resolve_dwarf_procedure = {};
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_lit9));
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_call_ref));
+        appendU32(expr, 0x20);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_stack_value));
+        auto r = se.evaluate(expr, ctx_no_resolver);
+        assert(r.type == SymbolicExpressionResult::Type::VALUE);
+        assert(r.expression);
+        assert(r.expression->toString() == "0x9");
+    }
+
+    // call2/call4 without resolver are no-ops as well.
+    {
+        EvaluationContext ctx_no_resolver = ctx;
+        ctx_no_resolver.resolve_dwarf_procedure = {};
+
+        std::vector<uint8_t> expr2;
+        expr2.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_lit6));
+        expr2.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_call2));
+        appendU16(expr2, 0x10);
+        expr2.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_stack_value));
+        auto r2 = se.evaluate(expr2, ctx_no_resolver);
+        assert(r2.type == SymbolicExpressionResult::Type::VALUE);
+        assert(r2.expression);
+        assert(r2.expression->toString() == "0x6");
+
+        std::vector<uint8_t> expr4;
+        expr4.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_lit7));
+        expr4.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_call4));
+        appendU32(expr4, 0x10);
+        expr4.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_stack_value));
+        auto r4 = se.evaluate(expr4, ctx_no_resolver);
+        assert(r4.type == SymbolicExpressionResult::Type::VALUE);
+        assert(r4.expression);
+        assert(r4.expression->toString() == "0x7");
+    }
+
+    // Resolver miss (no_proc) is also a no-op.
+    {
+        EvaluationContext ctx_no_proc = ctx;
+        ctx_no_proc.resolve_dwarf_procedure = [](uint64_t /*off*/, uint64_t /*pc*/) -> std::optional<std::vector<uint8_t>> {
+            return std::nullopt;
+        };
+
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_lit8));
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_call2));
+        appendU16(expr, 0x44);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_stack_value));
+        auto r = se.evaluate(expr, ctx_no_proc);
+        assert(r.type == SymbolicExpressionResult::Type::VALUE);
+        assert(r.expression && r.expression->toString() == "0x8");
+
+        std::vector<uint8_t> expr4;
+        expr4.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_lit5));
+        expr4.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_call4));
+        appendU32(expr4, 0x44);
+        expr4.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_stack_value));
+        auto r4 = se.evaluate(expr4, ctx_no_proc);
+        assert(r4.type == SymbolicExpressionResult::Type::VALUE);
+        assert(r4.expression && r4.expression->toString() == "0x5");
+
+        std::vector<uint8_t> expr_ref;
+        expr_ref.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_lit4));
+        expr_ref.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_call_ref));
+        appendU32(expr_ref, 0x44);
+        expr_ref.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_stack_value));
+        auto rr = se.evaluate(expr_ref, ctx_no_proc);
+        assert(rr.type == SymbolicExpressionResult::Type::VALUE);
+        assert(rr.expression && rr.expression->toString() == "0x4");
+    }
+
+    std::cout << "SymbolicExpressionEvaluator call/GNU-index tests passed!" << std::endl;
+}
+
+void testSymbolicExpressionEvaluatorGnuTypedAndParameterOps() {
+    std::cout << "Testing SymbolicExpressionEvaluator GNU typed/parameter ops..." << std::endl;
+
+    SymbolicExpressionEvaluator se;
+    EvaluationContext ctx;
+    ctx.address_size = 8;
+    ctx.offset_size = 4;
+    ctx.cu_base_offset = 0;
+    ctx.resolve_base_type = [](uint64_t off) -> std::optional<EvaluationContext::BaseTypeInfo> {
+        EvaluationContext::BaseTypeInfo ti;
+        if (off == 0x31) {
+            ti.byte_size = 1;
+            ti.is_integer = true;
+            ti.is_signed = true;
+            ti.encoding = DW_ATE::DW_ATE_signed;
+            return ti;
+        }
+        if (off == 0x41) {
+            ti.byte_size = 2;
+            ti.is_integer = true;
+            ti.is_signed = true;
+            ti.encoding = DW_ATE::DW_ATE_signed;
+            return ti;
+        }
+        if (off == 0x42) {
+            ti.byte_size = 2;
+            ti.is_integer = true;
+            ti.is_signed = false;
+            ti.encoding = DW_ATE::DW_ATE_unsigned;
+            return ti;
+        }
+        return std::nullopt;
+    };
+
+    // const_type with signed 1-byte base type: 0x80 => -128.
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_const_type));
+        appendULEB(expr, 0x31);
+        expr.push_back(1);
+        expr.push_back(0x80);
+        auto r = se.evaluate(expr, ctx);
+        assert(r.type == SymbolicExpressionResult::Type::ADDRESS);
+        assert(r.expression && r.expression->toString() == "0xffffffffffffff80");
+    }
+
+    // GNU_const_type should alias const_type and preserve bytes for DW_OP_piece.
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_GNU_const_type));
+        appendULEB(expr, 0); // no type normalization
+        expr.push_back(2);
+        expr.push_back(0x34);
+        expr.push_back(0x12);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_piece));
+        appendULEB(expr, 2);
+
+        auto r = se.evaluate(expr, ctx);
+        assert(r.type == SymbolicExpressionResult::Type::COMPOSITE);
+        assert(r.pieces.size() == 1);
+        assert(r.pieces[0].kind == SymPiece::Kind::IMPLICIT);
+        assert(r.pieces[0].byte_size == 2);
+        assert(r.pieces[0].implicit_bytes.size() == 2);
+        assert(r.pieces[0].implicit_bytes[0] == 0x34);
+        assert(r.pieces[0].implicit_bytes[1] == 0x12);
+    }
+
+    // const_type larger than u64 should preserve full bytes as a symbolic byte literal.
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_const_type));
+        appendULEB(expr, 0); // no type normalization
+        expr.push_back(9);
+        expr.push_back(0x10);
+        expr.push_back(0x11);
+        expr.push_back(0x12);
+        expr.push_back(0x13);
+        expr.push_back(0x14);
+        expr.push_back(0x15);
+        expr.push_back(0x16);
+        expr.push_back(0x17);
+        expr.push_back(0x18);
+
+        auto r = se.evaluate(expr, ctx);
+        assert(r.type == SymbolicExpressionResult::Type::ADDRESS);
+        assert(r.expression && r.expression->toString() == "bytes(0x101112131415161718)");
+    }
+
+    // const_type(size>8) + signed base type should fold BYTES -> const via sext.
+    {
+        std::vector<uint8_t> payload = {0x80, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x7f, 0x00};
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_const_type));
+        appendULEB(expr, 0x41);
+        expr.push_back(static_cast<uint8_t>(payload.size()));
+        expr.insert(expr.end(), payload.begin(), payload.end());
+
+        auto r = se.evaluate(expr, ctx);
+        assert(r.type == SymbolicExpressionResult::Type::ADDRESS);
+        assert(r.expression);
+        assert(r.expression->kind == SymExpr::Kind::CONST_U64);
+
+        uint64_t raw2 = 0;
+        if (DwarfUtils::objectIsLittleEndian()) {
+            raw2 = static_cast<uint64_t>(payload[0]) |
+                   (static_cast<uint64_t>(payload[1]) << 8);
+        } else {
+            raw2 = (static_cast<uint64_t>(payload[payload.size() - 2]) << 8) |
+                   static_cast<uint64_t>(payload[payload.size() - 1]);
+        }
+        uint64_t expected = static_cast<uint64_t>(static_cast<int64_t>(static_cast<int16_t>(raw2 & 0xffff)));
+        assert(r.expression->const_u64 == expected);
+    }
+
+    // implicit_value(size>8) + convert(unsigned 2-byte type) should fold BYTES -> const via mask.
+    {
+        std::vector<uint8_t> payload = {0x34, 0x12, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee};
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_implicit_value));
+        appendULEB(expr, payload.size());
+        expr.insert(expr.end(), payload.begin(), payload.end());
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_convert));
+        appendULEB(expr, 0x42);
+
+        auto r = se.evaluate(expr, ctx);
+        assert(r.type == SymbolicExpressionResult::Type::VALUE);
+        assert(r.expression);
+        assert(r.expression->kind == SymExpr::Kind::CONST_U64);
+
+        uint64_t expected = 0;
+        if (DwarfUtils::objectIsLittleEndian()) {
+            expected = static_cast<uint64_t>(payload[0]) |
+                       (static_cast<uint64_t>(payload[1]) << 8);
+        } else {
+            expected = (static_cast<uint64_t>(payload[payload.size() - 2]) << 8) |
+                       static_cast<uint64_t>(payload[payload.size() - 1]);
+        }
+        assert(r.expression->const_u64 == expected);
+    }
+
+    // GNU_parameter_ref resolves section-relative DIE and yields parameter value.
+    {
+        EvaluationContext pctx = ctx;
+        pctx.cu_base_offset = (1ULL << 63) | 0x100;
+        pctx.resolve_dwarf_procedure = [](uint64_t off, uint64_t /*pc*/) -> std::optional<std::vector<uint8_t>> {
+            if (off == ((1ULL << 63) + 0x55)) {
+                return std::vector<uint8_t>{static_cast<uint8_t>(DwarfOp::DW_OP_reg3)};
+            }
+            return std::nullopt;
+        };
+
+        std::vector<uint64_t> regs(8, 0);
+        regs[3] = 0xabc;
+
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_GNU_parameter_ref));
+        appendU32(expr, 0x55);
+
+        auto r = se.evaluate(expr, pctx, 0, regs);
+        assert(r.type == SymbolicExpressionResult::Type::VALUE);
+        assert(r.expression && r.expression->toString() == "0xabc");
+    }
+
+    // GNU_parameter_ref fallback without resolver: push absolute referenced DIE offset.
+    {
+        EvaluationContext pctx = ctx;
+        pctx.cu_base_offset = (1ULL << 63) | 0x100;
+        pctx.resolve_dwarf_procedure = nullptr;
+
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_GNU_parameter_ref));
+        appendU32(expr, 0x55);
+
+        auto r = se.evaluate(expr, pctx);
+        assert(r.type == SymbolicExpressionResult::Type::VALUE);
+        assert(r.expression && r.expression->toString() == "0x8000000000000055");
+    }
+
+    // GNU_parameter_ref resolver miss should push zero (concrete-evaluator-compatible fallback).
+    {
+        EvaluationContext pctx = ctx;
+        pctx.cu_base_offset = (1ULL << 63) | 0x100;
+        pctx.resolve_dwarf_procedure = [](uint64_t /*off*/, uint64_t /*pc*/) -> std::optional<std::vector<uint8_t>> {
+            return std::nullopt;
+        };
+
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_GNU_parameter_ref));
+        appendU32(expr, 0x55);
+
+        auto r = se.evaluate(expr, pctx);
+        assert(r.type == SymbolicExpressionResult::Type::VALUE);
+        assert(r.expression && r.expression->toString() == "0x0");
+    }
+
+    // GNU_uninit is informational/no-op.
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_const1u));
+        expr.push_back(5);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_GNU_uninit));
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_plus_uconst));
+        appendULEB(expr, 1);
+
+        auto r = se.evaluate(expr, ctx);
+        assert(r.type == SymbolicExpressionResult::Type::VALUE);
+        assert(r.expression && r.expression->toString() == "0x6");
+    }
+
+    // GNU_encoded_addr: pcrel + udata4 (0x13) should resolve to pc + raw.
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_GNU_encoded_addr));
+        expr.push_back(0x13); // DW_EH_PE_udata4 | DW_EH_PE_pcrel
+        appendU32(expr, 0x20);
+
+        auto r = se.evaluate(expr, ctx, 0x1000);
+        assert(r.type == SymbolicExpressionResult::Type::ADDRESS);
+        assert(r.expression && r.expression->toString() == "0x1020");
+    }
+
+    std::cout << "SymbolicExpressionEvaluator GNU typed/parameter tests passed!" << std::endl;
+}
+
+void testExpressionVerifier() {
+    std::cout << "Testing ExpressionVerifier..." << std::endl;
+
+    ExpressionVerifier verifier;
+    EvaluationContext ctx;
+    ctx.address_size = 8;
+    ctx.offset_size = 4;
+
+    // Commutative rewrite should verify as equivalent.
+    {
+        std::vector<uint8_t> lhs;
+        lhs.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_reg1));
+        lhs.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_const1u));
+        lhs.push_back(1);
+        lhs.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_plus));
+        lhs.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_stack_value));
+
+        std::vector<uint8_t> rhs;
+        rhs.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_const1u));
+        rhs.push_back(1);
+        rhs.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_reg1));
+        rhs.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_plus));
+        rhs.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_stack_value));
+
+        auto r = verifier.verify(lhs, rhs, ctx);
+        assert(r.verdict == ExpressionVerificationResult::Verdict::EQUIVALENT);
+    }
+
+    // Non-equivalent rewrite should produce a concrete counterexample.
+    {
+        std::vector<uint8_t> lhs;
+        lhs.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_reg1));
+        lhs.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_const1u));
+        lhs.push_back(1);
+        lhs.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_plus));
+        lhs.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_stack_value));
+
+        std::vector<uint8_t> rhs;
+        rhs.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_reg1));
+        rhs.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_const1u));
+        rhs.push_back(2);
+        rhs.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_plus));
+        rhs.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_stack_value));
+
+        ExpressionVerificationOptions opts;
+        opts.differential_trials = 16;
+        opts.register_count = 8;
+        auto r = verifier.verify(lhs, rhs, ctx, 0, {}, opts);
+        assert(r.verdict == ExpressionVerificationResult::Verdict::DIFFERENT);
+    }
+
+    // Unsupported/invalid symbolic input should return UNKNOWN.
+    {
+        std::vector<uint8_t> lhs = {0xff};
+        std::vector<uint8_t> rhs = {static_cast<uint8_t>(DwarfOp::DW_OP_lit0)};
+        auto r = verifier.verify(lhs, rhs, ctx);
+        assert(r.verdict == ExpressionVerificationResult::Verdict::UNKNOWN);
+    }
+
+    // If differential checks are disabled and symbolic forms differ, verdict is UNKNOWN.
+    {
+        std::vector<uint8_t> lhs;
+        lhs.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_reg1));
+        lhs.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_const1u));
+        lhs.push_back(1);
+        lhs.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_plus));
+        lhs.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_stack_value));
+
+        std::vector<uint8_t> rhs;
+        rhs.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_reg1));
+        rhs.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_const1u));
+        rhs.push_back(2);
+        rhs.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_plus));
+        rhs.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_stack_value));
+
+        ExpressionVerificationOptions opts;
+        opts.run_differential = false;
+        auto r = verifier.verify(lhs, rhs, ctx, 0, {}, opts);
+        assert(r.verdict == ExpressionVerificationResult::Verdict::UNKNOWN);
+    }
+
+    // verifyWithContexts should handle different PCs/contexts for the two sides.
+    {
+        std::vector<uint8_t> lhs;
+        lhs.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_GNU_encoded_addr));
+        lhs.push_back(0x13); // pcrel + udata4
+        appendU32(lhs, 0x20); // 0x1000 + 0x20 = 0x1020
+
+        std::vector<uint8_t> rhs;
+        rhs.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_GNU_encoded_addr));
+        rhs.push_back(0x13); // pcrel + udata4
+        appendU32(rhs, 0x10); // 0x1010 + 0x10 = 0x1020
+
+        auto r = verifier.verifyWithContexts(
+            lhs, ctx, 0x1000, {},
+            rhs, ctx, 0x1010, {});
+        assert(r.verdict == ExpressionVerificationResult::Verdict::EQUIVALENT);
+    }
+
+    // Different per-side contexts should be supported.
+    {
+        std::vector<uint8_t> lhs = {
+            static_cast<uint8_t>(DwarfOp::DW_OP_addrx), 0x00
+        };
+        std::vector<uint8_t> rhs = {
+            static_cast<uint8_t>(DwarfOp::DW_OP_addrx), 0x00
+        };
+
+        EvaluationContext lhs_ctx = ctx;
+        EvaluationContext rhs_ctx = ctx;
+        std::vector<uint64_t> lhs_table = {0x1111};
+        std::vector<uint64_t> rhs_table = {0x2222};
+        lhs_ctx.debug_addr_table = &lhs_table;
+        rhs_ctx.debug_addr_table = &rhs_table;
+
+        auto r = verifier.verifyWithContexts(lhs, lhs_ctx, 0, {}, rhs, rhs_ctx, 0, {});
+        assert(r.verdict == ExpressionVerificationResult::Verdict::DIFFERENT);
+    }
+
+    // DIE-level helper: expression attribute extraction + verification.
+    {
+        auto lhs_die = std::make_shared<DIE>(DwarfTag::DW_TAG_variable, 0, 0);
+        auto rhs_die = std::make_shared<DIE>(DwarfTag::DW_TAG_variable, 0, 0);
+
+        std::vector<uint8_t> lhs_expr;
+        lhs_expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_reg1));
+        lhs_expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_const1u));
+        lhs_expr.push_back(1);
+        lhs_expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_plus));
+        lhs_expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_stack_value));
+
+        std::vector<uint8_t> rhs_expr;
+        rhs_expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_const1u));
+        rhs_expr.push_back(1);
+        rhs_expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_reg1));
+        rhs_expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_plus));
+        rhs_expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_stack_value));
+
+        lhs_die->addAttribute(
+            DwarfAttribute::DW_AT_location,
+            std::make_shared<LocationAttributeValue>(LocationAttributeValue::LocationType::EXPRESSION, lhs_expr));
+        rhs_die->addAttribute(
+            DwarfAttribute::DW_AT_location,
+            std::make_shared<LocationAttributeValue>(LocationAttributeValue::LocationType::EXPRESSION, rhs_expr));
+
+        auto r = verifier.verifyDIEAttributeExpressions(lhs_die, ctx, {}, rhs_die, ctx, {});
+        assert(r.verdict == ExpressionVerificationResult::Verdict::EQUIVALENT);
+    }
+
+    // DIE-level helper: location-list selection by default vs by PC.
+    {
+        auto lhs_die = std::make_shared<DIE>(DwarfTag::DW_TAG_variable, 0, 0);
+        auto rhs_die = std::make_shared<DIE>(DwarfTag::DW_TAG_variable, 0, 0);
+
+        std::vector<LocationAttributeValue::LocationEntry> lhs_entries;
+        lhs_entries.emplace_back(0, 0, std::vector<uint8_t>{
+            static_cast<uint8_t>(DwarfOp::DW_OP_lit7),
+            static_cast<uint8_t>(DwarfOp::DW_OP_stack_value)}, true);
+        lhs_entries.emplace_back(10, 20, std::vector<uint8_t>{
+            static_cast<uint8_t>(DwarfOp::DW_OP_lit3),
+            static_cast<uint8_t>(DwarfOp::DW_OP_stack_value)}, false);
+
+        std::vector<LocationAttributeValue::LocationEntry> rhs_entries;
+        rhs_entries.emplace_back(0, 0, std::vector<uint8_t>{
+            static_cast<uint8_t>(DwarfOp::DW_OP_lit8),
+            static_cast<uint8_t>(DwarfOp::DW_OP_stack_value)}, true);
+        rhs_entries.emplace_back(100, 200, std::vector<uint8_t>{
+            static_cast<uint8_t>(DwarfOp::DW_OP_lit3),
+            static_cast<uint8_t>(DwarfOp::DW_OP_stack_value)}, false);
+
+        lhs_die->addAttribute(DwarfAttribute::DW_AT_location, std::make_shared<LocationAttributeValue>(lhs_entries));
+        rhs_die->addAttribute(DwarfAttribute::DW_AT_location, std::make_shared<LocationAttributeValue>(rhs_entries));
+
+        auto r_default = verifier.verifyDIEAttributeExpressions(lhs_die, ctx, {}, rhs_die, ctx, {});
+        assert(r_default.verdict == ExpressionVerificationResult::Verdict::DIFFERENT);
+
+        DIEExpressionSelectionOptions lhs_sel;
+        lhs_sel.use_pc_for_location_list = true;
+        lhs_sel.location_list_pc = 12;
+        DIEExpressionSelectionOptions rhs_sel;
+        rhs_sel.use_pc_for_location_list = true;
+        rhs_sel.location_list_pc = 120;
+        auto r_pc = verifier.verifyDIEAttributeExpressions(
+            lhs_die, ctx, {}, rhs_die, ctx, {}, lhs_sel, rhs_sel);
+        assert(r_pc.verdict == ExpressionVerificationResult::Verdict::EQUIVALENT);
+    }
+
+    // DIE-level helper returns UNKNOWN when attribute is missing.
+    {
+        auto lhs_die = std::make_shared<DIE>(DwarfTag::DW_TAG_variable, 0, 0);
+        auto rhs_die = std::make_shared<DIE>(DwarfTag::DW_TAG_variable, 0, 0);
+        auto r = verifier.verifyDIEAttributeExpressions(lhs_die, ctx, {}, rhs_die, ctx, {});
+        assert(r.verdict == ExpressionVerificationResult::Verdict::UNKNOWN);
+    }
+
+    std::cout << "ExpressionVerifier tests passed!" << std::endl;
+}
+
+void testCrossBinaryExpressionComparator() {
+    std::cout << "Testing CrossBinaryExpressionComparator..." << std::endl;
+
+    auto makeVar = [](const std::string& name, const std::vector<uint8_t>& expr, uint64_t off) {
+        auto die = std::make_shared<DIE>(DwarfTag::DW_TAG_variable, off, 0);
+        die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>(name));
+        die->addAttribute(DwarfAttribute::DW_AT_location,
+                          std::make_shared<LocationAttributeValue>(LocationAttributeValue::LocationType::EXPRESSION, expr));
+        return die;
+    };
+    auto makeSubprogramByLinkage = [](const std::string& linkage, const std::vector<uint8_t>& expr, uint64_t off) {
+        auto die = std::make_shared<DIE>(DwarfTag::DW_TAG_subprogram, off, 0);
+        die->addAttribute(DwarfAttribute::DW_AT_linkage_name, std::make_shared<StringAttributeValue>(linkage));
+        die->addAttribute(DwarfAttribute::DW_AT_location,
+                          std::make_shared<LocationAttributeValue>(LocationAttributeValue::LocationType::EXPRESSION, expr));
+        return die;
+    };
+
+    auto lhs_cu = std::make_shared<DIE>(DwarfTag::DW_TAG_compile_unit, 0x100, 0);
+    auto rhs_cu = std::make_shared<DIE>(DwarfTag::DW_TAG_compile_unit, 0x200, 0);
+
+    std::vector<uint8_t> x_lhs = {
+        static_cast<uint8_t>(DwarfOp::DW_OP_reg1),
+        static_cast<uint8_t>(DwarfOp::DW_OP_const1u), 1,
+        static_cast<uint8_t>(DwarfOp::DW_OP_plus),
+        static_cast<uint8_t>(DwarfOp::DW_OP_stack_value)
+    };
+    std::vector<uint8_t> x_rhs = {
+        static_cast<uint8_t>(DwarfOp::DW_OP_const1u), 1,
+        static_cast<uint8_t>(DwarfOp::DW_OP_reg1),
+        static_cast<uint8_t>(DwarfOp::DW_OP_plus),
+        static_cast<uint8_t>(DwarfOp::DW_OP_stack_value)
+    };
+    std::vector<uint8_t> y_lhs = {
+        static_cast<uint8_t>(DwarfOp::DW_OP_reg2),
+        static_cast<uint8_t>(DwarfOp::DW_OP_const1u), 1,
+        static_cast<uint8_t>(DwarfOp::DW_OP_plus),
+        static_cast<uint8_t>(DwarfOp::DW_OP_stack_value)
+    };
+    std::vector<uint8_t> y_rhs = {
+        static_cast<uint8_t>(DwarfOp::DW_OP_reg2),
+        static_cast<uint8_t>(DwarfOp::DW_OP_const1u), 2,
+        static_cast<uint8_t>(DwarfOp::DW_OP_plus),
+        static_cast<uint8_t>(DwarfOp::DW_OP_stack_value)
+    };
+    std::vector<uint8_t> z_lhs = {
+        static_cast<uint8_t>(DwarfOp::DW_OP_reg3),
+        static_cast<uint8_t>(DwarfOp::DW_OP_stack_value)
+    };
+
+    lhs_cu->addChild(makeVar("x", x_lhs, 0x110));
+    lhs_cu->addChild(makeVar("y", y_lhs, 0x120));
+    lhs_cu->addChild(makeVar("z", z_lhs, 0x130));
+    rhs_cu->addChild(makeVar("x", x_rhs, 0x210));
+    rhs_cu->addChild(makeVar("y", y_rhs, 0x220));
+
+    CrossBinaryExpressionComparator cmp;
+    CrossBinaryCompareOptions opts;
+    opts.tag = DwarfTag::DW_TAG_variable;
+    opts.attribute = DwarfAttribute::DW_AT_location;
+    opts.include_missing = true;
+
+    auto results = cmp.compareDIEListsByName({lhs_cu}, {rhs_cu}, opts);
+    assert(results.size() == 3);
+
+    auto findByName = [&](const std::string& n) -> const NamedExpressionComparison* {
+        for (const auto& r : results) {
+            if (r.name == n) return &r;
+        }
+        return nullptr;
+    };
+
+    const auto* rx = findByName("x");
+    const auto* ry = findByName("y");
+    const auto* rz = findByName("z");
+    assert(rx && ry && rz);
+    assert(rx->verification.verdict == ExpressionVerificationResult::Verdict::EQUIVALENT);
+    assert(ry->verification.verdict == ExpressionVerificationResult::Verdict::DIFFERENT);
+    assert(rz->verification.verdict == ExpressionVerificationResult::Verdict::UNKNOWN);
+    assert(rz->lhs_present && !rz->rhs_present);
+    auto summary = cmp.summarize(results);
+    assert(summary.total == 3);
+    assert(summary.equivalent == 1);
+    assert(summary.different == 1);
+    assert(summary.unknown == 1);
+    assert(summary.missing_lhs == 0);
+    assert(summary.missing_rhs == 1);
+
+    std::string text_report = cmp.renderTextReport(results);
+    assert(text_report.find("summary total=3") != std::string::npos);
+    assert(text_report.find("x|DW_TAG_variable|1|1|") != std::string::npos);
+    assert(text_report.find("DIFFERENT") != std::string::npos);
+
+    std::string json_report = cmp.renderJsonReport(results);
+    assert(json_report.find("\"total\":3") != std::string::npos);
+    assert(json_report.find("\"different\":1") != std::string::npos);
+    assert(json_report.find("\"name\":\"x\"") != std::string::npos);
+
+    CrossBinaryGateOptions gate_default;
+    auto gate_fail = cmp.evaluateGate(results, gate_default);
+    assert(!gate_fail.pass);
+    assert(gate_fail.reason.find("different") != std::string::npos);
+
+    CrossBinaryGateOptions gate_allow_one_diff;
+    gate_allow_one_diff.max_different = 1;
+    auto gate_pass = cmp.evaluateGate(results, gate_allow_one_diff);
+    assert(gate_pass.pass);
+
+    CrossBinaryGateOptions gate_fail_missing;
+    gate_fail_missing.max_different = 1;
+    gate_fail_missing.fail_on_missing = true;
+    auto gate_missing = cmp.evaluateGate(results, gate_fail_missing);
+    assert(!gate_missing.pass);
+    assert(gate_missing.reason.find("missing") != std::string::npos);
+
+    DwarfParser lhs_parser("lhs_dummy");
+    DwarfParser rhs_parser("rhs_dummy");
+    auto single = cmp.compareNamedInParsers(lhs_parser, rhs_parser, "nonexistent", opts);
+    // The call above is just API smoke coverage: name is absent in both.
+    assert(single.verification.verdict == ExpressionVerificationResult::Verdict::UNKNOWN);
+
+    // linkage_name-aware keying (useful when names are stripped/rewritten but linkage stays stable).
+    {
+        auto lcu = std::make_shared<DIE>(DwarfTag::DW_TAG_compile_unit, 0x300, 0);
+        auto rcu = std::make_shared<DIE>(DwarfTag::DW_TAG_compile_unit, 0x400, 0);
+        std::vector<uint8_t> expr = {
+            static_cast<uint8_t>(DwarfOp::DW_OP_reg5),
+            static_cast<uint8_t>(DwarfOp::DW_OP_stack_value)
+        };
+        lcu->addChild(makeSubprogramByLinkage("_Z3foov", expr, 0x310));
+        rcu->addChild(makeSubprogramByLinkage("_Z3foov", expr, 0x410));
+
+        CrossBinaryCompareOptions by_name = opts;
+        by_name.tag = DwarfTag::DW_TAG_subprogram;
+        by_name.key_mode = CompareKeyMode::NAME_ONLY;
+        auto none = cmp.compareDIEListsByName({lcu}, {rcu}, by_name);
+        assert(none.empty());
+
+        CrossBinaryCompareOptions by_linkage = by_name;
+        by_linkage.key_mode = CompareKeyMode::LINKAGE_OR_NAME;
+        auto linked = cmp.compareDIEListsByName({lcu}, {rcu}, by_linkage);
+        assert(linked.size() == 1);
+        assert(linked[0].name == "_Z3foov");
+        assert(linked[0].verification.verdict == ExpressionVerificationResult::Verdict::EQUIVALENT);
+
+        std::string linked_json = cmp.renderJsonReport(linked);
+        assert(linked_json.find("_Z3foov") != std::string::npos);
+    }
+
+    // strict attribute presence filter excludes paired names where one side lacks the target attribute.
+    {
+        auto lcu = std::make_shared<DIE>(DwarfTag::DW_TAG_compile_unit, 0x500, 0);
+        auto rcu = std::make_shared<DIE>(DwarfTag::DW_TAG_compile_unit, 0x600, 0);
+
+        auto lhs_only_name = std::make_shared<DIE>(DwarfTag::DW_TAG_variable, 0x510, 0);
+        lhs_only_name->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("p"));
+        // Intentionally no DW_AT_location on lhs.
+
+        std::vector<uint8_t> expr = {
+            static_cast<uint8_t>(DwarfOp::DW_OP_reg6),
+            static_cast<uint8_t>(DwarfOp::DW_OP_stack_value)
+        };
+        auto rhs_with_loc = std::make_shared<DIE>(DwarfTag::DW_TAG_variable, 0x610, 0);
+        rhs_with_loc->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("p"));
+        rhs_with_loc->addAttribute(
+            DwarfAttribute::DW_AT_location,
+            std::make_shared<LocationAttributeValue>(LocationAttributeValue::LocationType::EXPRESSION, expr));
+
+        lcu->addChild(lhs_only_name);
+        rcu->addChild(rhs_with_loc);
+
+        CrossBinaryCompareOptions loose = opts;
+        loose.include_missing = true;
+        loose.require_attribute_on_both = false;
+        auto loose_rows = cmp.compareDIEListsByName({lcu}, {rcu}, loose);
+        assert(loose_rows.size() == 1);
+        assert(loose_rows[0].name == "p");
+        assert(loose_rows[0].verification.verdict == ExpressionVerificationResult::Verdict::UNKNOWN);
+
+        CrossBinaryCompareOptions strict_attr = loose;
+        strict_attr.require_attribute_on_both = true;
+        auto strict_rows = cmp.compareDIEListsByName({lcu}, {rcu}, strict_attr);
+        assert(strict_rows.empty());
+    }
+
+    std::cout << "CrossBinaryExpressionComparator tests passed!" << std::endl;
+}
+
 void testStrpSup() {
     std::cout << "Testing DW_FORM_strp_sup..." << std::endl;
 
@@ -1596,6 +4571,145 @@ static void appendU64(std::vector<uint8_t>& out, uint64_t v) {
     }
 }
 
+void testAttributeParserBoundedStringsAndBlocks() {
+    std::cout << "Testing AttributeParser bounded strings/blocks..." << std::endl;
+
+    std::vector<uint8_t> empty;
+
+    // DW_FORM_string without terminating NUL should stop at the CU end.
+    {
+        std::vector<uint8_t> debug_info = {'a', 'b'};
+        AttributeParser ap(debug_info, empty, empty);
+        ap.setCUDebugInfoEnd(debug_info.size());
+
+        uint64_t off = 0;
+        auto v = ap.parseAttribute(DwarfForm::DW_FORM_string, off);
+        auto s = std::dynamic_pointer_cast<StringAttributeValue>(v);
+        assert(s);
+        assert(s->getValue() == "ab");
+        assert(off == debug_info.size());
+    }
+
+    // strp/line_strp/strp_sup should use bounded C-string reads too.
+    {
+        std::vector<uint8_t> debug_info;
+        appendU32(debug_info, 0); // DW_FORM_strp -> debug_str[0]
+        appendU32(debug_info, 0); // DW_FORM_line_strp -> debug_line_str[0]
+        appendU32(debug_info, 0); // DW_FORM_strp_sup -> debug_str_sup[0]
+        std::vector<uint8_t> debug_str = {'x', 'y'};       // no NUL
+        std::vector<uint8_t> debug_line_str = {'l', 'n'};  // no NUL
+        std::vector<uint8_t> debug_str_sup = {'s', 'u', 'p'}; // no NUL
+
+        AttributeParser ap(debug_info, empty, debug_str,
+                           /*debug_line=*/empty, /*debug_ranges=*/empty, /*debug_loc=*/empty,
+                           /*debug_str_offsets=*/empty, /*debug_addr=*/empty, /*debug_line_str=*/debug_line_str,
+                           /*debug_rnglists=*/empty, /*debug_loclists=*/empty,
+                           /*debug_str_sup=*/debug_str_sup);
+        ap.setIsDwarf64(false);
+        ap.setCUDebugInfoEnd(debug_info.size());
+
+        uint64_t off = 0;
+        auto s1 = std::dynamic_pointer_cast<StringAttributeValue>(ap.parseAttribute(DwarfForm::DW_FORM_strp, off));
+        auto s2 = std::dynamic_pointer_cast<StringAttributeValue>(ap.parseAttribute(DwarfForm::DW_FORM_line_strp, off));
+        auto s3 = std::dynamic_pointer_cast<StringAttributeValue>(ap.parseAttribute(DwarfForm::DW_FORM_strp_sup, off));
+        assert(s1 && s1->getValue() == "xy");
+        assert(s2 && s2->getValue() == "ln");
+        assert(s3 && s3->getValue() == "sup");
+        assert(off == debug_info.size());
+    }
+
+    // Variable-sized block forms should clamp offset to CU end on truncation.
+    {
+        std::vector<uint8_t> debug_info = {0x05, 0xaa, 0xbb}; // block1 length=5, only 2 payload bytes
+        AttributeParser ap(debug_info, empty, empty);
+        ap.setCUDebugInfoEnd(debug_info.size());
+
+        uint64_t off = 0;
+        auto v = ap.parseAttribute(DwarfForm::DW_FORM_block1, off);
+        auto b = std::dynamic_pointer_cast<BlockAttributeValue>(v);
+        assert(b);
+        assert(b->getData().empty());
+        assert(off == debug_info.size());
+    }
+
+    std::cout << "AttributeParser bounded strings/blocks tests passed!" << std::endl;
+}
+
+void testDIEParserCUBoundsOnUnterminatedFormString() {
+    std::cout << "Testing DIEParser CU bounds for unterminated DW_FORM_string..." << std::endl;
+
+    // Abbrev 1: compile_unit with DW_AT_name: DW_FORM_string, no children.
+    std::vector<uint8_t> debug_abbrev;
+    appendULEB(debug_abbrev, 1);
+    appendULEB(debug_abbrev, static_cast<uint64_t>(DwarfTag::DW_TAG_compile_unit));
+    debug_abbrev.push_back(0x00); // no children
+    appendULEB(debug_abbrev, static_cast<uint64_t>(DwarfAttribute::DW_AT_name));
+    appendULEB(debug_abbrev, static_cast<uint64_t>(DwarfForm::DW_FORM_string));
+    debug_abbrev.push_back(0x00); debug_abbrev.push_back(0x00); // end attrs
+    debug_abbrev.push_back(0x00); // end table
+
+    std::vector<uint8_t> debug_info;
+
+    auto appendCu = [&](const std::vector<uint8_t>& die_payload) {
+        size_t start = debug_info.size();
+        appendU32(debug_info, 0); // unit_length placeholder
+        debug_info.push_back(0x04); debug_info.push_back(0x00); // version 4
+        appendU32(debug_info, 0); // abbrev offset
+        debug_info.push_back(0x08); // address_size
+        debug_info.insert(debug_info.end(), die_payload.begin(), die_payload.end());
+        uint32_t len = static_cast<uint32_t>(debug_info.size() - start - 4);
+        debug_info[start + 0] = static_cast<uint8_t>(len & 0xff);
+        debug_info[start + 1] = static_cast<uint8_t>((len >> 8) & 0xff);
+        debug_info[start + 2] = static_cast<uint8_t>((len >> 16) & 0xff);
+        debug_info[start + 3] = static_cast<uint8_t>((len >> 24) & 0xff);
+    };
+
+    // CU1 has an unterminated DW_FORM_string.
+    appendCu({0x01, 'A'});
+    // CU2 is fully valid and must still parse.
+    appendCu({0x01, 'B', 0x00});
+
+    std::vector<uint8_t> empty;
+    ELFIO::elfio elf;
+    DIEParser parser(elf, debug_info, debug_abbrev, /*debug_str=*/empty);
+    auto cus = parser.parseCompilationUnits();
+    assert(cus.size() == 2);
+    assert(cus[0] && cus[0]->getName() == "A");
+    assert(cus[1] && cus[1]->getName() == "B");
+
+    std::cout << "DIEParser CU-bound string tests passed!" << std::endl;
+}
+
+void testDIEParserTruncatedAbbrevImplicitConst() {
+    std::cout << "Testing DIEParser truncated abbrev implicit_const handling..." << std::endl;
+
+    // Abbrev 1: compile_unit with DW_FORM_implicit_const, but truncated SLEB payload.
+    std::vector<uint8_t> debug_abbrev;
+    appendULEB(debug_abbrev, 1);
+    appendULEB(debug_abbrev, static_cast<uint64_t>(DwarfTag::DW_TAG_compile_unit));
+    debug_abbrev.push_back(0x00); // no children
+    appendULEB(debug_abbrev, static_cast<uint64_t>(DwarfAttribute::DW_AT_language));
+    appendULEB(debug_abbrev, static_cast<uint64_t>(DwarfForm::DW_FORM_implicit_const));
+    debug_abbrev.push_back(0x80); // truncated SLEB (continuation bit set, no next byte)
+
+    // One DWARF4 CU that references abbrev 1.
+    std::vector<uint8_t> debug_info;
+    appendU32(debug_info, 8);      // unit_length
+    debug_info.push_back(0x04);    // version lo
+    debug_info.push_back(0x00);    // version hi
+    appendU32(debug_info, 0);      // abbrev offset
+    debug_info.push_back(0x08);    // address_size
+    debug_info.push_back(0x01);    // CU abbrev code
+
+    std::vector<uint8_t> empty;
+    ELFIO::elfio elf;
+    DIEParser parser(elf, debug_info, debug_abbrev, /*debug_str=*/empty);
+    auto cus = parser.parseCompilationUnits();
+    assert(cus.empty());
+
+    std::cout << "DIEParser truncated abbrev implicit_const tests passed!" << std::endl;
+}
+
 void testDebugSupParser() {
     std::cout << "Testing .debug_sup parser..." << std::endl;
 
@@ -1705,6 +4819,99 @@ void testDebugSupParser() {
     assert(ebad.size() == 1);
     assert(!ebad[0].well_formed);
     assert(ebad[0].path.empty());
+
+    // Malformed entry: DWARF64 marker present but truncated 64-bit unit_length.
+    std::vector<uint8_t> bad64_len = {
+        0xff, 0xff, 0xff, 0xff, // DWARF64 marker
+        0x11, 0x22, 0x33, 0x44, // only 4/8 bytes of unit_length
+    };
+    DebugSupParser pbad64len(bad64_len);
+    auto ebad64len = pbad64len.parse();
+    assert(ebad64len.size() == 1);
+    assert(!ebad64len[0].well_formed);
+    assert(ebad64len[0].error_mask != 0);
+
+    // Malformed entry: unit_length extends beyond available bytes.
+    std::vector<uint8_t> bad_oversized;
+    appendU32(bad_oversized, 0x100); // claims 256-byte payload; section is shorter
+    bad_oversized.push_back(0x05);    // partial payload
+    bad_oversized.push_back(0x00);
+    DebugSupParser pbad_over(bad_oversized);
+    auto ebad_over = pbad_over.parse();
+    assert(ebad_over.size() == 1);
+    assert(!ebad_over[0].well_formed);
+    assert(ebad_over[0].error_mask != 0);
+
+    // Mixed entries: malformed first (bad version + reserved), then valid second.
+    {
+        std::vector<uint8_t> mix;
+
+        auto appendRawEntry32 = [&](uint16_t version,
+                                    uint8_t is_sup,
+                                    uint8_t reserved,
+                                    uint64_t sig,
+                                    const std::vector<uint8_t>& path_bytes) {
+            size_t start = mix.size();
+            appendU32(mix, 0); // placeholder unit_length
+            std::vector<uint8_t> payload;
+            appendU16(payload, version);
+            payload.push_back(is_sup);
+            payload.push_back(reserved);
+            appendU64(payload, sig);
+            payload.insert(payload.end(), path_bytes.begin(), path_bytes.end());
+            payload.push_back(0);
+            uint32_t unit_length = static_cast<uint32_t>(payload.size());
+            mix[start + 0] = static_cast<uint8_t>(unit_length & 0xff);
+            mix[start + 1] = static_cast<uint8_t>((unit_length >> 8) & 0xff);
+            mix[start + 2] = static_cast<uint8_t>((unit_length >> 16) & 0xff);
+            mix[start + 3] = static_cast<uint8_t>((unit_length >> 24) & 0xff);
+            mix.insert(mix.end(), payload.begin(), payload.end());
+        };
+
+        appendRawEntry32(/*version=*/4, /*is_sup=*/1, /*reserved=*/1,
+                         /*sig=*/0xaaaaaaaaaaaaaaaaULL,
+                         /*path=*/{'b', 'a', 'd', '.', 's', 'u', 'p'});
+        appendRawEntry32(/*version=*/5, /*is_sup=*/0, /*reserved=*/0,
+                         /*sig=*/0xbbbbbbbbbbbbbbbbULL,
+                         /*path=*/{'o', 'k', '.', 's', 'u', 'p'});
+
+        DebugSupParser pmix(mix);
+        auto emix = pmix.parse();
+        assert(emix.size() == 2);
+        assert(!emix[0].well_formed);
+        assert((emix[0].error_mask & (1u << 2)) != 0); // bad version
+        assert((emix[0].error_mask & (1u << 4)) != 0); // bad reserved
+        assert(emix[1].well_formed);
+        assert(emix[1].path == "ok.sup");
+    }
+
+    // Bad path control byte should be rejected.
+    {
+        std::vector<uint8_t> bad_path;
+        appendU32(bad_path, 0);
+        std::vector<uint8_t> payload;
+        appendU16(payload, 5);
+        payload.push_back(0);
+        payload.push_back(0);
+        appendU64(payload, 0xccccccccccccccccULL);
+        payload.push_back('o');
+        payload.push_back(0x1f); // control byte
+        payload.push_back('k');
+        payload.push_back(0);
+        uint32_t len = static_cast<uint32_t>(payload.size());
+        bad_path[0] = static_cast<uint8_t>(len & 0xff);
+        bad_path[1] = static_cast<uint8_t>((len >> 8) & 0xff);
+        bad_path[2] = static_cast<uint8_t>((len >> 16) & 0xff);
+        bad_path[3] = static_cast<uint8_t>((len >> 24) & 0xff);
+        bad_path.insert(bad_path.end(), payload.begin(), payload.end());
+
+        DebugSupParser pbad_path(bad_path);
+        auto e = pbad_path.parse();
+        assert(e.size() == 1);
+        assert(!e[0].well_formed);
+        assert(e[0].path.empty());
+        assert((e[0].error_mask & (1u << 6)) != 0); // bad path byte
+    }
 
     std::cout << ".debug_sup parser tests passed!" << std::endl;
 }
@@ -1929,6 +5136,133 @@ void testDebugNamesParserBucketLookup() {
     assert(missing.empty());
 
     std::cout << ".debug_names bucket lookup tests passed!" << std::endl;
+}
+
+void testDebugNamesParserMalformedInputs() {
+    std::cout << "Testing .debug_names malformed input handling..." << std::endl;
+
+    // Truncated DWARF64 unit length (marker present, only 4/8 bytes follow).
+    {
+        std::vector<uint8_t> bad = {
+            0xff, 0xff, 0xff, 0xff,
+            0x11, 0x22, 0x33, 0x44,
+        };
+        DebugNamesParser p(bad, {});
+        assert(!p.parse());
+    }
+
+    // Truncated abbrev table ULEB128 (code starts with continuation, missing terminator).
+    {
+        std::vector<uint8_t> debug_names;
+        auto appendU16 = [&](uint16_t v) {
+            debug_names.push_back(static_cast<uint8_t>(v & 0xff));
+            debug_names.push_back(static_cast<uint8_t>((v >> 8) & 0xff));
+        };
+        auto appendU32 = [&](uint32_t v) {
+            debug_names.push_back(static_cast<uint8_t>(v & 0xff));
+            debug_names.push_back(static_cast<uint8_t>((v >> 8) & 0xff));
+            debug_names.push_back(static_cast<uint8_t>((v >> 16) & 0xff));
+            debug_names.push_back(static_cast<uint8_t>((v >> 24) & 0xff));
+        };
+
+        appendU32(0);      // unit_length placeholder
+        appendU16(5);      // version
+        appendU16(0);      // padding
+        appendU32(0);      // comp_unit_count
+        appendU32(0);      // local_type_unit_count
+        appendU32(0);      // foreign_type_unit_count
+        appendU32(0);      // bucket_count
+        appendU32(0);      // name_count
+        appendU32(1);      // abbrev_table_size
+        appendU32(0);      // augmentation_string_size
+        debug_names.push_back(0x80); // truncated ULEB128 in abbrev table
+
+        uint32_t len = static_cast<uint32_t>(debug_names.size() - 4);
+        debug_names[0] = static_cast<uint8_t>(len & 0xff);
+        debug_names[1] = static_cast<uint8_t>((len >> 8) & 0xff);
+        debug_names[2] = static_cast<uint8_t>((len >> 16) & 0xff);
+        debug_names[3] = static_cast<uint8_t>((len >> 24) & 0xff);
+
+        DebugNamesParser p(debug_names, {});
+        assert(!p.parse());
+    }
+
+    // Truncated abbrev_code in entry pool should not crash lookup and should return no entries.
+    {
+        std::vector<uint8_t> debug_str = {'f', 'o', 'o', 0x00};
+        auto djb32 = [](const char* s) -> uint32_t {
+            uint32_t h = 5381;
+            while (*s) {
+                h = ((h << 5) + h) + static_cast<uint8_t>(*s++);
+            }
+            return h;
+        };
+
+        std::vector<uint8_t> debug_names;
+        auto appendU8 = [&](uint8_t v) { debug_names.push_back(v); };
+        auto appendU16 = [&](uint16_t v) {
+            debug_names.push_back(static_cast<uint8_t>(v & 0xff));
+            debug_names.push_back(static_cast<uint8_t>((v >> 8) & 0xff));
+        };
+        auto appendU32 = [&](uint32_t v) {
+            debug_names.push_back(static_cast<uint8_t>(v & 0xff));
+            debug_names.push_back(static_cast<uint8_t>((v >> 8) & 0xff));
+            debug_names.push_back(static_cast<uint8_t>((v >> 16) & 0xff));
+            debug_names.push_back(static_cast<uint8_t>((v >> 24) & 0xff));
+        };
+
+        appendU32(0);      // unit_length placeholder
+        appendU16(5);      // version
+        appendU16(0);      // padding
+        appendU32(1);      // comp_unit_count
+        appendU32(0);      // local_type_unit_count
+        appendU32(0);      // foreign_type_unit_count
+        appendU32(1);      // bucket_count
+        appendU32(1);      // name_count
+        size_t abbrev_size_pos = debug_names.size();
+        appendU32(0);      // abbrev_table_size placeholder
+        appendU32(0);      // augmentation_string_size
+
+        appendU32(0x100);  // CU list
+        appendU32(1);      // bucket
+        appendU32(djb32("foo")); // hash("foo")
+        appendU32(0);      // name offset
+        appendU32(0);      // entry offset (start of entry pool)
+
+        std::vector<uint8_t> abbrev;
+        abbrev.push_back(0x01); // code
+        abbrev.push_back(static_cast<uint8_t>(DwarfTag::DW_TAG_variable)); // tag
+        abbrev.push_back(0x01); // DW_IDX_compile_unit
+        abbrev.push_back(static_cast<uint8_t>(DwarfForm::DW_FORM_data1));
+        abbrev.push_back(0x03); // DW_IDX_die_offset
+        abbrev.push_back(static_cast<uint8_t>(DwarfForm::DW_FORM_data4));
+        abbrev.push_back(0x00); // end attrs
+        abbrev.push_back(0x00);
+        abbrev.push_back(0x00); // end abbrev table
+
+        uint32_t abbrev_size = static_cast<uint32_t>(abbrev.size());
+        debug_names[abbrev_size_pos + 0] = static_cast<uint8_t>(abbrev_size & 0xff);
+        debug_names[abbrev_size_pos + 1] = static_cast<uint8_t>((abbrev_size >> 8) & 0xff);
+        debug_names[abbrev_size_pos + 2] = static_cast<uint8_t>((abbrev_size >> 16) & 0xff);
+        debug_names[abbrev_size_pos + 3] = static_cast<uint8_t>((abbrev_size >> 24) & 0xff);
+        debug_names.insert(debug_names.end(), abbrev.begin(), abbrev.end());
+
+        // Entry pool contains truncated ULEB128 abbrev code.
+        appendU8(0x80);
+
+        uint32_t unit_length = static_cast<uint32_t>(debug_names.size() - 4);
+        debug_names[0] = static_cast<uint8_t>(unit_length & 0xff);
+        debug_names[1] = static_cast<uint8_t>((unit_length >> 8) & 0xff);
+        debug_names[2] = static_cast<uint8_t>((unit_length >> 16) & 0xff);
+        debug_names[3] = static_cast<uint8_t>((unit_length >> 24) & 0xff);
+
+        DebugNamesParser parser(debug_names, debug_str);
+        assert(parser.parse());
+        auto entries = parser.lookupName("foo");
+        assert(entries.empty());
+    }
+
+    std::cout << ".debug_names malformed input tests passed!" << std::endl;
 }
 
 static void appendULEB(std::vector<uint8_t>& out, uint64_t v);
@@ -2232,6 +5566,141 @@ void testDebugMacroParser() {
         assert(e[2].type == DW_MACRO::DW_MACRO_define);
         assert(e[2].name == "FOO");
         assert(e[2].value == "1");
+    }
+
+    // Truncated DWARF64 unit header must be rejected.
+    {
+        std::vector<uint8_t> mac;
+        ::appendU32(mac, 0xffffffffu); // DWARF64 marker, but no 64-bit length follows.
+        DebugMacroParser p(mac);
+        auto e = p.parseMacroUnit(0);
+        assert(e.empty());
+    }
+
+    // Unterminated in-unit string must not bleed into a following unit.
+    {
+        std::vector<uint8_t> mac;
+
+        // Unit 1 (malformed): define with unterminated macro string.
+        size_t lp1 = mac.size();
+        ::appendU32(mac, 0);
+        size_t cs1 = mac.size();
+        appendU16LE(mac, 5);
+        mac.push_back(0x00);
+        mac.push_back(static_cast<uint8_t>(DW_MACRO::DW_MACRO_define));
+        appendULEB(mac, 1);
+        mac.push_back('B');
+        mac.push_back('A');
+        mac.push_back('D'); // missing terminating NUL
+        uint32_t len1 = static_cast<uint32_t>(mac.size() - cs1);
+        mac[lp1 + 0] = static_cast<uint8_t>(len1 & 0xff);
+        mac[lp1 + 1] = static_cast<uint8_t>((len1 >> 8) & 0xff);
+        mac[lp1 + 2] = static_cast<uint8_t>((len1 >> 16) & 0xff);
+        mac[lp1 + 3] = static_cast<uint8_t>((len1 >> 24) & 0xff);
+
+        // Unit 2 (valid): must still parse independently.
+        uint64_t unit2_off = mac.size();
+        size_t lp2 = mac.size();
+        ::appendU32(mac, 0);
+        size_t cs2 = mac.size();
+        appendU16LE(mac, 5);
+        mac.push_back(0x00);
+        mac.push_back(static_cast<uint8_t>(DW_MACRO::DW_MACRO_define));
+        appendULEB(mac, 2);
+        ::appendCString(mac, "OK 1");
+        mac.push_back(0x00);
+        uint32_t len2 = static_cast<uint32_t>(mac.size() - cs2);
+        mac[lp2 + 0] = static_cast<uint8_t>(len2 & 0xff);
+        mac[lp2 + 1] = static_cast<uint8_t>((len2 >> 8) & 0xff);
+        mac[lp2 + 2] = static_cast<uint8_t>((len2 >> 16) & 0xff);
+        mac[lp2 + 3] = static_cast<uint8_t>((len2 >> 24) & 0xff);
+
+        DebugMacroParser p(mac);
+        auto e1 = p.parseMacroUnit(0);
+        auto e2 = p.parseMacroUnit(unit2_off);
+        assert(e1.empty());
+        assert(e2.size() == 1);
+        assert(e2[0].name == "OK");
+        assert(e2[0].value == "1");
+    }
+
+    // Truncated opcode-operands table must be rejected.
+    {
+        std::vector<uint8_t> mac;
+        ::appendU32(mac, 0);
+        size_t cs = mac.size();
+        appendU16LE(mac, 5);
+        mac.push_back(0x04); // has_opcode_operands_table
+        mac.push_back(1);    // opcode_count
+        mac.push_back(0xee); // opcode
+        mac.push_back(0x80); // truncated ULEB operand_count
+        uint32_t len = static_cast<uint32_t>(mac.size() - cs);
+        mac[0] = static_cast<uint8_t>(len & 0xff);
+        mac[1] = static_cast<uint8_t>((len >> 8) & 0xff);
+        mac[2] = static_cast<uint8_t>((len >> 16) & 0xff);
+        mac[3] = static_cast<uint8_t>((len >> 24) & 0xff);
+
+        DebugMacroParser p(mac);
+        auto e = p.parseMacroUnit(0);
+        assert(e.empty());
+    }
+
+    // Malformed skip payload for unknown opcode must stop unit parsing.
+    {
+        std::vector<uint8_t> mac;
+        ::appendU32(mac, 0);
+        size_t cs = mac.size();
+        appendU16LE(mac, 5);
+        mac.push_back(0x04); // has opcode operands table
+        mac.push_back(1);    // opcode_count
+        mac.push_back(0xee);
+        appendULEB(mac, 1); // one operand
+        appendULEB(mac, static_cast<uint64_t>(DwarfForm::DW_FORM_block1));
+
+        mac.push_back(0xee);
+        mac.push_back(250); // claimed block size (too large for remaining unit bytes)
+
+        // A valid define after malformed unknown opcode should not be parsed.
+        mac.push_back(static_cast<uint8_t>(DW_MACRO::DW_MACRO_define));
+        appendULEB(mac, 3);
+        ::appendCString(mac, "LATE 1");
+        mac.push_back(0x00);
+
+        uint32_t len = static_cast<uint32_t>(mac.size() - cs);
+        mac[0] = static_cast<uint8_t>(len & 0xff);
+        mac[1] = static_cast<uint8_t>((len >> 8) & 0xff);
+        mac[2] = static_cast<uint8_t>((len >> 16) & 0xff);
+        mac[3] = static_cast<uint8_t>((len >> 24) & 0xff);
+
+        DebugMacroParser p(mac);
+        auto e = p.parseMacroUnit(0);
+        assert(e.empty());
+    }
+
+    // Unterminated .debug_str payload referenced by define_strp should return empty name/value.
+    {
+        std::vector<uint8_t> debug_str = {'B', 'A', 'D'}; // no NUL
+        std::vector<uint8_t> empty;
+        std::vector<uint8_t> mac;
+        ::appendU32(mac, 0);
+        size_t cs = mac.size();
+        appendU16LE(mac, 5);
+        mac.push_back(0x00);
+        mac.push_back(static_cast<uint8_t>(DW_MACRO::DW_MACRO_define_strp));
+        appendULEB(mac, 1);
+        ::appendU32(mac, 0); // strp offset
+        mac.push_back(0x00);
+        uint32_t len = static_cast<uint32_t>(mac.size() - cs);
+        mac[0] = static_cast<uint8_t>(len & 0xff);
+        mac[1] = static_cast<uint8_t>((len >> 8) & 0xff);
+        mac[2] = static_cast<uint8_t>((len >> 16) & 0xff);
+        mac[3] = static_cast<uint8_t>((len >> 24) & 0xff);
+
+        DebugMacroParser p(mac, &debug_str, &empty, &empty, &empty);
+        auto e = p.parseMacroUnit(0);
+        assert(e.size() == 1);
+        assert(e[0].name.empty());
+        assert(e[0].value.empty());
     }
 
     std::cout << ".debug_macro parser tests passed!" << std::endl;
@@ -3936,8 +7405,165 @@ void testCFIParserTruncatedInstructionDoesNotCrash() {
     // Should not crash / read out of bounds. Parse should still succeed because we have a CIE.
     assert(cfi.parse());
     assert(!cfi.getCIEs().empty());
+    // Truncated def_cfa must not partially apply. Initial row stays at default CFA.
+    const auto& cie0 = cfi.getCIEs().front();
+    assert(cie0->initial_row.cfa.type == CFA_Type::REGISTER_OFFSET);
+    assert(cie0->initial_row.cfa.reg_num == 0);
+    assert(cie0->initial_row.cfa.offset == 0);
 
     std::cout << "CFIParser truncated instruction tests passed!" << std::endl;
+}
+
+void testCFIParserRejectsMalformedCIEHeader() {
+    std::cout << "Testing CFIParser rejects malformed CIE header..." << std::endl;
+
+    // CIE with unterminated augmentation string ("z" without trailing NUL).
+    std::vector<uint8_t> debug_frame;
+    auto appendU8 = [&](uint8_t v) { debug_frame.push_back(v); };
+    auto appendU32LE = [&](uint32_t v) { appendU32(debug_frame, v); };
+
+    {
+        size_t len_pos = debug_frame.size();
+        appendU32LE(0);
+        appendU32LE(0xffffffffU); // CIE id for .debug_frame
+        appendU8(4);              // version
+        appendU8('z');            // malformed: no NUL terminator for augmentation string
+
+        uint32_t len = static_cast<uint32_t>(debug_frame.size() - (len_pos + 4));
+        debug_frame[len_pos + 0] = static_cast<uint8_t>(len & 0xff);
+        debug_frame[len_pos + 1] = static_cast<uint8_t>((len >> 8) & 0xff);
+        debug_frame[len_pos + 2] = static_cast<uint8_t>((len >> 16) & 0xff);
+        debug_frame[len_pos + 3] = static_cast<uint8_t>((len >> 24) & 0xff);
+    }
+
+    CFIParser cfi(debug_frame, /*is_eh_frame=*/false, /*address_size=*/8);
+    assert(!cfi.parse());
+    assert(cfi.getCIEs().empty());
+
+    std::cout << "CFIParser malformed CIE header tests passed!" << std::endl;
+}
+
+void testCFIParserTruncatedFDEOperandDoesNotMutateRow() {
+    std::cout << "Testing CFIParser truncated FDE operand does not mutate row..." << std::endl;
+
+    // CIE: CFA = SP + 16.
+    // FDE: truncated DW_CFA_def_cfa_offset operand (ULEB continuation without terminator).
+    // Expected: malformed FDE instruction stream aborts, row at PC start remains CFA offset 16.
+    std::vector<uint8_t> debug_frame;
+    auto appendU8 = [&](uint8_t v) { debug_frame.push_back(v); };
+    auto appendU32LE = [&](uint32_t v) { appendU32(debug_frame, v); };
+    auto appendU64LE = [&](uint64_t v) { appendU64(debug_frame, v); };
+
+    // CIE
+    {
+        size_t len_pos = debug_frame.size();
+        appendU32LE(0);
+        appendU32LE(0xffffffffU);
+        appendU8(4);    // version
+        appendU8(0);    // augmentation
+        appendU8(8);    // address_size
+        appendU8(0);    // segment_selector_size
+        appendU8(0x01); // code_align=1
+        appendU8(0x78); // data_align=-8
+        appendU8(0x1e); // ra_reg=30
+        appendU8(0x0c); // DW_CFA_def_cfa
+        appendU8(0x1f); // reg=31 (SP)
+        appendU8(0x10); // off=16
+
+        uint32_t len = static_cast<uint32_t>(debug_frame.size() - (len_pos + 4));
+        debug_frame[len_pos + 0] = static_cast<uint8_t>(len & 0xff);
+        debug_frame[len_pos + 1] = static_cast<uint8_t>((len >> 8) & 0xff);
+        debug_frame[len_pos + 2] = static_cast<uint8_t>((len >> 16) & 0xff);
+        debug_frame[len_pos + 3] = static_cast<uint8_t>((len >> 24) & 0xff);
+    }
+
+    // FDE
+    {
+        size_t len_pos = debug_frame.size();
+        appendU32LE(0);
+        appendU32LE(0);      // CIE pointer to offset 0
+        appendU64LE(0x1000); // initial_location
+        appendU64LE(0x20);   // address_range
+        appendU8(0x0e);      // DW_CFA_def_cfa_offset
+        appendU8(0x80);      // truncated ULEB128
+
+        uint32_t len = static_cast<uint32_t>(debug_frame.size() - (len_pos + 4));
+        debug_frame[len_pos + 0] = static_cast<uint8_t>(len & 0xff);
+        debug_frame[len_pos + 1] = static_cast<uint8_t>((len >> 8) & 0xff);
+        debug_frame[len_pos + 2] = static_cast<uint8_t>((len >> 16) & 0xff);
+        debug_frame[len_pos + 3] = static_cast<uint8_t>((len >> 24) & 0xff);
+    }
+
+    CFIParser cfi(debug_frame, /*is_eh_frame=*/false, /*address_size=*/8);
+    assert(cfi.parse());
+
+    UnwindInfo ui = cfi.getUnwindInfo(0x1000);
+    assert(ui.valid);
+    assert(ui.cfa.type == CFA_Type::REGISTER_OFFSET);
+    assert(ui.cfa.reg_num == 31);
+    assert(ui.cfa.offset == 16);
+
+    std::cout << "CFIParser truncated FDE operand tests passed!" << std::endl;
+}
+
+void testCFIParserRejectsMalformedFDEAugmentationLength() {
+    std::cout << "Testing CFIParser rejects malformed FDE augmentation length..." << std::endl;
+
+    // .debug_frame with:
+    // - CIE augmentation "z" and empty augmentation payload (aug_len=0)
+    // - FDE with truncated ULEB128 augmentation length (0x80)
+    std::vector<uint8_t> debug_frame;
+    auto appendU8 = [&](uint8_t v) { debug_frame.push_back(v); };
+    auto appendU32LE = [&](uint32_t v) { appendU32(debug_frame, v); };
+    auto appendU64LE = [&](uint64_t v) { appendU64(debug_frame, v); };
+
+    // CIE
+    {
+        size_t len_pos = debug_frame.size();
+        appendU32LE(0);
+        appendU32LE(0xffffffffU);
+        appendU8(4);    // version
+        appendU8('z');  // augmentation "z"
+        appendU8(0);    // NUL terminator
+        appendU8(8);    // address_size
+        appendU8(0);    // segment_selector_size
+        appendU8(0x01); // code_align=1
+        appendU8(0x78); // data_align=-8
+        appendU8(0x1e); // ra_reg=30
+        appendU8(0x00); // aug_len=0
+        appendU8(0x0c); // DW_CFA_def_cfa
+        appendU8(0x1f); // SP
+        appendU8(0x10); // 16
+
+        uint32_t len = static_cast<uint32_t>(debug_frame.size() - (len_pos + 4));
+        debug_frame[len_pos + 0] = static_cast<uint8_t>(len & 0xff);
+        debug_frame[len_pos + 1] = static_cast<uint8_t>((len >> 8) & 0xff);
+        debug_frame[len_pos + 2] = static_cast<uint8_t>((len >> 16) & 0xff);
+        debug_frame[len_pos + 3] = static_cast<uint8_t>((len >> 24) & 0xff);
+    }
+
+    // FDE with malformed augmentation length.
+    {
+        size_t len_pos = debug_frame.size();
+        appendU32LE(0);
+        appendU32LE(0);      // CIE pointer to offset 0
+        appendU64LE(0x1000); // initial_location
+        appendU64LE(0x20);   // address_range
+        appendU8(0x80);      // malformed/truncated aug_length ULEB
+
+        uint32_t len = static_cast<uint32_t>(debug_frame.size() - (len_pos + 4));
+        debug_frame[len_pos + 0] = static_cast<uint8_t>(len & 0xff);
+        debug_frame[len_pos + 1] = static_cast<uint8_t>((len >> 8) & 0xff);
+        debug_frame[len_pos + 2] = static_cast<uint8_t>((len >> 16) & 0xff);
+        debug_frame[len_pos + 3] = static_cast<uint8_t>((len >> 24) & 0xff);
+    }
+
+    CFIParser cfi(debug_frame, /*is_eh_frame=*/false, /*address_size=*/8);
+    assert(cfi.parse());
+    assert(cfi.getCIEs().size() == 1);
+    assert(cfi.getFDEs().empty()); // malformed FDE must be rejected
+
+    std::cout << "CFIParser malformed FDE augmentation tests passed!" << std::endl;
 }
 
 void testCFIParserMIPSAdvanceLoc8DoesNotAbort() {
@@ -4323,6 +7949,47 @@ void testDWPIndexParsing() {
         idx_v0[0] = 0x00; idx_v0[1] = 0x00; idx_v0[2] = 0x00; idx_v0[3] = 0x00;
         DWPLoader l0;
         assert(!l0.parseIndexData(idx_v0, false));
+    }
+
+    // Truncated section-id table should be rejected.
+    {
+        std::vector<uint8_t> idx_trunc = idx;
+        idx_trunc.resize(16); // header only, section_count still says 4
+        DWPLoader lt;
+        assert(!lt.parseIndexData(idx_trunc, false));
+    }
+
+    // Failed re-parse should not leave stale entries from an earlier successful parse.
+    {
+        DWPLoader ls;
+        assert(ls.parseIndexData(idx, false));
+        assert(ls.findUnit(sig).has_value());
+
+        std::vector<uint8_t> idx_bad = idx;
+        idx_bad.resize(16); // malformed
+        assert(!ls.parseIndexData(idx_bad, false));
+        assert(!ls.findUnit(sig).has_value());
+    }
+
+    // Large offsets/sizes should not overflow extractSection arithmetic.
+    {
+        const uint64_t sig2 = 0x99aabbccddeeff00ULL;
+        std::vector<uint8_t> idx_big;
+        appendU32(idx_big, 6); // version
+        appendU32(idx_big, 1); // section_count
+        appendU32(idx_big, 1); // unit_count
+        appendU32(idx_big, 1); // slot_count
+        appendU32(idx_big, 1); // section id: DW_SECT_INFO
+        appendU64(idx_big, sig2); // hash/signature
+        appendU32(idx_big, 1);    // index row
+        appendU32(idx_big, 0xfffffff0u); // huge info offset
+        appendU32(idx_big, 0x30u);       // size triggers 32-bit wrap if unchecked
+
+        DWPLoader lo;
+        assert(lo.parseIndexData(idx_big, false));
+        auto sec = lo.getSectionsForUnit(sig2);
+        assert(sec.has_value());
+        assert(sec->debug_info.empty());
     }
 
     std::cout << "DWP index parsing tests passed!" << std::endl;
@@ -5546,6 +9213,92 @@ void testEHFrameSetLocUsesCIEAddressSize() {
     std::cout << ".eh_frame DW_CFA_set_loc address_size tests passed!" << std::endl;
 }
 
+void testEHFrameSetLocInvalidCIEAddressSizeAbortsStream() {
+    std::cout << "Testing .eh_frame DW_CFA_set_loc invalid CIE address_size aborts stream..." << std::endl;
+
+    // Similar to testEHFrameSetLocUsesCIEAddressSize, but CIE advertises invalid address_size=3.
+    // DW_CFA_set_loc should abort instruction processing rather than defaulting to 32-bit decode.
+    std::vector<uint8_t> eh;
+
+    auto appendU8 = [&](uint8_t v) { eh.push_back(v); };
+    auto appendU32 = [&](uint32_t v) { ::appendU32(eh, v); };
+    auto appendULEB = [&](uint64_t v) { appendULEB128(eh, v); };
+    auto appendSLEB = [&](int64_t v) {
+        bool more = true;
+        while (more) {
+            uint8_t byte = static_cast<uint8_t>(v & 0x7f);
+            bool sign = (byte & 0x40) != 0;
+            v >>= 7;
+            if ((v == 0 && !sign) || (v == -1 && sign)) {
+                more = false;
+            } else {
+                byte |= 0x80;
+            }
+            eh.push_back(byte);
+        }
+    };
+    auto startEntry = [&](uint32_t id_or_ptr) -> size_t {
+        size_t start = eh.size();
+        appendU32(0);
+        appendU32(id_or_ptr);
+        return start;
+    };
+    auto finishEntry = [&](size_t start) {
+        uint32_t len = static_cast<uint32_t>(eh.size() - start - 4);
+        eh[start + 0] = static_cast<uint8_t>(len & 0xff);
+        eh[start + 1] = static_cast<uint8_t>((len >> 8) & 0xff);
+        eh[start + 2] = static_cast<uint8_t>((len >> 16) & 0xff);
+        eh[start + 3] = static_cast<uint8_t>((len >> 24) & 0xff);
+    };
+
+    // CIE at offset 0, version 4 with invalid address_size=3.
+    size_t cie_start = startEntry(0);
+    appendU8(4);                 // version
+    appendU8('z'); appendU8('R'); appendU8(0);
+    appendU8(3);                 // INVALID address_size
+    appendU8(0);                 // segment_selector_size
+    appendULEB(1);               // code_alignment_factor
+    appendSLEB(-4);              // data_alignment_factor
+    appendULEB(30);              // return_address_register
+    appendULEB(1);               // augmentation length
+    appendU8(0x03);              // fde_pointer_encoding = DW_EH_PE_udata4
+    finishEntry(cie_start);
+
+    // FDE
+    size_t fde_start = startEntry(0);
+    {
+        uint32_t cie_ptr_field_off = static_cast<uint32_t>(fde_start + 4);
+        uint32_t rel = cie_ptr_field_off - 0;
+        eh[fde_start + 4] = static_cast<uint8_t>(rel & 0xff);
+        eh[fde_start + 5] = static_cast<uint8_t>((rel >> 8) & 0xff);
+        eh[fde_start + 6] = static_cast<uint8_t>((rel >> 16) & 0xff);
+        eh[fde_start + 7] = static_cast<uint8_t>((rel >> 24) & 0xff);
+    }
+
+    appendU32(0x1000); // initial_location (udata4)
+    appendU32(0x20);   // address_range (udata4)
+    appendULEB(0);     // augmentation data length
+
+    // set_loc + def_cfa_offset. With invalid address_size, set_loc aborts stream and
+    // def_cfa_offset must not be applied.
+    appendU8(0x01);    // DW_CFA_set_loc
+    appendU32(0x1008); // would-be address
+    appendU8(0x0e);    // DW_CFA_def_cfa_offset
+    appendU8(0x20);    // uleb 0x20
+
+    finishEntry(fde_start);
+
+    CFIParser p(eh, /*is_eh_frame=*/true, /*address_size=*/8);
+    assert(p.parse());
+
+    UnwindInfo ui = p.getUnwindInfo(0x1001);
+    assert(ui.valid);
+    assert(ui.cfa.type == CFA_Type::REGISTER_OFFSET);
+    assert(ui.cfa.offset == 0); // default row value; def_cfa_offset was not consumed
+
+    std::cout << ".eh_frame invalid CIE address_size tests passed!" << std::endl;
+}
+
 void testEHFrameTruncatedPersonalityDoesNotBleed() {
     std::cout << "Testing .eh_frame truncated personality augmentation does not bleed..." << std::endl;
 
@@ -5698,6 +9451,7 @@ void testEHFrameTruncatedFDEPointerDoesNotReadPadding() {
 
     CFIParser p(eh, /*is_eh_frame=*/true, /*address_size=*/8);
     assert(p.parse());
+    assert(p.getFDEs().empty());
 
     auto fde = p.findFDE(0x1000);
     assert(!fde);
@@ -6303,16 +10057,56 @@ int main() {
     testExpressionEvaluatorCallRefUsesSectionOffsetNotCUOffset();
     testExpressionEvaluatorGnuParameterRefRespectsOffsetSize64();
     testExpressionEvaluatorSectionRelativeOpsPreserveDWOBias();
-    testExpressionEvaluatorSectionRelativeOpsPreserveSupplementaryBias();
-    testExpressionEvaluatorMixedSectionRelativeOpsUnderDWOBias();
-    testExpressionEvaluatorSectionRelativeOpsIgnoreHighBitsWhenUnbiased();
-    testVariableLocationCompositeBitPieceOffsets();
-    testStrpSup();
-    testRefSupForms();
-    testDIEParserRefSupIntegration();
+	    testExpressionEvaluatorSectionRelativeOpsPreserveSupplementaryBias();
+	    testExpressionEvaluatorMixedSectionRelativeOpsUnderDWOBias();
+	    testExpressionEvaluatorSectionRelativeOpsIgnoreHighBitsWhenUnbiased();
+	    testVariableLocationCompositeBitPieceOffsets();
+	    testSymbolicExpressionEvaluatorBasic();
+	    testSymbolicExpressionEvaluatorMalformedOperands();
+	    testSymbolicExpressionEvaluatorLoad();
+	    testSymbolicExpressionEvaluatorPieces();
+	    testSymbolicExpressionEvaluatorUnavailablePieces();
+	    testSymbolicExpressionEvaluatorStackValuePieces();
+	    testSymbolicExpressionEvaluatorAddrxConstx();
+	    testSymbolicExpressionEvaluatorEntryValue();
+	    testSymbolicExpressionEvaluatorImplicitValueLarge();
+	    testSymbolicExpressionEvaluatorBytesComparisons();
+	    testSymbolicExpressionEvaluatorImplicitBytesDoNotBleed();
+	    testSymbolicExpressionEvaluatorImplicitBytesPerStackEntryOps();
+	    testSymbolicExpressionEvaluatorStackKindsPerEntryOps();
+	    testSymbolicExpressionEvaluatorComputationMaterializationAndKinds();
+	    testSymbolicExpressionEvaluatorImplicitPointer();
+	    testSymbolicExpressionEvaluatorTypedOpsAndBranches();
+	    testSymbolicExpressionEvaluatorSymbolicBraITE();
+	    testSymbolicExpressionEvaluatorSymbolicBraDepthLimit();
+	    testSymbolicExpressionEvaluatorSymbolicBraWithStackState();
+	    testSymbolicExpressionEvaluatorSymbolicBraCompositePieces();
+	    testSymbolicExpressionEvaluatorSymbolicBraRegisterMismatchIsInvalid();
+	    testSymbolicExpressionEvaluatorSymbolicBraAddressValueMerge();
+	    testSymbolicExpressionEvaluatorSymbolicBraRegisterValueMerge();
+	    testSymbolicExpressionEvaluatorSymbolicBraRegisterAddressMerge();
+	    testSymbolicExpressionEvaluatorSymbolicBraRegisterSameMerge();
+	    testSymbolicExpressionEvaluatorSymbolicBraCompositeKindMismatchMerge();
+	    testSymbolicExpressionEvaluatorSymbolicBraCompositeUnavailableMerge();
+	    testSymbolicExpressionEvaluatorSymbolicBraCompositeBitPieceUnavailableMerge();
+	    testSymbolicExpressionEvaluatorSymbolicBraCompositeImplicitMerge();
+	    testSymbolicExpressionEvaluatorSymbolicBraCompositeImplicitMergeLargeBytes();
+	    testSymbolicExpressionEvaluatorSymbolicBraCompositeImplicitNestedMerge();
+	    testSymbolicExpressionEvaluatorXderefAndXderefType();
+	    testSymbolicExpressionEvaluatorCallOpsAndGnuIndices();
+	    testSymbolicExpressionEvaluatorGnuTypedAndParameterOps();
+	    testExpressionVerifier();
+	    testCrossBinaryExpressionComparator();
+	    testAttributeParserBoundedStringsAndBlocks();
+	    testStrpSup();
+	    testRefSupForms();
+	    testDIEParserRefSupIntegration();
+	    testDIEParserCUBoundsOnUnterminatedFormString();
+	    testDIEParserTruncatedAbbrevImplicitConst();
     testDebugSupParser();
     testDebugNamesParser();
     testDebugNamesParserBucketLookup();
+    testDebugNamesParserMalformedInputs();
 	    testDebugMacroParser();
 	    testDwarfParserMacroLookupFallsBackAcrossCUs();
 	    testDwarfParserGetFunctionAtUsesRanges();
@@ -6336,6 +10130,9 @@ int main() {
 	    testCFIParserAArch64MinimalUnwind();
 	    testCFIParserAArch64NegateRAStateStripsPAC();
 		    testCFIParserTruncatedInstructionDoesNotCrash();
+		    testCFIParserRejectsMalformedCIEHeader();
+		    testCFIParserTruncatedFDEOperandDoesNotMutateRow();
+		    testCFIParserRejectsMalformedFDEAugmentationLength();
 		    testCFIParserMIPSAdvanceLoc8DoesNotAbort();
 		    testCFIParserDwarf2EscapeIsSkipped();
 		    testCFIParserCFAExpressionThenDefCFARegisterOffsetSwitchesBack();
@@ -6354,6 +10151,7 @@ int main() {
 	    testEHFramePCRelativeEncoding();
 	    testEHFrameAlignedEncoding();
 	    testEHFrameSetLocUsesCIEAddressSize();
+	    testEHFrameSetLocInvalidCIEAddressSizeAbortsStream();
 	    testEHFrameTruncatedPersonalityDoesNotBleed();
 	    testEHFrameTruncatedFDEPointerDoesNotReadPadding();
 	    testSupplementaryDebugInfoViaDebugSup();

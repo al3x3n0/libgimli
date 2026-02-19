@@ -1,6 +1,8 @@
 #include "debug_macro_parser.hpp"
 #include "dwarf_utils.hpp"
 #include <cstring>
+#include <functional>
+#include <limits>
 
 namespace dwarf {
 
@@ -110,6 +112,7 @@ std::optional<DebugMacroHeader> DebugMacroParser::parseHeader(uint64_t& offset) 
     if (offset + 4 > m.size()) {
         return std::nullopt;
     }
+    clearDecodeError();
 
     DebugMacroHeader header;
 
@@ -117,16 +120,21 @@ std::optional<DebugMacroHeader> DebugMacroParser::parseHeader(uint64_t& offset) 
     uint64_t section_end = m.size();
 
     // unit_length (DWARF32 or DWARF64)
-    uint32_t initial_length = DwarfUtils::readU32(m.data(), offset, section_end);
+    uint32_t initial_length = readU32(offset, section_end);
+    if (hasDecodeError()) return std::nullopt;
     if (initial_length == 0xffffffffu) {
         header.is_dwarf64 = true;
-        header.unit_length = DwarfUtils::readU64(m.data(), offset, section_end);
+        header.unit_length = readU64(offset, section_end);
+        if (hasDecodeError()) return std::nullopt;
     } else {
         header.is_dwarf64 = false;
         header.unit_length = initial_length;
     }
 
     uint64_t length_field_size = header.is_dwarf64 ? 12 : 4;
+    if (header.unit_length > (m.size() - unit_start - length_field_size)) {
+        return std::nullopt;
+    }
     uint64_t unit_end = unit_start + length_field_size + header.unit_length;
     if (unit_end > m.size() || unit_end < offset) {
         return std::nullopt;
@@ -136,6 +144,7 @@ std::optional<DebugMacroHeader> DebugMacroParser::parseHeader(uint64_t& offset) 
 
     // Read version
     header.version = readU16(offset, unit_end);
+    if (hasDecodeError()) return std::nullopt;
     if (header.version != 5) {
         // Only DWARF 5 .debug_macro is supported
         return std::nullopt;
@@ -143,6 +152,7 @@ std::optional<DebugMacroHeader> DebugMacroParser::parseHeader(uint64_t& offset) 
 
     // Read flags
     header.flags = readU8(offset, unit_end);
+    if (hasDecodeError()) return std::nullopt;
 
     // Determine offset size from flags
     header.offset_size = (header.flags & 0x01) ? 8 : 4;
@@ -151,6 +161,7 @@ std::optional<DebugMacroHeader> DebugMacroParser::parseHeader(uint64_t& offset) 
     header.has_debug_line_offset = (header.flags & 0x02) != 0;
     if (header.has_debug_line_offset) {
         header.debug_line_offset = readOffset(offset, header.offset_size, unit_end);
+        if (hasDecodeError()) return std::nullopt;
     } else {
         header.debug_line_offset = 0;
     }
@@ -160,14 +171,18 @@ std::optional<DebugMacroHeader> DebugMacroParser::parseHeader(uint64_t& offset) 
     if (header.has_opcode_operands_table) {
         // Parse the opcode operands table.
         uint8_t opcode_count = readU8(offset, unit_end);
+        if (hasDecodeError()) return std::nullopt;
         for (uint8_t i = 0; i < opcode_count; ++i) {
             uint8_t opcode = readU8(offset, unit_end);
             uint64_t operand_count = readULEB128(offset, unit_end);
+            if (hasDecodeError()) return std::nullopt;
+            if (operand_count > (unit_end - offset)) return std::nullopt;
             std::vector<uint64_t> forms;
             forms.reserve(static_cast<size_t>(operand_count));
             for (uint64_t j = 0; j < operand_count; ++j) {
                 // DWARF encodes forms as ULEB128 values (even though most are <= 0xff).
                 uint64_t form = readULEB128(offset, unit_end);
+                if (hasDecodeError()) return std::nullopt;
                 forms.push_back(form);
             }
             header.opcode_operand_forms[opcode] = std::move(forms);
@@ -234,8 +249,10 @@ std::optional<MacroEntry> DebugMacroParser::parseEntry(uint64_t& offset, uint64_
     if (offset >= unit_end) {
         return std::nullopt;
     }
+    clearDecodeError();
 
     uint8_t opcode = readU8(offset, unit_end);
+    if (hasDecodeError()) return std::nullopt;
     if (opcode == 0) {
         return std::nullopt; // End of macro list
     }
@@ -249,6 +266,7 @@ std::optional<MacroEntry> DebugMacroParser::parseEntry(uint64_t& offset, uint64_
     switch (entry.type) {
         case DW_MACRO::DW_MACRO_define: {
             entry.line = readULEB128(offset, unit_end);
+            if (hasDecodeError()) return std::nullopt;
             std::string macro_str = readString(offset, unit_end);
             bool is_func;
             parseMacroString(macro_str, entry.name, entry.value, is_func);
@@ -257,13 +275,16 @@ std::optional<MacroEntry> DebugMacroParser::parseEntry(uint64_t& offset, uint64_
 
         case DW_MACRO::DW_MACRO_undef: {
             entry.line = readULEB128(offset, unit_end);
+            if (hasDecodeError()) return std::nullopt;
             entry.name = readString(offset, unit_end);
             break;
         }
 
         case DW_MACRO::DW_MACRO_start_file: {
             entry.line = readULEB128(offset, unit_end);
+            if (hasDecodeError()) return std::nullopt;
             entry.file_index = readULEB128(offset, unit_end);
+            if (hasDecodeError()) return std::nullopt;
             break;
         }
 
@@ -274,7 +295,9 @@ std::optional<MacroEntry> DebugMacroParser::parseEntry(uint64_t& offset, uint64_
 
         case DW_MACRO::DW_MACRO_define_strp: {
             entry.line = readULEB128(offset, unit_end);
+            if (hasDecodeError()) return std::nullopt;
             uint64_t str_offset = readOffset(offset, header.offset_size, unit_end);
+            if (hasDecodeError()) return std::nullopt;
             std::string macro_str = getStringFromStrp(str_offset);
             bool is_func;
             parseMacroString(macro_str, entry.name, entry.value, is_func);
@@ -283,19 +306,24 @@ std::optional<MacroEntry> DebugMacroParser::parseEntry(uint64_t& offset, uint64_
 
         case DW_MACRO::DW_MACRO_undef_strp: {
             entry.line = readULEB128(offset, unit_end);
+            if (hasDecodeError()) return std::nullopt;
             uint64_t str_offset = readOffset(offset, header.offset_size, unit_end);
+            if (hasDecodeError()) return std::nullopt;
             entry.name = getStringFromStrp(str_offset);
             break;
         }
 
         case DW_MACRO::DW_MACRO_import: {
             entry.import_offset = readOffset(offset, header.offset_size, unit_end);
+            if (hasDecodeError()) return std::nullopt;
             break;
         }
 
         case DW_MACRO::DW_MACRO_define_sup: {
             entry.line = readULEB128(offset, unit_end);
+            if (hasDecodeError()) return std::nullopt;
             uint64_t str_offset = readOffset(offset, header.offset_size, unit_end);
+            if (hasDecodeError()) return std::nullopt;
             std::string macro_str = getStringFromSupStrp(str_offset);
             if (macro_str.empty()) {
                 entry.name = "<sup:" + std::to_string(str_offset) + ">";
@@ -308,7 +336,9 @@ std::optional<MacroEntry> DebugMacroParser::parseEntry(uint64_t& offset, uint64_
 
         case DW_MACRO::DW_MACRO_undef_sup: {
             entry.line = readULEB128(offset, unit_end);
+            if (hasDecodeError()) return std::nullopt;
             uint64_t str_offset = readOffset(offset, header.offset_size, unit_end);
+            if (hasDecodeError()) return std::nullopt;
             std::string s = getStringFromSupStrp(str_offset);
             if (s.empty()) {
                 entry.name = "<sup:" + std::to_string(str_offset) + ">";
@@ -320,12 +350,15 @@ std::optional<MacroEntry> DebugMacroParser::parseEntry(uint64_t& offset, uint64_
 
         case DW_MACRO::DW_MACRO_import_sup: {
             entry.import_offset = readOffset(offset, header.offset_size, unit_end);
+            if (hasDecodeError()) return std::nullopt;
             break;
         }
 
         case DW_MACRO::DW_MACRO_define_strx: {
             entry.line = readULEB128(offset, unit_end);
+            if (hasDecodeError()) return std::nullopt;
             uint64_t index = readULEB128(offset, unit_end);
+            if (hasDecodeError()) return std::nullopt;
             std::string macro_str = getStringFromStrx(index);
             bool is_func;
             parseMacroString(macro_str, entry.name, entry.value, is_func);
@@ -334,7 +367,9 @@ std::optional<MacroEntry> DebugMacroParser::parseEntry(uint64_t& offset, uint64_
 
         case DW_MACRO::DW_MACRO_undef_strx: {
             entry.line = readULEB128(offset, unit_end);
+            if (hasDecodeError()) return std::nullopt;
             uint64_t index = readULEB128(offset, unit_end);
+            if (hasDecodeError()) return std::nullopt;
             entry.name = getStringFromStrx(index);
             break;
         }
@@ -353,101 +388,106 @@ std::optional<MacroEntry> DebugMacroParser::parseEntry(uint64_t& offset, uint64_
 	                        switch (static_cast<DwarfForm>(form)) {
 	                            case DwarfForm::DW_FORM_flag_present:
 	                                return true;
-	                            case DwarfForm::DW_FORM_flag:
-	                            case DwarfForm::DW_FORM_ref1:
-	                            case DwarfForm::DW_FORM_data1:
-	                                readU8(offset, unit_end);
-	                                return offset <= unit_end;
-	                            case DwarfForm::DW_FORM_ref2:
-	                            case DwarfForm::DW_FORM_data2:
-	                                readU16(offset, unit_end);
-	                                return offset <= unit_end;
-	                            case DwarfForm::DW_FORM_ref4:
-	                            case DwarfForm::DW_FORM_data4:
-	                                (void)readU32(offset, unit_end);
-	                                return offset <= unit_end;
-	                            case DwarfForm::DW_FORM_ref8:
-	                            case DwarfForm::DW_FORM_data8:
-	                            case DwarfForm::DW_FORM_ref_sig8:
-	                                (void)readU64(offset, unit_end);
-	                                return offset <= unit_end;
-	                            case DwarfForm::DW_FORM_data16:
-	                                if (offset + 16 > unit_end) return false;
-	                                offset += 16;
-	                                return true;
+                            case DwarfForm::DW_FORM_flag:
+                            case DwarfForm::DW_FORM_ref1:
+                            case DwarfForm::DW_FORM_data1:
+                                readU8(offset, unit_end);
+                                return !hasDecodeError() && offset <= unit_end;
+                            case DwarfForm::DW_FORM_ref2:
+                            case DwarfForm::DW_FORM_data2:
+                                readU16(offset, unit_end);
+                                return !hasDecodeError() && offset <= unit_end;
+                            case DwarfForm::DW_FORM_ref4:
+                            case DwarfForm::DW_FORM_data4:
+                                (void)readU32(offset, unit_end);
+                                return !hasDecodeError() && offset <= unit_end;
+                            case DwarfForm::DW_FORM_ref8:
+                            case DwarfForm::DW_FORM_data8:
+                            case DwarfForm::DW_FORM_ref_sig8:
+                                (void)readU64(offset, unit_end);
+                                return !hasDecodeError() && offset <= unit_end;
+                            case DwarfForm::DW_FORM_data16:
+                                if (16 > (unit_end - offset)) return false;
+                                offset += 16;
+                                return true;
 	                            case DwarfForm::DW_FORM_udata:
 	                            case DwarfForm::DW_FORM_ref_udata:
 	                            case DwarfForm::DW_FORM_strx:
 	                            case DwarfForm::DW_FORM_addrx:
 	                            case DwarfForm::DW_FORM_loclistx:
-	                            case DwarfForm::DW_FORM_rnglistx:
-	                                (void)readULEB128(offset, unit_end);
-	                                return offset <= unit_end;
-	                            case DwarfForm::DW_FORM_sdata:
-	                                (void)readSLEB128(offset, unit_end);
-	                                return offset <= unit_end;
+                            case DwarfForm::DW_FORM_rnglistx:
+                                (void)readULEB128(offset, unit_end);
+                                return !hasDecodeError() && offset <= unit_end;
+                            case DwarfForm::DW_FORM_sdata:
+                                (void)readSLEB128(offset, unit_end);
+                                return !hasDecodeError() && offset <= unit_end;
 	                            case DwarfForm::DW_FORM_string:
 	                                (void)readString(offset, unit_end);
 	                                return offset <= unit_end;
-	                            case DwarfForm::DW_FORM_strx1:
-	                            case DwarfForm::DW_FORM_addrx1:
-	                                readU8(offset, unit_end);
-	                                return offset <= unit_end;
-	                            case DwarfForm::DW_FORM_strx2:
-	                            case DwarfForm::DW_FORM_addrx2:
-	                                readU16(offset, unit_end);
-	                                return offset <= unit_end;
-	                            case DwarfForm::DW_FORM_strx3:
-	                            case DwarfForm::DW_FORM_addrx3:
-	                                if (offset + 3 > unit_end) return false;
-	                                offset += 3;
-	                                return true;
-	                            case DwarfForm::DW_FORM_strx4:
-	                            case DwarfForm::DW_FORM_addrx4:
-	                                (void)readU32(offset, unit_end);
-	                                return offset <= unit_end;
+                            case DwarfForm::DW_FORM_strx1:
+                            case DwarfForm::DW_FORM_addrx1:
+                                readU8(offset, unit_end);
+                                return !hasDecodeError() && offset <= unit_end;
+                            case DwarfForm::DW_FORM_strx2:
+                            case DwarfForm::DW_FORM_addrx2:
+                                readU16(offset, unit_end);
+                                return !hasDecodeError() && offset <= unit_end;
+                            case DwarfForm::DW_FORM_strx3:
+                            case DwarfForm::DW_FORM_addrx3:
+                                if (3 > (unit_end - offset)) return false;
+                                offset += 3;
+                                return true;
+                            case DwarfForm::DW_FORM_strx4:
+                            case DwarfForm::DW_FORM_addrx4:
+                                (void)readU32(offset, unit_end);
+                                return !hasDecodeError() && offset <= unit_end;
 	                            case DwarfForm::DW_FORM_strp:
 	                            case DwarfForm::DW_FORM_sec_offset:
-	                            case DwarfForm::DW_FORM_line_strp:
-	                            case DwarfForm::DW_FORM_strp_sup:
-	                                (void)readOffset(offset, header.offset_size, unit_end);
-	                                return offset <= unit_end;
-	                            case DwarfForm::DW_FORM_ref_sup4:
-	                                (void)readU32(offset, unit_end);
-	                                return offset <= unit_end;
-	                            case DwarfForm::DW_FORM_ref_sup8:
-	                                (void)readU64(offset, unit_end);
-	                                return offset <= unit_end;
-	                            case DwarfForm::DW_FORM_block1: {
-	                                uint64_t len = readU8(offset, unit_end);
-	                                if (offset + len > unit_end) return false;
-	                                offset += len;
-	                                return true;
-	                            }
-	                            case DwarfForm::DW_FORM_block2: {
-	                                uint64_t len = readU16(offset, unit_end);
-	                                if (offset + len > unit_end) return false;
-	                                offset += len;
-	                                return true;
-	                            }
-	                            case DwarfForm::DW_FORM_block4: {
-	                                uint64_t len = readU32(offset, unit_end);
-	                                if (offset + len > unit_end) return false;
-	                                offset += len;
-	                                return true;
-	                            }
-	                            case DwarfForm::DW_FORM_block:
-	                            case DwarfForm::DW_FORM_exprloc: {
-	                                uint64_t len = readULEB128(offset, unit_end);
-	                                if (offset + len > unit_end) return false;
-	                                offset += len;
-	                                return true;
-	                            }
-	                            case DwarfForm::DW_FORM_indirect: {
-	                                uint64_t f = readULEB128(offset, unit_end);
-	                                if (offset > unit_end) return false;
-	                                return skipForm(f, depth + 1);
-	                            }
+                            case DwarfForm::DW_FORM_line_strp:
+                            case DwarfForm::DW_FORM_strp_sup:
+                                (void)readOffset(offset, header.offset_size, unit_end);
+                                return !hasDecodeError() && offset <= unit_end;
+                            case DwarfForm::DW_FORM_ref_sup4:
+                                (void)readU32(offset, unit_end);
+                                return !hasDecodeError() && offset <= unit_end;
+                            case DwarfForm::DW_FORM_ref_sup8:
+                                (void)readU64(offset, unit_end);
+                                return !hasDecodeError() && offset <= unit_end;
+                            case DwarfForm::DW_FORM_block1: {
+                                uint64_t len = readU8(offset, unit_end);
+                                if (hasDecodeError()) return false;
+                                if (len > (unit_end - offset)) return false;
+                                offset += len;
+                                return true;
+                            }
+                            case DwarfForm::DW_FORM_block2: {
+                                uint64_t len = readU16(offset, unit_end);
+                                if (hasDecodeError()) return false;
+                                if (len > (unit_end - offset)) return false;
+                                offset += len;
+                                return true;
+                            }
+                            case DwarfForm::DW_FORM_block4: {
+                                uint64_t len = readU32(offset, unit_end);
+                                if (hasDecodeError()) return false;
+                                if (len > (unit_end - offset)) return false;
+                                offset += len;
+                                return true;
+                            }
+                            case DwarfForm::DW_FORM_block:
+                            case DwarfForm::DW_FORM_exprloc: {
+                                uint64_t len = readULEB128(offset, unit_end);
+                                if (hasDecodeError()) return false;
+                                if (len > (unit_end - offset)) return false;
+                                offset += len;
+                                return true;
+                            }
+                            case DwarfForm::DW_FORM_indirect: {
+                                uint64_t f = readULEB128(offset, unit_end);
+                                if (hasDecodeError()) return false;
+                                if (offset > unit_end) return false;
+                                return skipForm(f, depth + 1);
+                            }
 	                            default:
 	                                return false;
 	                        }
@@ -470,6 +510,10 @@ std::optional<MacroEntry> DebugMacroParser::parseEntry(uint64_t& offset, uint64_
             return std::nullopt;
     }
 
+    if (hasDecodeError() || offset > unit_end) {
+        offset = unit_end;
+        return std::nullopt;
+    }
     return entry;
 }
 
@@ -589,6 +633,10 @@ std::string DebugMacroParser::getStringFromStrp(uint64_t str_offset) const {
     const char* str = reinterpret_cast<const char*>(s.data() + str_offset);
     size_t max_len = s.size() - str_offset;
     size_t len = strnlen(str, max_len);
+    if (len == max_len) {
+        // Unterminated string payload.
+        return "";
+    }
 
     return std::string(str, len);
 }
@@ -602,14 +650,23 @@ std::string DebugMacroParser::getStringFromSupStrp(uint64_t str_offset) const {
     const char* str = reinterpret_cast<const char*>(s.data() + str_offset);
     size_t max_len = s.size() - str_offset;
     size_t len = strnlen(str, max_len);
+    if (len == max_len) {
+        // Unterminated string payload.
+        return "";
+    }
     return std::string(str, len);
 }
 
 std::string DebugMacroParser::getStringFromStrx(uint64_t index) const {
     // Look up in debug_str_offsets using str_offsets_base_
+    if (str_offsets_entry_size_ == 0) return "";
+    if (index > (std::numeric_limits<uint64_t>::max() / str_offsets_entry_size_)) return "";
     uint64_t entry_offset = str_offsets_base_ + (index * str_offsets_entry_size_);
 
-    if (entry_offset + str_offsets_entry_size_ > str_offsets_end_) {
+    if (entry_offset > str_offsets_end_) {
+        return "";
+    }
+    if (str_offsets_entry_size_ > (str_offsets_end_ - entry_offset)) {
         return "";
     }
 
@@ -626,39 +683,105 @@ std::string DebugMacroParser::getStringFromStrx(uint64_t index) const {
 // Reading helpers
 
 uint8_t DebugMacroParser::readU8(uint64_t& offset, uint64_t max) const {
+    if (max > debugMacro().size() || offset + 1 > max) {
+        decode_error_ = true;
+        return 0;
+    }
     return DwarfUtils::readU8(debugMacro().data(), offset, max);
 }
 
 uint16_t DebugMacroParser::readU16(uint64_t& offset, uint64_t max) const {
+    if (max > debugMacro().size() || offset + 2 > max) {
+        decode_error_ = true;
+        return 0;
+    }
     return DwarfUtils::readU16(debugMacro().data(), offset, max);
 }
 
 uint32_t DebugMacroParser::readU32(uint64_t& offset, uint64_t max) const {
+    if (max > debugMacro().size() || offset + 4 > max) {
+        decode_error_ = true;
+        return 0;
+    }
     return DwarfUtils::readU32(debugMacro().data(), offset, max);
 }
 
 uint64_t DebugMacroParser::readU64(uint64_t& offset, uint64_t max) const {
+    if (max > debugMacro().size() || offset + 8 > max) {
+        decode_error_ = true;
+        return 0;
+    }
     return DwarfUtils::readU64(debugMacro().data(), offset, max);
 }
 
 uint64_t DebugMacroParser::readOffset(uint64_t& offset, uint8_t size, uint64_t max) const {
     if (size == 8) {
         return readU64(offset, max);
-    } else {
+    } else if (size == 4) {
         return readU32(offset, max);
     }
+    decode_error_ = true;
+    return 0;
 }
 
 uint64_t DebugMacroParser::readULEB128(uint64_t& offset, uint64_t max) const {
-    return DwarfUtils::readULEB128(debugMacro().data(), offset, max);
+    if (max > debugMacro().size() || offset >= max) {
+        decode_error_ = true;
+        return 0;
+    }
+
+    uint64_t result = 0;
+    unsigned shift = 0;
+    const auto& m = debugMacro();
+    while (offset < max) {
+        uint8_t byte = m[offset++];
+        uint64_t bits = static_cast<uint64_t>(byte & 0x7f);
+        if (shift > 63 || (shift == 63 && bits > 1)) {
+            decode_error_ = true;
+            return 0;
+        }
+        result |= (bits << shift);
+        if ((byte & 0x80) == 0) return result;
+        shift += 7;
+    }
+    decode_error_ = true;
+    return 0;
 }
 
 int64_t DebugMacroParser::readSLEB128(uint64_t& offset, uint64_t max) const {
-    return DwarfUtils::readSLEB128(debugMacro().data(), offset, max);
+    if (max > debugMacro().size() || offset >= max) {
+        decode_error_ = true;
+        return 0;
+    }
+
+    uint64_t result = 0;
+    unsigned shift = 0;
+    uint8_t byte = 0;
+    const auto& m = debugMacro();
+    while (offset < max) {
+        byte = m[offset++];
+        uint64_t bits = static_cast<uint64_t>(byte & 0x7f);
+        if (shift > 63 || (shift == 63 && bits != 0 && bits != 0x7f)) {
+            decode_error_ = true;
+            return 0;
+        }
+        result |= (bits << shift);
+        shift += 7;
+        if ((byte & 0x80) == 0) {
+            if (shift < 64 && (byte & 0x40)) result |= (~0ULL << shift);
+            return static_cast<int64_t>(result);
+        }
+    }
+    decode_error_ = true;
+    return 0;
 }
 
 std::string DebugMacroParser::readString(uint64_t& offset, uint64_t max) const {
     if (offset >= max) {
+        return "";
+    }
+    if (max > debugMacro().size()) {
+        decode_error_ = true;
         return "";
     }
 
@@ -669,10 +792,19 @@ std::string DebugMacroParser::readString(uint64_t& offset, uint64_t max) const {
     if (len == max_len) {
         // Unterminated string; consume to end-of-unit and treat as malformed.
         offset = max;
+        decode_error_ = true;
         return "";
     }
     offset += len + 1;
     return std::string(str, len);
+}
+
+void DebugMacroParser::clearDecodeError() const {
+    decode_error_ = false;
+}
+
+bool DebugMacroParser::hasDecodeError() const {
+    return decode_error_;
 }
 
 } // namespace dwarf

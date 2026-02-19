@@ -166,7 +166,8 @@ private:
     uint64_t decodePointerBounded(uint64_t& offset,
                                   uint64_t end,
                                   uint8_t encoding,
-                                  uint64_t pc_rel_base) const;
+                                  uint64_t pc_rel_base,
+                                  bool* decoded_ok = nullptr) const;
 
     // Reading helpers
     uint8_t readU8(uint64_t& offset) const;

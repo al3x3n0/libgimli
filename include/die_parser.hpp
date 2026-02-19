@@ -80,7 +80,8 @@ public:
                                   const std::vector<uint8_t>& abbrev_data,
                                   uint64_t abbrev_offset = 0,
                                   uint64_t cu_base_offset = 0,
-                                  uint8_t offset_size = 4);
+                                  uint8_t offset_size = 4,
+                                  uint64_t cu_end = ~0ULL);
     
     // Utility methods
     std::string getString(uint64_t offset) const;
@@ -125,6 +126,10 @@ private:
     std::map<uint64_t, AbbreviationEntry> parseAbbreviationTable();
     AbbreviationEntry parseAbbreviationEntry(uint64_t& offset) const;
     AbbreviationEntry lookupAbbreviationEntry(uint64_t code, uint64_t abbrev_offset = 0) const;
+    void clearDecodeError() const;
+    bool hasDecodeError() const;
+
+    mutable bool decode_error_ = false;
 };
 
 } // namespace dwarf

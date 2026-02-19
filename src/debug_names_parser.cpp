@@ -24,9 +24,11 @@ bool DebugNamesParser::parse() {
 
     uint64_t offset = 0;
     while (offset + 4 <= debug_names_.size()) {
+        clearDecodeError();
         // Some producers may pad the section with zeros.
         uint64_t tmp = offset;
-        uint32_t initial_length = DwarfUtils::readU32(debug_names_.data(), tmp, debug_names_.size());
+        uint32_t initial_length = readU32(tmp, debug_names_.size());
+        if (hasDecodeError()) return false;
         if (initial_length == 0) break;
 
         if (!parseOneUnit(offset)) return false;
@@ -82,18 +84,24 @@ bool DebugNamesParser::parseHeader(Unit& unit, uint64_t& offset) {
 
     uint64_t start_offset = offset;
     uint64_t section_end = debug_names_.size();
+    clearDecodeError();
 
     // Read unit_length
-    uint32_t initial_length = DwarfUtils::readU32(debug_names_.data(), offset, section_end);
+    uint32_t initial_length = readU32(offset, section_end);
+    if (hasDecodeError()) return false;
     if (initial_length == 0xffffffff) {
         unit.header.is_dwarf64 = true;
-        unit.header.unit_length = DwarfUtils::readU64(debug_names_.data(), offset, section_end);
+        unit.header.unit_length = readU64(offset, section_end);
+        if (hasDecodeError()) return false;
     } else {
         unit.header.is_dwarf64 = false;
         unit.header.unit_length = initial_length;
     }
 
     uint64_t length_field_size = unit.header.is_dwarf64 ? 12 : 4;
+    if (unit.header.unit_length > (debug_names_.size() - start_offset - length_field_size)) {
+        return false;
+    }
     uint64_t unit_end = start_offset + length_field_size + unit.header.unit_length;
     if (unit_end > debug_names_.size()) return false;
 
@@ -102,12 +110,14 @@ bool DebugNamesParser::parseHeader(Unit& unit, uint64_t& offset) {
 
     // Read version (should be 5)
     unit.header.version = readU16(offset, unit_end);
+    if (hasDecodeError()) return false;
     if (unit.header.version != 5) {
         return false;
     }
 
     // Read padding
     unit.header.padding = readU16(offset, unit_end);
+    if (hasDecodeError()) return false;
 
     // Read counts
     unit.header.comp_unit_count = readU32(offset, unit_end);
@@ -117,10 +127,11 @@ bool DebugNamesParser::parseHeader(Unit& unit, uint64_t& offset) {
     unit.header.name_count = readU32(offset, unit_end);
     unit.header.abbrev_table_size = readU32(offset, unit_end);
     unit.header.augmentation_string_size = readU32(offset, unit_end);
+    if (hasDecodeError()) return false;
 
     // Read augmentation string
     if (unit.header.augmentation_string_size > 0) {
-        if (offset + unit.header.augmentation_string_size > unit_end) {
+        if (unit.header.augmentation_string_size > (unit_end - offset)) {
             return false;
         }
         unit.header.augmentation_string = std::string(
@@ -139,7 +150,7 @@ bool DebugNamesParser::parseCUList(Unit& unit, uint64_t& offset) {
 
     for (uint32_t i = 0; i < unit.header.comp_unit_count; ++i) {
         unit.cu_offsets.push_back(readOffset(offset, unit.unit_end, unit.header.is_dwarf64));
-        if (offset > unit.unit_end) return false;
+        if (hasDecodeError() || offset > unit.unit_end) return false;
     }
 
     return true;
@@ -151,7 +162,7 @@ bool DebugNamesParser::parseTUList(Unit& unit, uint64_t& offset) {
 
     for (uint32_t i = 0; i < unit.header.local_type_unit_count; ++i) {
         unit.tu_offsets.push_back(readOffset(offset, unit.unit_end, unit.header.is_dwarf64));
-        if (offset > unit.unit_end) return false;
+        if (hasDecodeError() || offset > unit.unit_end) return false;
     }
 
     return true;
@@ -160,7 +171,7 @@ bool DebugNamesParser::parseTUList(Unit& unit, uint64_t& offset) {
 bool DebugNamesParser::parseForeignTUSignatures(Unit& unit, uint64_t& offset) {
     // Signatures are always 8 bytes each (type signature).
     uint64_t need = static_cast<uint64_t>(unit.header.foreign_type_unit_count) * 8;
-    if (offset + need > unit.unit_end) return false;
+    if (need > (unit.unit_end - offset)) return false;
     offset += need;
     return true;
 }
@@ -171,7 +182,7 @@ bool DebugNamesParser::parseBuckets(Unit& unit, uint64_t& offset) {
 
     for (uint32_t i = 0; i < unit.header.bucket_count; ++i) {
         unit.buckets.push_back(readU32(offset, unit.unit_end));
-        if (offset > unit.unit_end) return false;
+        if (hasDecodeError() || offset > unit.unit_end) return false;
     }
 
     return true;
@@ -183,7 +194,7 @@ bool DebugNamesParser::parseHashes(Unit& unit, uint64_t& offset) {
 
     for (uint32_t i = 0; i < unit.header.name_count; ++i) {
         unit.hashes.push_back(readU32(offset, unit.unit_end));
-        if (offset > unit.unit_end) return false;
+        if (hasDecodeError() || offset > unit.unit_end) return false;
     }
 
     return true;
@@ -195,7 +206,7 @@ bool DebugNamesParser::parseNameOffsets(Unit& unit, uint64_t& offset) {
 
     for (uint32_t i = 0; i < unit.header.name_count; ++i) {
         unit.name_offsets.push_back(readOffset(offset, unit.unit_end, unit.header.is_dwarf64));
-        if (offset > unit.unit_end) return false;
+        if (hasDecodeError() || offset > unit.unit_end) return false;
     }
 
     return true;
@@ -207,7 +218,7 @@ bool DebugNamesParser::parseEntryOffsets(Unit& unit, uint64_t& offset) {
 
     for (uint32_t i = 0; i < unit.header.name_count; ++i) {
         unit.entry_offsets.push_back(readOffset(offset, unit.unit_end, unit.header.is_dwarf64));
-        if (offset > unit.unit_end) return false;
+        if (hasDecodeError() || offset > unit.unit_end) return false;
     }
 
     return true;
@@ -216,26 +227,33 @@ bool DebugNamesParser::parseEntryOffsets(Unit& unit, uint64_t& offset) {
 bool DebugNamesParser::parseAbbrevTable(Unit& unit, uint64_t& offset) {
     unit.abbrevs.clear();
 
+    if (unit.header.abbrev_table_size > (unit.unit_end - offset)) return false;
     uint64_t table_end = offset + unit.header.abbrev_table_size;
-    if (table_end > unit.unit_end) return false;
 
     while (offset < table_end) {
+        uint64_t before = offset;
         uint64_t code = readULEB128(offset, table_end);
+        if (hasDecodeError()) return false;
         if (code == 0) break; // end-of-table marker
 
         NameIndexAbbrev abbrev;
         abbrev.code = code;
         abbrev.tag = static_cast<DwarfTag>(readULEB128(offset, table_end));
+        if (hasDecodeError()) return false;
 
         while (true) {
+            uint64_t attr_before = offset;
             uint64_t idx = readULEB128(offset, table_end);
             uint64_t form = readULEB128(offset, table_end);
+            if (hasDecodeError()) return false;
             if (idx == 0 && form == 0) break;
 
             abbrev.attributes.push_back({static_cast<DW_IDX>(idx), static_cast<DwarfForm>(form)});
+            if (offset <= attr_before) return false;
         }
 
         unit.abbrevs[code] = std::move(abbrev);
+        if (offset <= before) return false;
     }
 
     // The abbrev table occupies exactly abbrev_table_size bytes, even if we hit a terminator early.
@@ -252,9 +270,36 @@ void DebugNamesParser::populateCache() const {
         cache_populated_ = true;
         return;
     }
+    clearDecodeError();
 
     auto readSLEB128 = [&](uint64_t& off, uint64_t end) -> int64_t {
-        return DwarfUtils::readSLEB128(debug_names_.data(), off, end);
+        if (end > debug_names_.size() || off >= end) {
+            decode_error_ = true;
+            return 0;
+        }
+        uint64_t result = 0;
+        unsigned shift = 0;
+        uint8_t byte = 0;
+        while (off < end) {
+            byte = debug_names_[off++];
+            uint64_t bits = static_cast<uint64_t>(byte & 0x7f);
+            if (shift >= 64 && bits != 0) {
+                decode_error_ = true;
+                return 0;
+            }
+            result |= (bits << shift);
+            shift += 7;
+            if ((byte & 0x80) == 0) {
+                if (shift < 64 && (byte & 0x40)) result |= (~0ULL << shift);
+                return static_cast<int64_t>(result);
+            }
+            if (shift >= 64) {
+                decode_error_ = true;
+                return 0;
+            }
+        }
+        decode_error_ = true;
+        return 0;
     };
 
     auto skipCString = [&](uint64_t& off, uint64_t end) -> void {
@@ -303,10 +348,10 @@ void DebugNamesParser::populateCache() const {
             case DwarfForm::DW_FORM_loclistx:
             case DwarfForm::DW_FORM_rnglistx:
                 (void)readULEB128(off, end);
-                return off <= end;
+                return !hasDecodeError() && off <= end;
             case DwarfForm::DW_FORM_sdata:
                 (void)readSLEB128(off, end);
-                return off <= end;
+                return !hasDecodeError() && off <= end;
             case DwarfForm::DW_FORM_string:
                 skipCString(off, end);
                 return true;
@@ -337,6 +382,7 @@ void DebugNamesParser::populateCache() const {
             }
             case DwarfForm::DW_FORM_indirect: {
                 uint64_t f = readULEB128(off, end);
+                if (hasDecodeError()) return false;
                 return self(self, static_cast<DwarfForm>(f), off, end, is_dwarf64);
             }
             default:
@@ -385,11 +431,17 @@ void DebugNamesParser::populateCache() const {
             entry.name = name;
             entry.hash = unit.hashes[i];
 
+            if (unit.entry_offsets[i] > (unit.unit_end - unit.entry_pool_base)) continue;
             uint64_t entry_offset = unit.entry_pool_base + unit.entry_offsets[i];
             if (entry_offset >= unit.unit_end) continue;
 
             while (entry_offset < unit.unit_end) {
+                uint64_t entry_before = entry_offset;
                 uint64_t abbrev_code = readULEB128(entry_offset, unit.unit_end);
+                if (hasDecodeError()) {
+                    entry_offset = unit.unit_end;
+                    break;
+                }
                 if (abbrev_code == 0) break;
 
                 auto it = unit.abbrevs.find(abbrev_code);
@@ -403,7 +455,7 @@ void DebugNamesParser::populateCache() const {
 
                 for (const auto& attr : abbrev.attributes) {
                     auto v = readFormUnsigned(attr.second, entry_offset, unit.unit_end, unit.header.is_dwarf64);
-                    if (!v.has_value()) {
+                    if (!v.has_value() || hasDecodeError()) {
                         // Unable to skip this form reliably; abandon this name's entry list.
                         entry_offset = unit.unit_end;
                         break;
@@ -422,6 +474,7 @@ void DebugNamesParser::populateCache() const {
                 }
 
                 if (entry_offset > unit.unit_end) break;
+                if (entry_offset <= entry_before) break;
                 // DW_IDX_die_offset is an offset within a CU. Convert it to an absolute .debug_info
                 // section offset using the corresponding CU's section offset, when possible.
                 uint64_t abs_die_offset = die_offset;
@@ -433,7 +486,9 @@ void DebugNamesParser::populateCache() const {
                 entry.cu_indices.push_back(cu_index);
             }
 
-            name_cache_[name].push_back(std::move(entry));
+            if (!entry.die_offsets.empty()) {
+                name_cache_[name].push_back(std::move(entry));
+            }
         }
     }
 
@@ -449,9 +504,36 @@ std::vector<NameEntry> DebugNamesParser::lookupName(const std::string& name) con
     if (!parsed_ || units_.empty() || name.empty()) {
         return {};
     }
+    clearDecodeError();
 
     auto readSLEB128 = [&](uint64_t& off, uint64_t end) -> int64_t {
-        return DwarfUtils::readSLEB128(debug_names_.data(), off, end);
+        if (end > debug_names_.size() || off >= end) {
+            decode_error_ = true;
+            return 0;
+        }
+        uint64_t result = 0;
+        unsigned shift = 0;
+        uint8_t byte = 0;
+        while (off < end) {
+            byte = debug_names_[off++];
+            uint64_t bits = static_cast<uint64_t>(byte & 0x7f);
+            if (shift >= 64 && bits != 0) {
+                decode_error_ = true;
+                return 0;
+            }
+            result |= (bits << shift);
+            shift += 7;
+            if ((byte & 0x80) == 0) {
+                if (shift < 64 && (byte & 0x40)) result |= (~0ULL << shift);
+                return static_cast<int64_t>(result);
+            }
+            if (shift >= 64) {
+                decode_error_ = true;
+                return 0;
+            }
+        }
+        decode_error_ = true;
+        return 0;
     };
 
     auto skipCString = [&](uint64_t& off, uint64_t end) -> void {
@@ -500,10 +582,10 @@ std::vector<NameEntry> DebugNamesParser::lookupName(const std::string& name) con
             case DwarfForm::DW_FORM_loclistx:
             case DwarfForm::DW_FORM_rnglistx:
                 (void)readULEB128(off, end);
-                return off <= end;
+                return !hasDecodeError() && off <= end;
             case DwarfForm::DW_FORM_sdata:
                 (void)readSLEB128(off, end);
-                return off <= end;
+                return !hasDecodeError() && off <= end;
             case DwarfForm::DW_FORM_string:
                 skipCString(off, end);
                 return true;
@@ -534,6 +616,7 @@ std::vector<NameEntry> DebugNamesParser::lookupName(const std::string& name) con
             }
             case DwarfForm::DW_FORM_indirect: {
                 uint64_t f = readULEB128(off, end);
+                if (hasDecodeError()) return false;
                 return self(self, static_cast<DwarfForm>(f), off, end, is_dwarf64);
             }
             default:
@@ -604,11 +687,18 @@ std::vector<NameEntry> DebugNamesParser::lookupName(const std::string& name) con
             entry.name = name;
             entry.hash = hj;
 
-            uint64_t entry_offset = unit.entry_pool_base + unit.entry_offsets[static_cast<size_t>(j)];
+            uint64_t rel = unit.entry_offsets[static_cast<size_t>(j)];
+            if (rel > (unit.unit_end - unit.entry_pool_base)) continue;
+            uint64_t entry_offset = unit.entry_pool_base + rel;
             if (entry_offset >= unit.unit_end) continue;
 
             while (entry_offset < unit.unit_end) {
+                uint64_t entry_before = entry_offset;
                 uint64_t abbrev_code = readULEB128(entry_offset, unit.unit_end);
+                if (hasDecodeError()) {
+                    entry_offset = unit.unit_end;
+                    break;
+                }
                 if (abbrev_code == 0) break;
 
                 auto it = unit.abbrevs.find(abbrev_code);
@@ -622,7 +712,7 @@ std::vector<NameEntry> DebugNamesParser::lookupName(const std::string& name) con
 
                 for (const auto& attr : abbrev.attributes) {
                     auto v = readFormUnsigned(attr.second, entry_offset, unit.unit_end, unit.header.is_dwarf64);
-                    if (!v.has_value()) {
+                    if (!v.has_value() || hasDecodeError()) {
                         entry_offset = unit.unit_end;
                         break;
                     }
@@ -640,6 +730,7 @@ std::vector<NameEntry> DebugNamesParser::lookupName(const std::string& name) con
                 }
 
                 if (entry_offset > unit.unit_end) break;
+                if (entry_offset <= entry_before) break;
                 uint64_t abs_die_offset = die_offset;
                 if (cu_index < unit.cu_offsets.size()) {
                     abs_die_offset = unit.cu_offsets[static_cast<size_t>(cu_index)] + die_offset;
@@ -649,7 +740,9 @@ std::vector<NameEntry> DebugNamesParser::lookupName(const std::string& name) con
                 entry.cu_indices.push_back(cu_index);
             }
 
-            results.push_back(std::move(entry));
+            if (!entry.die_offsets.empty()) {
+                results.push_back(std::move(entry));
+            }
         }
     }
 
@@ -720,18 +813,34 @@ uint64_t DebugNamesParser::hashName(const std::string& name) {
 // Reading helpers
 
 uint8_t DebugNamesParser::readU8(uint64_t& offset, uint64_t end) const {
+    if (offset + 1 > end || end > debug_names_.size()) {
+        decode_error_ = true;
+        return 0;
+    }
     return DwarfUtils::readU8(debug_names_.data(), offset, end);
 }
 
 uint16_t DebugNamesParser::readU16(uint64_t& offset, uint64_t end) const {
+    if (offset + 2 > end || end > debug_names_.size()) {
+        decode_error_ = true;
+        return 0;
+    }
     return DwarfUtils::readU16(debug_names_.data(), offset, end);
 }
 
 uint32_t DebugNamesParser::readU32(uint64_t& offset, uint64_t end) const {
+    if (offset + 4 > end || end > debug_names_.size()) {
+        decode_error_ = true;
+        return 0;
+    }
     return DwarfUtils::readU32(debug_names_.data(), offset, end);
 }
 
 uint64_t DebugNamesParser::readU64(uint64_t& offset, uint64_t end) const {
+    if (offset + 8 > end || end > debug_names_.size()) {
+        decode_error_ = true;
+        return 0;
+    }
     return DwarfUtils::readU64(debug_names_.data(), offset, end);
 }
 
@@ -740,7 +849,32 @@ uint64_t DebugNamesParser::readOffset(uint64_t& offset, uint64_t end, bool is_dw
 }
 
 uint64_t DebugNamesParser::readULEB128(uint64_t& offset, uint64_t end) const {
-    return DwarfUtils::readULEB128(debug_names_.data(), offset, end);
+    if (end > debug_names_.size() || offset >= end) {
+        decode_error_ = true;
+        return 0;
+    }
+
+    uint64_t result = 0;
+    unsigned shift = 0;
+    while (offset < end) {
+        uint8_t byte = debug_names_[offset++];
+        uint64_t bits = static_cast<uint64_t>(byte & 0x7f);
+        if (shift >= 64 && bits != 0) {
+            decode_error_ = true;
+            return 0;
+        }
+        result |= (bits << shift);
+        if ((byte & 0x80) == 0) {
+            return result;
+        }
+        shift += 7;
+        if (shift >= 64) {
+            decode_error_ = true;
+            return 0;
+        }
+    }
+    decode_error_ = true;
+    return 0;
 }
 
 std::string DebugNamesParser::readString(uint64_t str_offset) const {
@@ -753,6 +887,14 @@ std::string DebugNamesParser::readString(uint64_t str_offset) const {
     size_t len = strnlen(str, max_len);
 
     return std::string(str, len);
+}
+
+void DebugNamesParser::clearDecodeError() const {
+    decode_error_ = false;
+}
+
+bool DebugNamesParser::hasDecodeError() const {
+    return decode_error_;
 }
 
 } // namespace dwarf

@@ -132,6 +132,10 @@ private:
     uint64_t readOffset(uint64_t& offset, uint64_t end, bool is_dwarf64) const;
     uint64_t readULEB128(uint64_t& offset, uint64_t end) const;
     std::string readString(uint64_t offset) const;
+    void clearDecodeError() const;
+    bool hasDecodeError() const;
+
+    mutable bool decode_error_ = false;
 };
 
 } // namespace dwarf

@@ -42,6 +42,10 @@ std::vector<DebugSupEntry> DebugSupParser::parse() const {
         if (initial_length == 0xffffffff) {
             if (off + 8 > debug_sup_.size()) {
                 // Can't read 64-bit length. No safe way to resync.
+                e.well_formed = false;
+                e.error_mask |= kErrBadLength;
+                e.entry_size = debug_sup_.size() - e.entry_offset;
+                out.push_back(std::move(e));
                 break;
             }
             unit_length = DwarfUtils::readU64(debug_sup_.data(), off, debug_sup_.size());
@@ -52,6 +56,10 @@ std::vector<DebugSupEntry> DebugSupParser::parse() const {
         uint64_t content_start = off;
         if (unit_length > debug_sup_.size() - content_start) {
             // No safe way to resync without a valid unit_length.
+            e.well_formed = false;
+            e.error_mask |= kErrBadLength;
+            e.entry_size = debug_sup_.size() - e.entry_offset;
+            out.push_back(std::move(e));
             break;
         }
         uint64_t content_end = content_start + unit_length;

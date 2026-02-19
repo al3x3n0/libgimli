@@ -4,6 +4,7 @@
 #include <sstream>
 #include <iomanip>
 #include <cstdint>
+#include <cstring>
 
 namespace dwarf {
 
@@ -39,6 +40,7 @@ AttributeParser::AttributeParser(const std::vector<uint8_t>& debug_info,
     cu_loclists_offsets_end_ = debug_loclists_.size();
     cu_loclists_is_dwarf64_ = false;
     cu_loclists_seg_size_ = 0;
+    cu_debug_info_end_ = debug_info_.size();
 
     // Initialize DWARF 5 parsers if sections are available
     if (!debug_rnglists_.empty()) {
@@ -715,24 +717,74 @@ std::shared_ptr<AttributeValue> AttributeParser::parseConstValueAttribute(DwarfA
     return parseConstantValue(attr, form, offset);
 }
 
+uint64_t AttributeParser::currentDebugInfoEnd() const {
+    const uint64_t max = debug_info_.size();
+    return (cu_debug_info_end_ <= max) ? cu_debug_info_end_ : max;
+}
+
+void AttributeParser::advanceOffsetBounded(uint64_t& offset, uint64_t amount) const {
+    const uint64_t max = currentDebugInfoEnd();
+    if (offset >= max) {
+        offset = max;
+        return;
+    }
+    if (amount > (max - offset)) {
+        offset = max;
+        return;
+    }
+    offset += amount;
+}
+
+std::string AttributeParser::readCStringFromSection(const std::vector<uint8_t>& section,
+                                                    uint64_t offset,
+                                                    uint64_t* consumed,
+                                                    bool* terminated) const {
+    if (consumed) *consumed = 0;
+    if (terminated) *terminated = false;
+    size_t section_end = section.size();
+    if (&section == &debug_info_) {
+        section_end = static_cast<size_t>(currentDebugInfoEnd());
+    }
+    if (offset >= section_end) return "";
+
+    const uint8_t* start = section.data() + offset;
+    size_t remaining = section_end - static_cast<size_t>(offset);
+    const void* term = std::memchr(start, 0, remaining);
+
+    if (term == nullptr) {
+        if (consumed) *consumed = remaining;
+        return std::string(reinterpret_cast<const char*>(start), remaining);
+    }
+
+    size_t n = static_cast<const uint8_t*>(term) - start;
+    if (consumed) *consumed = n + 1;
+    if (terminated) *terminated = true;
+    return std::string(reinterpret_cast<const char*>(start), n);
+}
+
 std::string AttributeParser::getString(uint64_t offset) const {
-    if (offset >= debug_str_.size()) return "";
-    
-    const char* str = reinterpret_cast<const char*>(debug_str_.data() + offset);
-    return std::string(str);
+    return readCStringFromSection(debug_str_, offset);
 }
 
 std::string AttributeParser::readString(uint64_t& offset) const {
-    if (offset >= debug_str_.size()) return "";
-    const char* str = reinterpret_cast<const char*>(debug_str_.data() + offset);
-    size_t len = strlen(str);
-    offset += len + 1; // +1 for null terminator
-    return std::string(str);
+    uint64_t consumed = 0;
+    std::string value = readCStringFromSection(debug_str_, offset, &consumed, nullptr);
+    if (consumed == 0) return value;
+    uint64_t max = debug_str_.size();
+    if (offset > max) {
+        offset = max;
+    } else if (consumed > (max - offset)) {
+        offset = max;
+    } else {
+        offset += consumed;
+    }
+    return value;
 }
 
 std::vector<uint8_t> AttributeParser::getBlock(uint64_t offset, uint64_t size) const {
-    if (offset + size > debug_info_.size()) return {};
-    
+    const uint64_t max = currentDebugInfoEnd();
+    if (offset > max) return {};
+    if (size > (max - offset)) return {};
     return std::vector<uint8_t>(debug_info_.begin() + offset, debug_info_.begin() + offset + size);
 }
 
@@ -756,31 +808,31 @@ std::string AttributeParser::attributeValueToString(std::shared_ptr<AttributeVal
 
 // Data reading helpers
 uint64_t AttributeParser::readULEB128(uint64_t& offset) const {
-    return DwarfUtils::readULEB128(debug_info_.data(), offset, debug_info_.size());
+    return DwarfUtils::readULEB128(debug_info_.data(), offset, currentDebugInfoEnd());
 }
 
 int64_t AttributeParser::readSLEB128(uint64_t& offset) const {
-    return DwarfUtils::readSLEB128(debug_info_.data(), offset, debug_info_.size());
+    return DwarfUtils::readSLEB128(debug_info_.data(), offset, currentDebugInfoEnd());
 }
 
 uint8_t AttributeParser::readU8(uint64_t& offset) const {
-    return DwarfUtils::readU8(debug_info_.data(), offset, debug_info_.size());
+    return DwarfUtils::readU8(debug_info_.data(), offset, currentDebugInfoEnd());
 }
 
 int8_t AttributeParser::readS8(uint64_t& offset) const {
-    return static_cast<int8_t>(DwarfUtils::readU8(debug_info_.data(), offset, debug_info_.size()));
+    return static_cast<int8_t>(DwarfUtils::readU8(debug_info_.data(), offset, currentDebugInfoEnd()));
 }
 
 uint16_t AttributeParser::readU16(uint64_t& offset) const {
-    return DwarfUtils::readU16(debug_info_.data(), offset, debug_info_.size());
+    return DwarfUtils::readU16(debug_info_.data(), offset, currentDebugInfoEnd());
 }
 
 uint32_t AttributeParser::readU32(uint64_t& offset) const {
-    return DwarfUtils::readU32(debug_info_.data(), offset, debug_info_.size());
+    return DwarfUtils::readU32(debug_info_.data(), offset, currentDebugInfoEnd());
 }
 
 uint64_t AttributeParser::readU64(uint64_t& offset) const {
-    return DwarfUtils::readU64(debug_info_.data(), offset, debug_info_.size());
+    return DwarfUtils::readU64(debug_info_.data(), offset, currentDebugInfoEnd());
 }
 
 // Form-specific parsers
@@ -820,9 +872,9 @@ std::shared_ptr<AttributeValue> AttributeParser::parseFormUdata(uint64_t& offset
 }
 
 std::shared_ptr<AttributeValue> AttributeParser::parseFormString(uint64_t& offset) const {
-    const char* str = reinterpret_cast<const char*>(debug_info_.data() + offset);
-    std::string value(str);
-    offset += value.length() + 1;
+    uint64_t consumed = 0;
+    std::string value = readCStringFromSection(debug_info_, offset, &consumed, nullptr);
+    advanceOffsetBounded(offset, consumed);
     return std::make_shared<StringAttributeValue>(value);
 }
 
@@ -834,8 +886,7 @@ std::shared_ptr<AttributeValue> AttributeParser::parseFormStrp(uint64_t& offset)
 std::shared_ptr<AttributeValue> AttributeParser::parseFormStrpSup(uint64_t& offset) const {
     uint64_t str_offset = is_dwarf64_ ? readU64(offset) : readU32(offset);
     if (str_offset < debug_str_sup_.size()) {
-        const char* str = reinterpret_cast<const char*>(debug_str_sup_.data() + str_offset);
-        return std::make_shared<StringAttributeValue>(str);
+        return std::make_shared<StringAttributeValue>(readCStringFromSection(debug_str_sup_, str_offset));
     }
     return std::make_shared<StringAttributeValue>("<strp_sup:" + std::to_string(str_offset) + ">");
 }
@@ -895,35 +946,35 @@ std::shared_ptr<AttributeValue> AttributeParser::parseFormFlagPresent(uint64_t& 
 std::shared_ptr<AttributeValue> AttributeParser::parseFormBlock1(uint64_t& offset) const {
     uint8_t length = readU8(offset);
     std::vector<uint8_t> data = getBlock(offset, length);
-    offset += length;
+    advanceOffsetBounded(offset, length);
     return std::make_shared<BlockAttributeValue>(data);
 }
 
 std::shared_ptr<AttributeValue> AttributeParser::parseFormBlock2(uint64_t& offset) const {
     uint16_t length = readU16(offset);
     std::vector<uint8_t> data = getBlock(offset, length);
-    offset += length;
+    advanceOffsetBounded(offset, length);
     return std::make_shared<BlockAttributeValue>(data);
 }
 
 std::shared_ptr<AttributeValue> AttributeParser::parseFormBlock4(uint64_t& offset) const {
     uint32_t length = readU32(offset);
     std::vector<uint8_t> data = getBlock(offset, length);
-    offset += length;
+    advanceOffsetBounded(offset, length);
     return std::make_shared<BlockAttributeValue>(data);
 }
 
 std::shared_ptr<AttributeValue> AttributeParser::parseFormBlock(uint64_t& offset) const {
     uint64_t length = readULEB128(offset);
     std::vector<uint8_t> data = getBlock(offset, length);
-    offset += length;
+    advanceOffsetBounded(offset, length);
     return std::make_shared<BlockAttributeValue>(data);
 }
 
 std::shared_ptr<AttributeValue> AttributeParser::parseFormExprloc(uint64_t& offset) const {
     uint64_t length = readULEB128(offset);
     std::vector<uint8_t> data = getBlock(offset, length);
-    offset += length;
+    advanceOffsetBounded(offset, length);
     return std::make_shared<ExpressionAttributeValue>(data);
 }
 
@@ -963,8 +1014,7 @@ std::shared_ptr<AttributeValue> AttributeParser::parseFormStrx(uint64_t& offset)
             ? DwarfUtils::readU64(debug_str_offsets_.data(), temp_off, debug_str_offsets_.size())
             : DwarfUtils::readU32(debug_str_offsets_.data(), temp_off, debug_str_offsets_.size());
         if (str_offset < debug_str_.size()) {
-            const char* str = reinterpret_cast<const char*>(debug_str_.data() + str_offset);
-            return std::make_shared<StringAttributeValue>(str);
+            return std::make_shared<StringAttributeValue>(getString(str_offset));
         }
     }
 
@@ -990,7 +1040,7 @@ std::shared_ptr<AttributeValue> AttributeParser::parseFormAddrx(uint64_t& offset
 
 std::shared_ptr<AttributeValue> AttributeParser::parseFormData16(uint64_t& offset) const {
     std::vector<uint8_t> data = getBlock(offset, 16);
-    offset += 16;
+    advanceOffsetBounded(offset, 16);
     return std::make_shared<BlockAttributeValue>(data);
 }
 
@@ -999,8 +1049,7 @@ std::shared_ptr<AttributeValue> AttributeParser::parseFormLineStrp(uint64_t& off
     
     // Use the line string table to resolve the actual string
     if (str_offset < debug_line_str_.size()) {
-        const char* str = reinterpret_cast<const char*>(debug_line_str_.data() + str_offset);
-        return std::make_shared<StringAttributeValue>(str);
+        return std::make_shared<StringAttributeValue>(readCStringFromSection(debug_line_str_, str_offset));
     }
     
     return std::make_shared<StringAttributeValue>("<line_strp:" + std::to_string(str_offset) + ">");
@@ -1166,8 +1215,7 @@ std::shared_ptr<AttributeValue> AttributeParser::parseFormStrx1(uint64_t& offset
             ? DwarfUtils::readU64(debug_str_offsets_.data(), temp_off, debug_str_offsets_.size())
             : DwarfUtils::readU32(debug_str_offsets_.data(), temp_off, debug_str_offsets_.size());
         if (str_offset < debug_str_.size()) {
-            return std::make_shared<StringAttributeValue>(
-                reinterpret_cast<const char*>(debug_str_.data() + str_offset));
+            return std::make_shared<StringAttributeValue>(getString(str_offset));
         }
     }
     return std::make_shared<StringAttributeValue>("<strx1:" + std::to_string(index) + ">");
@@ -1183,8 +1231,7 @@ std::shared_ptr<AttributeValue> AttributeParser::parseFormStrx2(uint64_t& offset
             ? DwarfUtils::readU64(debug_str_offsets_.data(), temp_off, debug_str_offsets_.size())
             : DwarfUtils::readU32(debug_str_offsets_.data(), temp_off, debug_str_offsets_.size());
         if (str_offset < debug_str_.size()) {
-            return std::make_shared<StringAttributeValue>(
-                reinterpret_cast<const char*>(debug_str_.data() + str_offset));
+            return std::make_shared<StringAttributeValue>(getString(str_offset));
         }
     }
     return std::make_shared<StringAttributeValue>("<strx2:" + std::to_string(index) + ">");
@@ -1201,8 +1248,7 @@ std::shared_ptr<AttributeValue> AttributeParser::parseFormStrx3(uint64_t& offset
             ? DwarfUtils::readU64(debug_str_offsets_.data(), temp_off, debug_str_offsets_.size())
             : DwarfUtils::readU32(debug_str_offsets_.data(), temp_off, debug_str_offsets_.size());
         if (str_offset < debug_str_.size()) {
-            return std::make_shared<StringAttributeValue>(
-                reinterpret_cast<const char*>(debug_str_.data() + str_offset));
+            return std::make_shared<StringAttributeValue>(getString(str_offset));
         }
     }
     return std::make_shared<StringAttributeValue>("<strx3:" + std::to_string(index) + ">");
@@ -1218,8 +1264,7 @@ std::shared_ptr<AttributeValue> AttributeParser::parseFormStrx4(uint64_t& offset
             ? DwarfUtils::readU64(debug_str_offsets_.data(), temp_off, debug_str_offsets_.size())
             : DwarfUtils::readU32(debug_str_offsets_.data(), temp_off, debug_str_offsets_.size());
         if (str_offset < debug_str_.size()) {
-            return std::make_shared<StringAttributeValue>(
-                reinterpret_cast<const char*>(debug_str_.data() + str_offset));
+            return std::make_shared<StringAttributeValue>(getString(str_offset));
         }
     }
     return std::make_shared<StringAttributeValue>("<strx4:" + std::to_string(index) + ">");
@@ -1229,7 +1274,7 @@ std::shared_ptr<AttributeValue> AttributeParser::parseFormStrx4(uint64_t& offset
 std::shared_ptr<AttributeValue> AttributeParser::parseLocationExpression(uint64_t& offset) const {
     uint64_t length = readULEB128(offset);
     std::vector<uint8_t> data = getBlock(offset, length);
-    offset += length;
+    advanceOffsetBounded(offset, length);
     return std::make_shared<LocationAttributeValue>(LocationAttributeValue::LocationType::EXPRESSION, data);
 }
 

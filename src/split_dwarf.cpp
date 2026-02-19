@@ -301,159 +301,172 @@ std::optional<SplitDwarfLoader::DWOSections> DWPLoader::getSectionsForUnit(uint6
     return sections;
 }
 
-	bool DWPLoader::parseIndex(const std::vector<uint8_t>& index_data, bool is_tu_index) {
-	    (void)is_tu_index; // Same format for CU and TU index
+bool DWPLoader::parseIndex(const std::vector<uint8_t>& index_data, bool is_tu_index) {
+    (void)is_tu_index; // Same format for CU and TU index
 
+    index_ = DWPIndex{};
     if (index_data.size() < 16) {
         return false;
     }
 
-    uint64_t offset = 0;
+    DWPIndex parsed{};
+    bool decode_error = false;
 
-    // Read header
-    auto readU32 = [&]() -> uint32_t {
-        if (offset + 4 > index_data.size()) return 0;
-        uint32_t v = index_data[offset] |
-                    (index_data[offset + 1] << 8) |
-                    (index_data[offset + 2] << 16) |
-                    (index_data[offset + 3] << 24);
-        offset += 4;
+    auto readU32 = [&](uint64_t& off) -> uint32_t {
+        if (off + 4 > index_data.size()) {
+            decode_error = true;
+            return 0;
+        }
+        uint32_t v = static_cast<uint32_t>(index_data[off]) |
+                     (static_cast<uint32_t>(index_data[off + 1]) << 8) |
+                     (static_cast<uint32_t>(index_data[off + 2]) << 16) |
+                     (static_cast<uint32_t>(index_data[off + 3]) << 24);
+        off += 4;
         return v;
     };
 
-    auto readU64 = [&]() -> uint64_t {
-        if (offset + 8 > index_data.size()) return 0;
+    auto readU64 = [&](uint64_t& off) -> uint64_t {
+        if (off + 8 > index_data.size()) {
+            decode_error = true;
+            return 0;
+        }
         uint64_t v = 0;
         for (int i = 0; i < 8; ++i) {
-            v |= static_cast<uint64_t>(index_data[offset + i]) << (i * 8);
+            v |= static_cast<uint64_t>(index_data[off + i]) << (i * 8);
         }
-        offset += 8;
+        off += 8;
         return v;
     };
 
-	    index_.version = readU32();
-	    index_.section_count = readU32();
-	    index_.unit_count = readU32();
-	    index_.slot_count = readU32();
+    uint64_t offset = 0;
+    parsed.version = readU32(offset);
+    parsed.section_count = readU32(offset);
+    parsed.unit_count = readU32(offset);
+    parsed.slot_count = readU32(offset);
+    if (decode_error) return false;
 
-	    // DWARF Split DWARF package (.dwp) index versions in the wild are typically >= 2.
-	    // Some producers/consumers historically used version 1; the overall layout is commonly
-	    // compatible. Prefer attempting to parse when the remaining bounds checks succeed rather
-	    // than hard-failing.
-	    if (index_.version < 1) {
-	        return false; // Unsupported version
-	    }
-	    if (index_.section_count == 0 || index_.slot_count == 0) {
-	        return false;
-	    }
+    // DWARF Split DWARF package (.dwp) index versions in the wild are typically >= 2.
+    // Some producers/consumers historically used version 1; the overall layout is commonly
+    // compatible. Prefer attempting to parse when the remaining bounds checks succeed rather
+    // than hard-failing.
+    if (parsed.version < 1) {
+        return false; // Unsupported version
+    }
+    if (parsed.section_count == 0 || parsed.slot_count == 0) {
+        return false;
+    }
 
     // Read section column meanings (DW_SECT_* ids)
     // Immediately after the header comes section_count 32-bit section identifiers.
     std::vector<uint32_t> section_ids;
-    section_ids.reserve(index_.section_count);
-    for (uint32_t i = 0; i < index_.section_count; ++i) {
-        if (offset + 4 > index_data.size()) return false;
-        section_ids.push_back(readU32());
+    section_ids.reserve(parsed.section_count);
+    for (uint32_t i = 0; i < parsed.section_count; ++i) {
+        section_ids.push_back(readU32(offset));
+        if (decode_error) return false;
     }
 
-	    // Layout:
-	    // section_ids: section_count * 4
-	    // hash table: slot_count * 8 (signatures)
-	    // index table: slot_count * 4 (1-based row indices)
-	    // section offsets: unit_count * section_count * 4
-	    // section sizes: unit_count * section_count * 4
+    // Layout:
+    // section_ids: section_count * 4
+    // hash table: slot_count * 8 (signatures)
+    // index table: slot_count * 4 (1-based row indices)
+    // section offsets: unit_count * section_count * 4
+    // section sizes: unit_count * section_count * 4
 
-	    auto checkedMul = [](uint64_t a, uint64_t b, uint64_t& out) -> bool {
-	        if (a == 0 || b == 0) {
-	            out = 0;
-	            return true;
-	        }
-	        if (a > (std::numeric_limits<uint64_t>::max() / b)) {
-	            return false;
-	        }
-	        out = a * b;
-	        return true;
-	    };
-	    auto checkedAdd = [](uint64_t a, uint64_t b, uint64_t& out) -> bool {
-	        if (a > (std::numeric_limits<uint64_t>::max() - b)) {
-	            return false;
-	        }
-	        out = a + b;
-	        return true;
-	    };
+    auto checkedMul = [](uint64_t a, uint64_t b, uint64_t& out) -> bool {
+        if (a == 0 || b == 0) {
+            out = 0;
+            return true;
+        }
+        if (a > (std::numeric_limits<uint64_t>::max() / b)) {
+            return false;
+        }
+        out = a * b;
+        return true;
+    };
+    auto checkedAdd = [](uint64_t a, uint64_t b, uint64_t& out) -> bool {
+        if (a > (std::numeric_limits<uint64_t>::max() - b)) {
+            return false;
+        }
+        out = a + b;
+        return true;
+    };
 
-	    uint64_t hash_table_offset = offset;
-	    uint64_t slot_sig_bytes = 0;
-	    uint64_t slot_idx_bytes = 0;
-	    uint64_t unit_col_count = 0;
-	    uint64_t unit_table_bytes = 0;
-	    if (!checkedMul(index_.slot_count, 8, slot_sig_bytes)) return false;
-	    if (!checkedMul(index_.slot_count, 4, slot_idx_bytes)) return false;
-	    if (!checkedMul(index_.unit_count, index_.section_count, unit_col_count)) return false;
-	    if (!checkedMul(unit_col_count, 4, unit_table_bytes)) return false;
+    uint64_t hash_table_offset = offset;
+    uint64_t slot_sig_bytes = 0;
+    uint64_t slot_idx_bytes = 0;
+    uint64_t unit_col_count = 0;
+    uint64_t unit_table_bytes = 0;
+    if (!checkedMul(parsed.slot_count, 8, slot_sig_bytes)) return false;
+    if (!checkedMul(parsed.slot_count, 4, slot_idx_bytes)) return false;
+    if (!checkedMul(parsed.unit_count, parsed.section_count, unit_col_count)) return false;
+    if (!checkedMul(unit_col_count, 4, unit_table_bytes)) return false;
 
-	    uint64_t index_table_offset = 0;
-	    uint64_t section_offsets_offset = 0;
-	    uint64_t section_sizes_offset = 0;
-	    uint64_t end_of_offsets = 0;
-	    uint64_t end_of_sizes = 0;
-	    if (!checkedAdd(hash_table_offset, slot_sig_bytes, index_table_offset)) return false;
-	    if (!checkedAdd(index_table_offset, slot_idx_bytes, section_offsets_offset)) return false;
-	    if (!checkedAdd(section_offsets_offset, unit_table_bytes, section_sizes_offset)) return false;
-	    if (!checkedAdd(section_offsets_offset, unit_table_bytes, end_of_offsets)) return false;
-	    if (!checkedAdd(section_sizes_offset, unit_table_bytes, end_of_sizes)) return false;
-	    if (index_table_offset > index_data.size()) return false;
-	    if (section_offsets_offset > index_data.size()) return false;
-	    if (section_sizes_offset > index_data.size()) return false;
-	    if (end_of_offsets > index_data.size()) return false;
-	    if (end_of_sizes > index_data.size()) return false;
+    uint64_t index_table_offset = 0;
+    uint64_t section_offsets_offset = 0;
+    uint64_t section_sizes_offset = 0;
+    uint64_t end_of_offsets = 0;
+    uint64_t end_of_sizes = 0;
+    if (!checkedAdd(hash_table_offset, slot_sig_bytes, index_table_offset)) return false;
+    if (!checkedAdd(index_table_offset, slot_idx_bytes, section_offsets_offset)) return false;
+    if (!checkedAdd(section_offsets_offset, unit_table_bytes, section_sizes_offset)) return false;
+    if (!checkedAdd(section_offsets_offset, unit_table_bytes, end_of_offsets)) return false;
+    if (!checkedAdd(section_sizes_offset, unit_table_bytes, end_of_sizes)) return false;
+    if (index_table_offset > index_data.size()) return false;
+    if (section_offsets_offset > index_data.size()) return false;
+    if (section_sizes_offset > index_data.size()) return false;
+    if (end_of_offsets > index_data.size()) return false;
+    if (end_of_sizes > index_data.size()) return false;
 
     // Scan hash table
-    for (uint32_t slot = 0; slot < index_.slot_count; ++slot) {
-        offset = hash_table_offset + slot * 8;
-        uint64_t signature = readU64();
+    for (uint32_t slot = 0; slot < parsed.slot_count; ++slot) {
+        uint64_t sig_off = hash_table_offset + static_cast<uint64_t>(slot) * 8;
+        uint64_t idx_off = index_table_offset + static_cast<uint64_t>(slot) * 4;
+        if (sig_off + 8 > index_data.size()) return false;
+        if (idx_off + 4 > index_data.size()) return false;
+
+        uint64_t tmp = sig_off;
+        uint64_t signature = readU64(tmp);
+        if (decode_error) return false;
 
         if (signature == 0) {
             continue; // Empty slot
         }
 
-        offset = index_table_offset + slot * 4;
-        uint32_t index = readU32();
+        tmp = idx_off;
+        uint32_t index = readU32(tmp);
+        if (decode_error) return false;
 
-        if (index == 0 || index > index_.unit_count) {
+        if (index == 0 || index > parsed.unit_count) {
             continue;
         }
 
-        // Read section offsets and sizes for this unit
+        // Read section offsets and sizes for this unit.
         DWPIndex::UnitEntry entry;
         entry.signature = signature;
 
-        // Index is 1-based
-        uint32_t row = index - 1;
+        // Index is 1-based.
+        uint64_t row = static_cast<uint64_t>(index - 1);
 
-        auto readRowColumn = [&](uint32_t col, uint32_t& off, uint32_t& sz) {
-            uint64_t off_pos = section_offsets_offset + (row * index_.section_count + col) * 4;
-            uint64_t sz_pos = section_sizes_offset + (row * index_.section_count + col) * 4;
+        auto readRowColumn = [&](uint32_t col, uint32_t& off, uint32_t& sz) -> bool {
+            uint64_t cell = row * static_cast<uint64_t>(parsed.section_count) + col;
+            uint64_t off_pos = section_offsets_offset + cell * 4;
+            uint64_t sz_pos = section_sizes_offset + cell * 4;
+            if (off_pos + 4 > index_data.size()) return false;
+            if (sz_pos + 4 > index_data.size()) return false;
 
-            if (off_pos + 4 <= index_data.size()) {
-                off = index_data[off_pos] |
-                      (index_data[off_pos + 1] << 8) |
-                      (index_data[off_pos + 2] << 16) |
-                      (index_data[off_pos + 3] << 24);
-            }
-            if (sz_pos + 4 <= index_data.size()) {
-                sz = index_data[sz_pos] |
-                     (index_data[sz_pos + 1] << 8) |
-                     (index_data[sz_pos + 2] << 16) |
-                     (index_data[sz_pos + 3] << 24);
-            }
+            uint64_t t = off_pos;
+            off = readU32(t);
+            t = sz_pos;
+            sz = readU32(t);
+            if (decode_error) return false;
+            return true;
         };
 
         // Map columns using section_ids (DW_SECT_* ids). Common DWARF 5 ids:
         // 1=INFO, 3=ABBREV, 4=LINE, 5=LOCLISTS, 6=STR_OFFSETS, 7=MACRO, 8=RNGLISTS, 9=ADDR.
-        for (uint32_t col = 0; col < index_.section_count && col < section_ids.size(); ++col) {
+        for (uint32_t col = 0; col < parsed.section_count && col < section_ids.size(); ++col) {
             uint32_t off = 0, sz = 0;
-            readRowColumn(col, off, sz);
+            if (!readRowColumn(col, off, sz)) return false;
 
             switch (section_ids[col]) {
                 case 1: // DW_SECT_INFO
@@ -485,20 +498,30 @@ std::optional<SplitDwarfLoader::DWOSections> DWPLoader::getSectionsForUnit(uint6
             }
         }
 
-        index_.units[signature] = entry;
+        parsed.units[signature] = entry;
     }
 
+    index_ = std::move(parsed);
     return true;
 }
 
 std::vector<uint8_t> DWPLoader::extractSection(
     const std::vector<uint8_t>& section, uint32_t offset, uint32_t size) const {
 
-    if (offset + size > section.size() || size == 0) {
+    if (size == 0) {
         return {};
     }
 
-    return std::vector<uint8_t>(section.begin() + offset, section.begin() + offset + size);
+    size_t off = static_cast<size_t>(offset);
+    size_t sz = static_cast<size_t>(size);
+    if (off > section.size()) {
+        return {};
+    }
+    if (sz > (section.size() - off)) {
+        return {};
+    }
+
+    return std::vector<uint8_t>(section.begin() + off, section.begin() + off + sz);
 }
 
 } // namespace dwarf

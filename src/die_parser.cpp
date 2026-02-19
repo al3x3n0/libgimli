@@ -6,6 +6,7 @@
 #define DEBUG_OUT(x) if (verbose_) { std::cerr << x << std::endl; }
 #include <sstream>
 #include <algorithm>
+#include <cstring>
 
 namespace dwarf {
 
@@ -150,24 +151,41 @@ std::vector<std::shared_ptr<DIE>> DIEParser::parseCompilationUnits() {
     DEBUG_OUT("Debug: Starting to parse compilation units, debug_info size: " << debug_info_.size());
     
     while (offset < debug_info_.size()) {
-        // Read compilation unit header
-        if (offset + 11 > debug_info_.size()) break; // Minimum header size
-        
+        // Need at least the initial length.
+        if (offset + 4 > debug_info_.size()) break;
+
         uint64_t start_offset = offset;
         uint64_t biased_start_offset = debug_info_offset_bias_ + start_offset;
+
+        clearDecodeError();
         uint32_t initial_length = readU32(offset);
+        if (hasDecodeError()) break;
         DEBUG_OUT("Debug: Raw length value: 0x" << std::hex << initial_length << std::dec);
         if (initial_length == 0) break;
 
         bool is_dwarf64 = (initial_length == 0xffffffff);
         uint8_t offset_size = is_dwarf64 ? 8 : 4;
+        if (is_dwarf64 && offset + 8 > debug_info_.size()) break;
         uint64_t unit_length = is_dwarf64 ? readU64(offset) : initial_length;
+        if (hasDecodeError()) break;
+        uint64_t header_size = is_dwarf64 ? 12 : 4;
+        if (unit_length > (debug_info_.size() - start_offset - header_size)) break;
+        uint64_t unit_end = start_offset + header_size + unit_length;
 
         DEBUG_OUT("Debug: Found compilation unit at offset " << biased_start_offset
                   << ", length: " << unit_length
                   << ", dwarf64: " << (is_dwarf64 ? "yes" : "no"));
 
+        if (offset + 2 > unit_end) {
+            offset = unit_end;
+            continue;
+        }
+
         uint16_t version = readU16(offset);
+        if (hasDecodeError()) {
+            offset = unit_end;
+            continue;
+        }
         DEBUG_OUT("Debug: DWARF version: " << version);
         
         uint64_t abbrev_offset;
@@ -175,6 +193,11 @@ std::vector<std::shared_ptr<DIE>> DIEParser::parseCompilationUnits() {
         
         if (version >= 5) {
             // DWARF 5 format: version, unit_type, address_size, abbrev_offset
+            uint64_t need = 2 + (is_dwarf64 ? 8 : 4);
+            if (offset + need > unit_end) {
+                offset = unit_end;
+                continue;
+            }
             uint8_t unit_type = readU8(offset);
             DEBUG_OUT("Debug: DWARF 5 unit type: " << (int)unit_type);
             address_size = readU8(offset);
@@ -184,20 +207,30 @@ std::vector<std::shared_ptr<DIE>> DIEParser::parseCompilationUnits() {
             DEBUG_OUT("Debug: Abbrev offset: 0x" << std::hex << abbrev_offset << std::dec);
         } else {
             // DWARF 2-4 format: version, abbrev_offset, address_size
+            uint64_t need = (is_dwarf64 ? 8 : 4) + 1;
+            if (offset + need > unit_end) {
+                offset = unit_end;
+                continue;
+            }
             abbrev_offset = is_dwarf64 ? readU64(offset) : readU32(offset);
             DEBUG_OUT("Debug: Abbrev offset: 0x" << std::hex << abbrev_offset << std::dec);
             address_size = readU8(offset);
             DEBUG_OUT("Debug: Address size: " << (int)address_size);
         }
+        if (hasDecodeError()) {
+            offset = unit_end;
+            continue;
+        }
         
         // Set CU context for attribute parsing (for CU-relative references)
         attribute_parser_->setCUOffset(biased_start_offset);
+        attribute_parser_->setCUDebugInfoEnd(unit_end);
         attribute_parser_->setAddressSize(address_size);
         attribute_parser_->setDwarfVersion(static_cast<DwarfVersion>(version));
         attribute_parser_->setIsDwarf64(is_dwarf64);
 
         // Parse the compilation unit DIE
-        auto cu_die = parseDIE(offset, debug_abbrev_, abbrev_offset, /*cu_base_offset=*/biased_start_offset, offset_size);
+        auto cu_die = parseDIE(offset, debug_abbrev_, abbrev_offset, /*cu_base_offset=*/biased_start_offset, offset_size, unit_end);
         if (cu_die) {
             compilation_units.push_back(cu_die);
             DEBUG_OUT("Debug: Successfully parsed compilation unit DIE");
@@ -205,8 +238,8 @@ std::vector<std::shared_ptr<DIE>> DIEParser::parseCompilationUnits() {
             DEBUG_OUT("Debug: Failed to parse compilation unit DIE");
         }
         
-        // Move to next compilation unit
-        offset = start_offset + (is_dwarf64 ? 12 : 4) + unit_length;
+        // Move to next compilation unit regardless of CU DIE parse result.
+        offset = unit_end;
     }
     
     DEBUG_OUT("Debug: Parsed " << compilation_units.size() << " compilation units");
@@ -217,12 +250,19 @@ std::shared_ptr<DIE> DIEParser::parseDIE(uint64_t& offset,
                                          const std::vector<uint8_t>& abbrev_data,
                                          uint64_t abbrev_offset,
                                          uint64_t cu_base_offset,
-                                         uint8_t offset_size) {
-    if (offset >= debug_info_.size()) return nullptr;
+                                         uint8_t offset_size,
+                                         uint64_t cu_end) {
+    (void)abbrev_data;
+    uint64_t info_end = std::min<uint64_t>(cu_end, debug_info_.size());
+    if (offset >= info_end) return nullptr;
 
     uint64_t start_offset = offset;
     uint64_t biased_start_offset = debug_info_offset_bias_ + start_offset;
+    clearDecodeError();
     uint64_t abbrev_code = readULEB128(offset);
+    if (hasDecodeError()) {
+        return nullptr;
+    }
     DEBUG_OUT("Debug: parseDIE at offset " << start_offset << ", abbrev_code: " << abbrev_code);
     
     if (abbrev_code == 0) {
@@ -312,9 +352,9 @@ std::shared_ptr<DIE> DIEParser::parseDIE(uint64_t& offset,
     // Parse children if present
     if (abbrev_entry.has_children) {
         uint64_t child_count = 0;
-        while (offset < debug_info_.size() && child_count < 1000) { // Safety limit
+        while (offset < info_end && child_count < 1000) { // Safety limit
             uint64_t child_start_offset = offset;
-            auto child = parseDIE(offset, abbrev_data, abbrev_offset, cu_base_offset, offset_size);
+            auto child = parseDIE(offset, abbrev_data, abbrev_offset, cu_base_offset, offset_size, info_end);
             if (!child) {
                 DEBUG_OUT("Debug: No more children at offset " << child_start_offset);
                 break;
@@ -341,9 +381,15 @@ std::shared_ptr<DIE> DIEParser::parseDIE(uint64_t& offset,
 
 std::string DIEParser::getString(uint64_t offset) const {
     if (offset >= debug_str_.size()) return "";
-    
-    const char* str = reinterpret_cast<const char*>(debug_str_.data() + offset);
-    return std::string(str);
+
+    const uint8_t* start = debug_str_.data() + offset;
+    size_t remaining = debug_str_.size() - static_cast<size_t>(offset);
+    const void* term = std::memchr(start, 0, remaining);
+    if (term == nullptr) {
+        return std::string(reinterpret_cast<const char*>(start), remaining);
+    }
+    size_t n = static_cast<const uint8_t*>(term) - start;
+    return std::string(reinterpret_cast<const char*>(start), n);
 }
 
 std::vector<uint8_t> DIEParser::getAbbrevData(uint64_t offset) const {
@@ -364,38 +410,170 @@ bool DIEParser::isValidOffset(uint64_t offset) const {
 }
 
 uint64_t DIEParser::readULEB128(uint64_t& offset) const {
-    return DwarfUtils::readULEB128(debug_info_.data(), offset, debug_info_.size());
+    if (offset >= debug_info_.size()) {
+        decode_error_ = true;
+        return 0;
+    }
+
+    uint64_t result = 0;
+    unsigned shift = 0;
+    while (offset < debug_info_.size()) {
+        uint8_t byte = debug_info_[offset++];
+        uint64_t bits = static_cast<uint64_t>(byte & 0x7f);
+        if (shift >= 64 && bits != 0) {
+            decode_error_ = true;
+            return 0;
+        }
+        result |= (bits << shift);
+        if ((byte & 0x80) == 0) {
+            return result;
+        }
+        shift += 7;
+        if (shift >= 64) {
+            decode_error_ = true;
+            return 0;
+        }
+    }
+
+    decode_error_ = true;
+    return 0;
 }
 
 uint64_t DIEParser::readULEB128FromAbbrev(uint64_t& offset) const {
-    return DwarfUtils::readULEB128(debug_abbrev_.data(), offset, debug_abbrev_.size());
+    if (offset >= debug_abbrev_.size()) {
+        decode_error_ = true;
+        return 0;
+    }
+
+    uint64_t result = 0;
+    unsigned shift = 0;
+    while (offset < debug_abbrev_.size()) {
+        uint8_t byte = debug_abbrev_[offset++];
+        uint64_t bits = static_cast<uint64_t>(byte & 0x7f);
+        if (shift >= 64 && bits != 0) {
+            decode_error_ = true;
+            return 0;
+        }
+        result |= (bits << shift);
+        if ((byte & 0x80) == 0) {
+            return result;
+        }
+        shift += 7;
+        if (shift >= 64) {
+            decode_error_ = true;
+            return 0;
+        }
+    }
+
+    decode_error_ = true;
+    return 0;
 }
 
 int64_t DIEParser::readSLEB128FromAbbrev(uint64_t& offset) const {
-    return DwarfUtils::readSLEB128(debug_abbrev_.data(), offset, debug_abbrev_.size());
+    if (offset >= debug_abbrev_.size()) {
+        decode_error_ = true;
+        return 0;
+    }
+
+    uint64_t result = 0;
+    unsigned shift = 0;
+    uint8_t byte = 0;
+    while (offset < debug_abbrev_.size()) {
+        byte = debug_abbrev_[offset++];
+        uint64_t bits = static_cast<uint64_t>(byte & 0x7f);
+        if (shift >= 64 && bits != 0) {
+            decode_error_ = true;
+            return 0;
+        }
+        result |= (bits << shift);
+        shift += 7;
+        if ((byte & 0x80) == 0) {
+            if (shift < 64 && (byte & 0x40)) {
+                result |= (~0ULL << shift);
+            }
+            return static_cast<int64_t>(result);
+        }
+        if (shift >= 64) {
+            decode_error_ = true;
+            return 0;
+        }
+    }
+
+    decode_error_ = true;
+    return 0;
 }
 
 int64_t DIEParser::readSLEB128(uint64_t& offset) const {
-    return DwarfUtils::readSLEB128(debug_info_.data(), offset, debug_info_.size());
+    if (offset >= debug_info_.size()) {
+        decode_error_ = true;
+        return 0;
+    }
+
+    uint64_t result = 0;
+    unsigned shift = 0;
+    uint8_t byte = 0;
+    while (offset < debug_info_.size()) {
+        byte = debug_info_[offset++];
+        uint64_t bits = static_cast<uint64_t>(byte & 0x7f);
+        if (shift >= 64 && bits != 0) {
+            decode_error_ = true;
+            return 0;
+        }
+        result |= (bits << shift);
+        shift += 7;
+        if ((byte & 0x80) == 0) {
+            if (shift < 64 && (byte & 0x40)) {
+                result |= (~0ULL << shift);
+            }
+            return static_cast<int64_t>(result);
+        }
+        if (shift >= 64) {
+            decode_error_ = true;
+            return 0;
+        }
+    }
+
+    decode_error_ = true;
+    return 0;
 }
 
 uint8_t DIEParser::readU8(uint64_t& offset) const {
+    if (offset + 1 > debug_info_.size()) {
+        decode_error_ = true;
+        return 0;
+    }
     return DwarfUtils::readU8(debug_info_.data(), offset, debug_info_.size());
 }
 
 uint8_t DIEParser::readU8FromAbbrev(uint64_t& offset) const {
+    if (offset + 1 > debug_abbrev_.size()) {
+        decode_error_ = true;
+        return 0;
+    }
     return DwarfUtils::readU8(debug_abbrev_.data(), offset, debug_abbrev_.size());
 }
 
 uint16_t DIEParser::readU16(uint64_t& offset) const {
+    if (offset + 2 > debug_info_.size()) {
+        decode_error_ = true;
+        return 0;
+    }
     return DwarfUtils::readU16(debug_info_.data(), offset, debug_info_.size());
 }
 
 uint32_t DIEParser::readU32(uint64_t& offset) const {
+    if (offset + 4 > debug_info_.size()) {
+        decode_error_ = true;
+        return 0;
+    }
     return DwarfUtils::readU32(debug_info_.data(), offset, debug_info_.size());
 }
 
 uint64_t DIEParser::readU64(uint64_t& offset) const {
+    if (offset + 8 > debug_info_.size()) {
+        decode_error_ = true;
+        return 0;
+    }
     return DwarfUtils::readU64(debug_info_.data(), offset, debug_info_.size());
 }
 
@@ -404,10 +582,12 @@ std::map<uint64_t, DIEParser::AbbreviationEntry> DIEParser::parseAbbreviationTab
     uint64_t offset = 0;
     
     while (offset < debug_abbrev_.size()) {
+        uint64_t before = offset;
         auto entry = parseAbbreviationEntry(offset);
         if (entry.code != 0) {
             abbrev_table[entry.code] = entry;
         }
+        if (offset <= before) break;
     }
     
     return abbrev_table;
@@ -415,6 +595,7 @@ std::map<uint64_t, DIEParser::AbbreviationEntry> DIEParser::parseAbbreviationTab
 
 DIEParser::AbbreviationEntry DIEParser::parseAbbreviationEntry(uint64_t& offset) const {
     AbbreviationEntry entry;
+    clearDecodeError();
     
     if (offset >= debug_abbrev_.size()) {
         entry.code = 0;
@@ -422,6 +603,11 @@ DIEParser::AbbreviationEntry DIEParser::parseAbbreviationEntry(uint64_t& offset)
     }
     
     entry.code = readULEB128FromAbbrev(offset);
+    if (hasDecodeError()) {
+        entry.code = 0;
+        offset = debug_abbrev_.size();
+        return entry;
+    }
     
     if (entry.code == 0) {
         return entry; // End of abbreviation table
@@ -429,11 +615,22 @@ DIEParser::AbbreviationEntry DIEParser::parseAbbreviationEntry(uint64_t& offset)
     
     entry.tag = static_cast<DwarfTag>(readULEB128FromAbbrev(offset));
     entry.has_children = readU8FromAbbrev(offset) != 0;
+    if (hasDecodeError()) {
+        entry.code = 0;
+        offset = debug_abbrev_.size();
+        return entry;
+    }
     
     // Parse attributes
     while (offset < debug_abbrev_.size()) {
+        uint64_t before = offset;
         uint64_t attr_name = readULEB128FromAbbrev(offset);
         uint64_t attr_form = readULEB128FromAbbrev(offset);
+        if (hasDecodeError()) {
+            entry.code = 0;
+            offset = debug_abbrev_.size();
+            return entry;
+        }
         
         if (attr_name == 0 && attr_form == 0) {
             break; // End of attribute list
@@ -446,8 +643,18 @@ DIEParser::AbbreviationEntry DIEParser::parseAbbreviationEntry(uint64_t& offset)
             // DW_FORM_implicit_const has an extra SLEB128 in the abbrev stream.
             spec.implicit_const = readSLEB128FromAbbrev(offset);
             spec.has_implicit_const = true;
+            if (hasDecodeError()) {
+                entry.code = 0;
+                offset = debug_abbrev_.size();
+                return entry;
+            }
         }
         entry.attributes.push_back(spec);
+        if (offset <= before) {
+            entry.code = 0;
+            offset = debug_abbrev_.size();
+            return entry;
+        }
     }
     
     return entry;
@@ -460,6 +667,7 @@ DIEParser::AbbreviationEntry DIEParser::lookupAbbreviationEntry(uint64_t code, u
               << " in table of size " << debug_abbrev_.size());
     
     while (offset < debug_abbrev_.size()) {
+        uint64_t before = offset;
         AbbreviationEntry entry = parseAbbreviationEntry(offset);
         DEBUG_OUT("Debug: Found abbreviation entry with code " << entry.code << " at offset " << offset);
         if (entry.code == 0) {
@@ -469,6 +677,9 @@ DIEParser::AbbreviationEntry DIEParser::lookupAbbreviationEntry(uint64_t code, u
             DEBUG_OUT("Debug: Found matching abbreviation entry!");
             return entry;
         }
+        if (offset <= before) {
+            break;
+        }
     }
     
     DEBUG_OUT("Debug: Abbreviation code " << code << " not found");
@@ -476,6 +687,14 @@ DIEParser::AbbreviationEntry DIEParser::lookupAbbreviationEntry(uint64_t code, u
     AbbreviationEntry empty;
     empty.code = 0;
     return empty;
+}
+
+void DIEParser::clearDecodeError() const {
+    decode_error_ = false;
+}
+
+bool DIEParser::hasDecodeError() const {
+    return decode_error_;
 }
 
 } // namespace dwarf

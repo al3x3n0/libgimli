@@ -116,6 +116,8 @@ ExpressionResult ExpressionEvaluator::evaluate(const std::vector<uint8_t>& expre
     is_register_location_ = false;
     is_implicit_value_ = false;
     pending_implicit_bytes_.reset();
+    execution_error_ = false;
+    execution_error_message_.clear();
 
     uint64_t offset = 0;
     // Expressions can contain branches (DW_OP_bra/DW_OP_skip). Guard against infinite loops.
@@ -133,6 +135,10 @@ ExpressionResult ExpressionEvaluator::evaluate(const std::vector<uint8_t>& expre
         auto handler_it = op_handlers_.find(op);
         if (handler_it != op_handlers_.end()) {
             (this->*handler_it->second)(offset, expression);
+            if (execution_error_) {
+                return ExpressionResult(ExpressionResult::INVALID, 0,
+                                        execution_error_message_ + " at offset " + std::to_string(op_off));
+            }
         } else {
             return ExpressionResult(ExpressionResult::INVALID, 0,
                                     std::string("Unsupported operation: ") +
@@ -172,9 +178,12 @@ bool ExpressionEvaluator::executeInPlace(const std::vector<uint8_t>& expression)
 
     constexpr int kMaxCallDepth = 16;
     if (call_depth_ >= kMaxCallDepth) {
+        setExecutionError("DW_OP_call recursion depth exceeded");
         return false;
     }
     ++call_depth_;
+    execution_error_ = false;
+    execution_error_message_.clear();
 
     uint64_t offset = 0;
     bool ok = true;
@@ -182,6 +191,7 @@ bool ExpressionEvaluator::executeInPlace(const std::vector<uint8_t>& expression)
     const size_t max_steps = std::max<size_t>(1024, expression.size() * 16);
     while (offset < expression.size()) {
         if (++steps > max_steps) {
+            setExecutionError("DW_OP_call subexpression step limit exceeded");
             ok = false;
             break;
         }
@@ -191,7 +201,13 @@ bool ExpressionEvaluator::executeInPlace(const std::vector<uint8_t>& expression)
         auto handler_it = op_handlers_.find(op);
         if (handler_it != op_handlers_.end()) {
             (this->*handler_it->second)(offset, expression);
+            if (execution_error_) {
+                ok = false;
+                break;
+            }
         } else {
+            setExecutionError(std::string("Unsupported operation in subexpression: ") +
+                              DwarfUtils::operationToString(op));
             ok = false;
             break;
         }
@@ -203,6 +219,19 @@ bool ExpressionEvaluator::executeInPlace(const std::vector<uint8_t>& expression)
 
 void ExpressionEvaluator::push(uint64_t value) {
     stack_.push(value);
+}
+
+void ExpressionEvaluator::setExecutionError(std::string msg) const {
+    if (!execution_error_) {
+        execution_error_ = true;
+        execution_error_message_ = std::move(msg);
+    }
+}
+
+bool ExpressionEvaluator::requireStack(size_t n, const char* op_name) {
+    if (stack_.size() >= n) return true;
+    setExecutionError(std::string("Stack underflow in ") + op_name);
+    return false;
 }
 
 uint64_t ExpressionEvaluator::pop() {
@@ -290,9 +319,14 @@ std::string ExpressionEvaluator::expressionToString(const std::vector<uint8_t>& 
                 }
                 break;
             case DwarfOp::DW_OP_constu:
-            case DwarfOp::DW_OP_consts:
                 if (offset < expression.size()) {
                     uint64_t val = readULEB128(offset, expression);
+                    ss << " " << val;
+                }
+                break;
+            case DwarfOp::DW_OP_consts:
+                if (offset < expression.size()) {
+                    int64_t val = readSLEB128(offset, expression);
                     ss << " " << val;
                 }
                 break;
@@ -446,23 +480,20 @@ void ExpressionEvaluator::initializeOpHandlers() {
 // Operation handlers implementation
 void ExpressionEvaluator::handleAddr(uint64_t& offset, const std::vector<uint8_t>& expression) {
     // DW_OP_addr operand is target address size.
-    uint64_t addr = 0;
-    if (context_.address_size == 4) {
-        addr = readU32(offset, expression);
-    } else {
-        addr = readU64(offset, expression);
-    }
+    uint64_t addr = readAddressSized(offset, expression);
+    if (execution_error_) return;
     push(addr);
 }
 
 void ExpressionEvaluator::handleDeref(uint64_t& offset, const std::vector<uint8_t>& expression) {
     DWARF_UNUSED(offset);
     DWARF_UNUSED(expression);
-    if (stack_.size() < 1) return;
+    if (!requireStack(1, "DW_OP_deref")) return;
     uint64_t addr = pop();
     
     if (memory_context_) {
-        size_t n = (context_.address_size == 4) ? 4 : 8;
+        size_t n = pointerByteSize("DW_OP_deref");
+        if (execution_error_) return;
         std::vector<uint8_t> buf(n);
         if (memory_context_->readMemory(addr, n, buf.data())) {
             push(decodeU64FromBytes(buf.data(), n, DwarfUtils::objectIsLittleEndian()));
@@ -527,7 +558,7 @@ void ExpressionEvaluator::handleConsts(uint64_t& offset, const std::vector<uint8
 void ExpressionEvaluator::handleDup(uint64_t& offset, const std::vector<uint8_t>& expression) {
     DWARF_UNUSED(offset);
     DWARF_UNUSED(expression);
-    if (stack_.size() < 1) return;
+    if (!requireStack(1, "DW_OP_dup")) return;
     uint64_t val = stack_.top();
     push(val);
 }
@@ -535,15 +566,14 @@ void ExpressionEvaluator::handleDup(uint64_t& offset, const std::vector<uint8_t>
 void ExpressionEvaluator::handleDrop(uint64_t& offset, const std::vector<uint8_t>& expression) {
     DWARF_UNUSED(offset);
     DWARF_UNUSED(expression);
-    if (!stack_.empty()) {
-        stack_.pop();
-    }
+    if (!requireStack(1, "DW_OP_drop")) return;
+    stack_.pop();
 }
 
 void ExpressionEvaluator::handleOver(uint64_t& offset, const std::vector<uint8_t>& expression) {
     DWARF_UNUSED(offset);
     DWARF_UNUSED(expression);
-    if (stack_.size() < 2) return;
+    if (!requireStack(2, "DW_OP_over")) return;
     uint64_t val1 = pop();
     uint64_t val2 = pop();
     push(val2);
@@ -552,9 +582,12 @@ void ExpressionEvaluator::handleOver(uint64_t& offset, const std::vector<uint8_t
 }
 
 void ExpressionEvaluator::handlePick(uint64_t& offset, const std::vector<uint8_t>& expression) {
-    if (stack_.size() < 1) return;
     uint8_t index = readU8(offset, expression);
-    if (index >= stack_.size()) return;
+    if (!requireStack(1, "DW_OP_pick")) return;
+    if (index >= stack_.size()) {
+        setExecutionError("DW_OP_pick index out of range");
+        return;
+    }
     
     std::stack<uint64_t> temp;
     for (uint8_t i = 0; i < index; ++i) {
@@ -572,7 +605,7 @@ void ExpressionEvaluator::handlePick(uint64_t& offset, const std::vector<uint8_t
 void ExpressionEvaluator::handleSwap(uint64_t& offset, const std::vector<uint8_t>& expression) {
     DWARF_UNUSED(offset);
     DWARF_UNUSED(expression);
-    if (stack_.size() < 2) return;
+    if (!requireStack(2, "DW_OP_swap")) return;
     uint64_t val1 = pop();
     uint64_t val2 = pop();
     push(val1);
@@ -582,25 +615,27 @@ void ExpressionEvaluator::handleSwap(uint64_t& offset, const std::vector<uint8_t
 void ExpressionEvaluator::handleRot(uint64_t& offset, const std::vector<uint8_t>& expression) {
     DWARF_UNUSED(offset);
     DWARF_UNUSED(expression);
-    if (stack_.size() < 3) return;
+    if (!requireStack(3, "DW_OP_rot")) return;
     uint64_t val1 = pop();
     uint64_t val2 = pop();
     uint64_t val3 = pop();
+    // DW_OP_rot: (x y z -- y z x)
+    push(val2);
     push(val1);
     push(val3);
-    push(val2);
 }
 
 void ExpressionEvaluator::handleXderef(uint64_t& offset, const std::vector<uint8_t>& expression) {
     DWARF_UNUSED(offset);
     DWARF_UNUSED(expression);
-    if (stack_.size() < 2) return;
+    if (!requireStack(2, "DW_OP_xderef")) return;
     uint64_t addr = pop();
     uint64_t space = pop();
     DWARF_UNUSED(space);
     
     if (memory_context_) {
-        size_t n = (context_.address_size == 4) ? 4 : 8;
+        size_t n = pointerByteSize("DW_OP_xderef");
+        if (execution_error_) return;
         std::vector<uint8_t> buf(n);
         if (memory_context_->readMemory(addr, n, buf.data())) {
             push(decodeU64FromBytes(buf.data(), n, DwarfUtils::objectIsLittleEndian()));
@@ -615,7 +650,7 @@ void ExpressionEvaluator::handleXderef(uint64_t& offset, const std::vector<uint8
 void ExpressionEvaluator::handleAbs(uint64_t& offset, const std::vector<uint8_t>& expression) {
     DWARF_UNUSED(offset);
     DWARF_UNUSED(expression);
-    if (stack_.size() < 1) return;
+    if (!requireStack(1, "DW_OP_abs")) return;
     int64_t val = static_cast<int64_t>(pop());
     push(static_cast<uint64_t>(val < 0 ? -val : val));
 }
@@ -623,7 +658,7 @@ void ExpressionEvaluator::handleAbs(uint64_t& offset, const std::vector<uint8_t>
 void ExpressionEvaluator::handleAnd(uint64_t& offset, const std::vector<uint8_t>& expression) {
     DWARF_UNUSED(offset);
     DWARF_UNUSED(expression);
-    if (stack_.size() < 2) return;
+    if (!requireStack(2, "DW_OP_and")) return;
     uint64_t val2 = pop();
     uint64_t val1 = pop();
     push(val1 & val2);
@@ -632,7 +667,7 @@ void ExpressionEvaluator::handleAnd(uint64_t& offset, const std::vector<uint8_t>
 void ExpressionEvaluator::handleDiv(uint64_t& offset, const std::vector<uint8_t>& expression) {
     DWARF_UNUSED(offset);
     DWARF_UNUSED(expression);
-    if (stack_.size() < 2) return;
+    if (!requireStack(2, "DW_OP_div")) return;
     uint64_t val2 = pop();
     uint64_t val1 = pop();
     if (val2 != 0) {
@@ -645,7 +680,7 @@ void ExpressionEvaluator::handleDiv(uint64_t& offset, const std::vector<uint8_t>
 void ExpressionEvaluator::handleMinus(uint64_t& offset, const std::vector<uint8_t>& expression) {
     DWARF_UNUSED(offset);
     DWARF_UNUSED(expression);
-    if (stack_.size() < 2) return;
+    if (!requireStack(2, "DW_OP_minus")) return;
     uint64_t val2 = pop();
     uint64_t val1 = pop();
     push(val1 - val2);
@@ -654,7 +689,7 @@ void ExpressionEvaluator::handleMinus(uint64_t& offset, const std::vector<uint8_
 void ExpressionEvaluator::handleMod(uint64_t& offset, const std::vector<uint8_t>& expression) {
     DWARF_UNUSED(offset);
     DWARF_UNUSED(expression);
-    if (stack_.size() < 2) return;
+    if (!requireStack(2, "DW_OP_mod")) return;
     uint64_t val2 = pop();
     uint64_t val1 = pop();
     if (val2 != 0) {
@@ -667,7 +702,7 @@ void ExpressionEvaluator::handleMod(uint64_t& offset, const std::vector<uint8_t>
 void ExpressionEvaluator::handleMul(uint64_t& offset, const std::vector<uint8_t>& expression) {
     DWARF_UNUSED(offset);
     DWARF_UNUSED(expression);
-    if (stack_.size() < 2) return;
+    if (!requireStack(2, "DW_OP_mul")) return;
     uint64_t val2 = pop();
     uint64_t val1 = pop();
     push(val1 * val2);
@@ -676,7 +711,7 @@ void ExpressionEvaluator::handleMul(uint64_t& offset, const std::vector<uint8_t>
 void ExpressionEvaluator::handleNeg(uint64_t& offset, const std::vector<uint8_t>& expression) {
     DWARF_UNUSED(offset);
     DWARF_UNUSED(expression);
-    if (stack_.size() < 1) return;
+    if (!requireStack(1, "DW_OP_neg")) return;
     uint64_t val = pop();
     push(-val);
 }
@@ -684,7 +719,7 @@ void ExpressionEvaluator::handleNeg(uint64_t& offset, const std::vector<uint8_t>
 void ExpressionEvaluator::handleNot(uint64_t& offset, const std::vector<uint8_t>& expression) {
     DWARF_UNUSED(offset);
     DWARF_UNUSED(expression);
-    if (stack_.size() < 1) return;
+    if (!requireStack(1, "DW_OP_not")) return;
     uint64_t val = pop();
     push(~val);
 }
@@ -692,7 +727,7 @@ void ExpressionEvaluator::handleNot(uint64_t& offset, const std::vector<uint8_t>
 void ExpressionEvaluator::handleOr(uint64_t& offset, const std::vector<uint8_t>& expression) {
     DWARF_UNUSED(offset);
     DWARF_UNUSED(expression);
-    if (stack_.size() < 2) return;
+    if (!requireStack(2, "DW_OP_or")) return;
     uint64_t val2 = pop();
     uint64_t val1 = pop();
     push(val1 | val2);
@@ -701,62 +736,66 @@ void ExpressionEvaluator::handleOr(uint64_t& offset, const std::vector<uint8_t>&
 void ExpressionEvaluator::handlePlus(uint64_t& offset, const std::vector<uint8_t>& expression) {
     DWARF_UNUSED(offset);
     DWARF_UNUSED(expression);
-    if (stack_.size() < 2) return;
+    if (!requireStack(2, "DW_OP_plus")) return;
     uint64_t val2 = pop();
     uint64_t val1 = pop();
     push(val1 + val2);
 }
 
 void ExpressionEvaluator::handlePlusUconst(uint64_t& offset, const std::vector<uint8_t>& expression) {
-    if (stack_.size() < 1) return;
-    uint64_t val = pop();
     uint64_t uconst = readULEB128(offset, expression);
+    if (!requireStack(1, "DW_OP_plus_uconst")) return;
+    uint64_t val = pop();
     push(val + uconst);
 }
 
 void ExpressionEvaluator::handleShl(uint64_t& offset, const std::vector<uint8_t>& expression) {
     DWARF_UNUSED(offset);
     DWARF_UNUSED(expression);
-    if (stack_.size() < 2) return;
+    if (!requireStack(2, "DW_OP_shl")) return;
     uint64_t val2 = pop();
     uint64_t val1 = pop();
-    push(val1 << val2);
+    push(val1 << (val2 & 63));
 }
 
 void ExpressionEvaluator::handleShr(uint64_t& offset, const std::vector<uint8_t>& expression) {
     DWARF_UNUSED(offset);
     DWARF_UNUSED(expression);
-    if (stack_.size() < 2) return;
+    if (!requireStack(2, "DW_OP_shr")) return;
     uint64_t val2 = pop();
     uint64_t val1 = pop();
-    push(val1 >> val2);
+    push(val1 >> (val2 & 63));
 }
 
 void ExpressionEvaluator::handleShra(uint64_t& offset, const std::vector<uint8_t>& expression) {
     DWARF_UNUSED(offset);
     DWARF_UNUSED(expression);
-    if (stack_.size() < 2) return;
+    if (!requireStack(2, "DW_OP_shra")) return;
     uint64_t val2 = pop();
     int64_t val1 = static_cast<int64_t>(pop());
-    push(static_cast<uint64_t>(val1 >> val2));
+    push(static_cast<uint64_t>(val1 >> (val2 & 63)));
 }
 
 void ExpressionEvaluator::handleXor(uint64_t& offset, const std::vector<uint8_t>& expression) {
     DWARF_UNUSED(offset);
     DWARF_UNUSED(expression);
-    if (stack_.size() < 2) return;
+    if (!requireStack(2, "DW_OP_xor")) return;
     uint64_t val2 = pop();
     uint64_t val1 = pop();
     push(val1 ^ val2);
 }
 
 void ExpressionEvaluator::handleBra(uint64_t& offset, const std::vector<uint8_t>& expression) {
-    if (stack_.size() < 1) return;
-    uint64_t condition = pop();
     int16_t target = static_cast<int16_t>(readU16(offset, expression));
+    if (!requireStack(1, "DW_OP_bra")) return;
+    uint64_t condition = pop();
     if (condition != 0) {
         int64_t base = static_cast<int64_t>(offset);
         int64_t next = base + static_cast<int64_t>(target);
+        if (next < 0 || static_cast<uint64_t>(next) > expression.size()) {
+            setExecutionError("DW_OP_bra target out of range");
+            return;
+        }
         offset = (next < 0) ? 0 : static_cast<uint64_t>(next);
     }
 }
@@ -764,7 +803,7 @@ void ExpressionEvaluator::handleBra(uint64_t& offset, const std::vector<uint8_t>
 void ExpressionEvaluator::handleEq(uint64_t& offset, const std::vector<uint8_t>& expression) {
     DWARF_UNUSED(offset);
     DWARF_UNUSED(expression);
-    if (stack_.size() < 2) return;
+    if (!requireStack(2, "DW_OP_eq")) return;
     uint64_t val2 = pop();
     uint64_t val1 = pop();
     push(val1 == val2 ? 1 : 0);
@@ -773,43 +812,43 @@ void ExpressionEvaluator::handleEq(uint64_t& offset, const std::vector<uint8_t>&
 void ExpressionEvaluator::handleGe(uint64_t& offset, const std::vector<uint8_t>& expression) {
     DWARF_UNUSED(offset);
     DWARF_UNUSED(expression);
-    if (stack_.size() < 2) return;
-    uint64_t val2 = pop();
-    uint64_t val1 = pop();
+    if (!requireStack(2, "DW_OP_ge")) return;
+    int64_t val2 = static_cast<int64_t>(pop());
+    int64_t val1 = static_cast<int64_t>(pop());
     push(val1 >= val2 ? 1 : 0);
 }
 
 void ExpressionEvaluator::handleGt(uint64_t& offset, const std::vector<uint8_t>& expression) {
     DWARF_UNUSED(offset);
     DWARF_UNUSED(expression);
-    if (stack_.size() < 2) return;
-    uint64_t val2 = pop();
-    uint64_t val1 = pop();
+    if (!requireStack(2, "DW_OP_gt")) return;
+    int64_t val2 = static_cast<int64_t>(pop());
+    int64_t val1 = static_cast<int64_t>(pop());
     push(val1 > val2 ? 1 : 0);
 }
 
 void ExpressionEvaluator::handleLe(uint64_t& offset, const std::vector<uint8_t>& expression) {
     DWARF_UNUSED(offset);
     DWARF_UNUSED(expression);
-    if (stack_.size() < 2) return;
-    uint64_t val2 = pop();
-    uint64_t val1 = pop();
+    if (!requireStack(2, "DW_OP_le")) return;
+    int64_t val2 = static_cast<int64_t>(pop());
+    int64_t val1 = static_cast<int64_t>(pop());
     push(val1 <= val2 ? 1 : 0);
 }
 
 void ExpressionEvaluator::handleLt(uint64_t& offset, const std::vector<uint8_t>& expression) {
     DWARF_UNUSED(offset);
     DWARF_UNUSED(expression);
-    if (stack_.size() < 2) return;
-    uint64_t val2 = pop();
-    uint64_t val1 = pop();
+    if (!requireStack(2, "DW_OP_lt")) return;
+    int64_t val2 = static_cast<int64_t>(pop());
+    int64_t val1 = static_cast<int64_t>(pop());
     push(val1 < val2 ? 1 : 0);
 }
 
 void ExpressionEvaluator::handleNe(uint64_t& offset, const std::vector<uint8_t>& expression) {
     DWARF_UNUSED(offset);
     DWARF_UNUSED(expression);
-    if (stack_.size() < 2) return;
+    if (!requireStack(2, "DW_OP_ne")) return;
     uint64_t val2 = pop();
     uint64_t val1 = pop();
     push(val1 != val2 ? 1 : 0);
@@ -819,7 +858,11 @@ void ExpressionEvaluator::handleSkip(uint64_t& offset, const std::vector<uint8_t
     int16_t target = static_cast<int16_t>(readU16(offset, expression));
     int64_t base = static_cast<int64_t>(offset);
     int64_t next = base + static_cast<int64_t>(target);
-    offset = (next < 0) ? 0 : static_cast<uint64_t>(next);
+    if (next < 0 || static_cast<uint64_t>(next) > expression.size()) {
+        setExecutionError("DW_OP_skip target out of range");
+        return;
+    }
+    offset = static_cast<uint64_t>(next);
 }
 
 void ExpressionEvaluator::handleLit(uint64_t& offset, const std::vector<uint8_t>& expression) {
@@ -926,8 +969,8 @@ void ExpressionEvaluator::handlePiece(uint64_t& offset, const std::vector<uint8_
 }
 
 void ExpressionEvaluator::handleDerefSize(uint64_t& offset, const std::vector<uint8_t>& expression) {
-    if (stack_.size() < 1) return;
     uint8_t size = readU8(offset, expression);
+    if (!requireStack(1, "DW_OP_deref_size")) return;
     uint64_t addr = pop();
     
     // In a real implementation, this would dereference memory with the given size
@@ -945,8 +988,8 @@ void ExpressionEvaluator::handleDerefSize(uint64_t& offset, const std::vector<ui
 }
 
 void ExpressionEvaluator::handleXderefSize(uint64_t& offset, const std::vector<uint8_t>& expression) {
-    if (stack_.size() < 2) return;
     uint8_t size = readU8(offset, expression);
+    if (!requireStack(2, "DW_OP_xderef_size")) return;
     uint64_t addr = pop();
     uint64_t space = pop();
     DWARF_UNUSED(space);
@@ -1032,13 +1075,12 @@ void ExpressionEvaluator::handleBitPiece(uint64_t& offset, const std::vector<uin
 
 void ExpressionEvaluator::handleImplicitValue(uint64_t& offset, const std::vector<uint8_t>& expression) {
     uint64_t size = readULEB128(offset, expression);
+    if (execution_error_) return;
     // DW_OP_implicit_value specifies that the object's value is embedded
     // directly in the DWARF expression, not in memory or a register.
     if (offset > expression.size() || size > expression.size() - offset) {
-        // Malformed expression; don't read past the end.
-        push(0);
-        is_implicit_value_ = true;
-        pending_implicit_bytes_ = std::vector<uint8_t>{};
+        setExecutionError("truncated DW_OP_implicit_value payload");
+        offset = expression.size();
         return;
     }
 
@@ -1066,6 +1108,18 @@ void ExpressionEvaluator::handleImplicitValue(uint64_t& offset, const std::vecto
 void ExpressionEvaluator::handleStackValue(uint64_t& offset, const std::vector<uint8_t>& expression) {
     DWARF_UNUSED(offset);
     DWARF_UNUSED(expression);
+    if (!requireStack(1, "DW_OP_stack_value")) return;
+
+    if (is_register_location_) {
+        // DW_OP_stack_value turns a register location into the value held in that register.
+        uint64_t reg_num = top();
+        uint64_t value = (reg_num < registers_.size()) ? registers_[static_cast<size_t>(reg_num)] : 0;
+        stack_.top() = value;
+        is_register_location_ = false;
+        // Bytes (if needed by subsequent DW_OP_piece) should be derived from the concrete value.
+        pending_implicit_bytes_.reset();
+    }
+
     // DW_OP_stack_value specifies that the object does not exist in memory
     // but its value is still on the stack. The debugger should use the value
     // directly rather than treating it as a memory address.
@@ -1073,13 +1127,10 @@ void ExpressionEvaluator::handleStackValue(uint64_t& offset, const std::vector<u
 }
 
 void ExpressionEvaluator::handleImplicitPointer(uint64_t& offset, const std::vector<uint8_t>& expression) {
-    uint64_t die_offset = 0;
-    if (context_.offset_size == 8) {
-        die_offset = readU64(offset, expression);
-    } else {
-        die_offset = readU32(offset, expression);
-    }
+    uint64_t die_offset = readOffsetSized(offset, expression);
+    if (execution_error_) return;
     int64_t offset_val = readSLEB128(offset, expression);
+    if (execution_error_) return;
 
     // DW_OP_implicit_pointer yields an address computed from another DIE's location
     // plus a constant offset.
@@ -1139,10 +1190,11 @@ void ExpressionEvaluator::handleConstx(uint64_t& offset, const std::vector<uint8
 
 void ExpressionEvaluator::handleEntryValue(uint64_t& offset, const std::vector<uint8_t>& expression) {
     uint64_t size = readULEB128(offset, expression);
+    if (execution_error_) return;
 
     if (offset > expression.size() || size > expression.size() - offset) {
-        // Malformed expression; don't read past the end.
-        push(0);
+        setExecutionError("truncated DW_OP_entry_value subexpression");
+        offset = expression.size();
         return;
     }
 
@@ -1167,12 +1219,14 @@ void ExpressionEvaluator::handleEntryValue(uint64_t& offset, const std::vector<u
 void ExpressionEvaluator::handleConstType(uint64_t& offset, const std::vector<uint8_t>& expression) {
     // ULEB128 type die offset (reference to base type)
     uint64_t type_offset = readULEB128(offset, expression);
+    if (execution_error_) return;
     uint64_t abs_type_offset = (type_offset == 0) ? 0 : (context_.cu_base_offset + type_offset);
     // 1-byte size of the constant value
     uint8_t size = readU8(offset, expression);
+    if (execution_error_) return;
 
     if (offset > expression.size() || static_cast<uint64_t>(size) > expression.size() - offset) {
-        push(0);
+        setExecutionError("truncated DW_OP_const_type payload");
         offset = expression.size();
         return;
     }
@@ -1246,7 +1300,7 @@ void ExpressionEvaluator::handleDerefType(uint64_t& offset, const std::vector<ui
     uint64_t type_offset = readULEB128(offset, expression);
     uint64_t abs_type_offset = (type_offset == 0) ? 0 : (context_.cu_base_offset + type_offset);
 
-    if (stack_.size() < 1) return;
+    if (!requireStack(1, "DW_OP_deref_type")) return;
     uint64_t addr = pop();
 
     // Dereference 'size' bytes from memory
@@ -1281,7 +1335,7 @@ void ExpressionEvaluator::handleXderefType(uint64_t& offset, const std::vector<u
     uint64_t type_offset = readULEB128(offset, expression);
     uint64_t abs_type_offset = (type_offset == 0) ? 0 : (context_.cu_base_offset + type_offset);
 
-    if (stack_.size() < 2) return;
+    if (!requireStack(2, "DW_OP_xderef_type")) return;
     uint64_t addr = pop();
     uint64_t space = pop();  // Address space (ignored in basic implementation)
     DWARF_UNUSED(space);
@@ -1314,7 +1368,7 @@ void ExpressionEvaluator::handleConvert(uint64_t& offset, const std::vector<uint
     uint64_t type_offset = readULEB128(offset, expression);
     uint64_t abs_type_offset = (type_offset == 0) ? 0 : (context_.cu_base_offset + type_offset);
 
-    if (stack_.size() < 1) return;
+    if (!requireStack(1, "DW_OP_convert")) return;
     uint64_t value = pop();
 
     // type_offset of 0 means convert to generic type (untyped)
@@ -1338,7 +1392,7 @@ void ExpressionEvaluator::handleReinterpret(uint64_t& offset, const std::vector<
     uint64_t type_offset = readULEB128(offset, expression);
     uint64_t abs_type_offset = (type_offset == 0) ? 0 : (context_.cu_base_offset + type_offset);
 
-    if (stack_.size() < 1) return;
+    if (!requireStack(1, "DW_OP_reinterpret")) return;
     uint64_t value = pop();
 
     // Reinterpret: same bits, different type interpretation
@@ -1363,7 +1417,13 @@ void ExpressionEvaluator::handleCall2(uint64_t& offset, const std::vector<uint8_
     uint64_t abs_off = context_.cu_base_offset + static_cast<uint64_t>(die_offset);
     auto expr = context_.resolve_dwarf_procedure(abs_off, pc_);
     if (!expr) return;
-    (void)executeInPlace(*expr);
+    if (!executeInPlace(*expr)) {
+        if (execution_error_) {
+            execution_error_message_ = std::string("DW_OP_call2 subexpression failed: ") + execution_error_message_;
+        } else {
+            setExecutionError("DW_OP_call2 subexpression failed");
+        }
+    }
 }
 
 void ExpressionEvaluator::handleCall4(uint64_t& offset, const std::vector<uint8_t>& expression) {
@@ -1375,16 +1435,18 @@ void ExpressionEvaluator::handleCall4(uint64_t& offset, const std::vector<uint8_
     uint64_t abs_off = context_.cu_base_offset + static_cast<uint64_t>(die_offset);
     auto expr = context_.resolve_dwarf_procedure(abs_off, pc_);
     if (!expr) return;
-    (void)executeInPlace(*expr);
+    if (!executeInPlace(*expr)) {
+        if (execution_error_) {
+            execution_error_message_ = std::string("DW_OP_call4 subexpression failed: ") + execution_error_message_;
+        } else {
+            setExecutionError("DW_OP_call4 subexpression failed");
+        }
+    }
 }
 
 void ExpressionEvaluator::handleCallRef(uint64_t& offset, const std::vector<uint8_t>& expression) {
-    uint64_t die_offset = 0;
-    if (context_.offset_size == 8) {
-        die_offset = readU64(offset, expression);
-    } else {
-        die_offset = readU32(offset, expression);
-    }
+    uint64_t die_offset = readOffsetSized(offset, expression);
+    if (execution_error_) return;
     if (!context_.resolve_dwarf_procedure) {
         (void)die_offset;
         return;
@@ -1394,14 +1456,20 @@ void ExpressionEvaluator::handleCallRef(uint64_t& offset, const std::vector<uint
     uint64_t abs_off = dwarfSectionOffsetBias(context_.cu_base_offset) + die_offset;
     auto expr = context_.resolve_dwarf_procedure(abs_off, pc_);
     if (!expr) return;
-    (void)executeInPlace(*expr);
+    if (!executeInPlace(*expr)) {
+        if (execution_error_) {
+            execution_error_message_ = std::string("DW_OP_call_ref subexpression failed: ") + execution_error_message_;
+        } else {
+            setExecutionError("DW_OP_call_ref subexpression failed");
+        }
+    }
 }
 
 // TLS operations
 void ExpressionEvaluator::handleFormTlsAddress(uint64_t& offset, const std::vector<uint8_t>& expression) {
     DWARF_UNUSED(offset);
     DWARF_UNUSED(expression);
-    if (stack_.size() < 1) return;
+    if (!requireStack(1, "DW_OP_form_tls_address")) return;
     uint64_t tls_offset = pop();
 
     // DW_OP_form_tls_address pops a TLS offset from the stack and pushes
@@ -1427,7 +1495,10 @@ void ExpressionEvaluator::handleGnuUninit(uint64_t& offset, const std::vector<ui
 void ExpressionEvaluator::handleGnuEncodedAddr(uint64_t& offset, const std::vector<uint8_t>& expression) {
     // DW_OP_GNU_encoded_addr reads an encoded address
     // The encoding is specified by a one-byte value
-    if (offset >= expression.size()) return;
+    if (offset >= expression.size()) {
+        setExecutionError("Truncated DW_OP_GNU_encoded_addr");
+        return;
+    }
     uint8_t encoding = readU8(offset, expression);
 
     // Encoding follows the DW_EH_PE_* scheme (as used by GCC).
@@ -1442,8 +1513,7 @@ void ExpressionEvaluator::handleGnuEncodedAddr(uint64_t& offset, const std::vect
     auto readEncoded = [&](uint8_t fmt) -> uint64_t {
         switch (fmt) {
             case 0x00: { // absptr
-                if (context_.address_size == 4) return readU32(offset, expression);
-                return readU64(offset, expression);
+                return readAddressSized(offset, expression);
             }
             case 0x01: // uleb128
                 return readULEB128(offset, expression);
@@ -1469,12 +1539,12 @@ void ExpressionEvaluator::handleGnuEncodedAddr(uint64_t& offset, const std::vect
             }
             default:
                 // Unknown/unsupported, best-effort: treat as absptr.
-                if (context_.address_size == 4) return readU32(offset, expression);
-                return readU64(offset, expression);
+                return readAddressSized(offset, expression);
         }
     };
 
     uint64_t raw = readEncoded(encoding & kFmtMask);
+    if (execution_error_) return;
     uint64_t addr = raw;
 
     // Apply relative adjustments.
@@ -1492,7 +1562,8 @@ void ExpressionEvaluator::handleGnuEncodedAddr(uint64_t& offset, const std::vect
     // If indirect is set, the value is the address of the address.
     // Without a stronger memory model, we best-effort dereference pointer-sized.
     if ((encoding & kIndMask) && memory_context_) {
-        size_t n = (context_.address_size == 4) ? 4 : 8;
+        size_t n = pointerByteSize("DW_OP_GNU_encoded_addr");
+        if (execution_error_) return;
         std::vector<uint8_t> buf(n);
         if (memory_context_->readMemory(addr, n, buf.data())) {
             addr = decodeU64FromBytes(buf.data(), n, DwarfUtils::objectIsLittleEndian());
@@ -1505,13 +1576,10 @@ void ExpressionEvaluator::handleGnuEncodedAddr(uint64_t& offset, const std::vect
 void ExpressionEvaluator::handleGnuImplicitPointer(uint64_t& offset, const std::vector<uint8_t>& expression) {
     // DW_OP_GNU_implicit_pointer is the predecessor to DW_OP_implicit_pointer
     // Same format: DIE offset (4 bytes in 32-bit, 8 in 64-bit) + SLEB128 offset
-    uint64_t die_offset = 0;
-    if (context_.offset_size == 8) {
-        die_offset = readU64(offset, expression);
-    } else {
-        die_offset = readU32(offset, expression);
-    }
+    uint64_t die_offset = readOffsetSized(offset, expression);
+    if (execution_error_) return;
     int64_t offset_val = readSLEB128(offset, expression);
+    if (execution_error_) return;
 
     // GNU predecessor to DW_OP_implicit_pointer: same semantics.
     uint64_t abs_die_offset = dwarfSectionOffsetBias(context_.cu_base_offset) + die_offset;
@@ -1572,12 +1640,8 @@ void ExpressionEvaluator::handleGnuReinterpret(uint64_t& offset, const std::vect
 void ExpressionEvaluator::handleGnuParameterRef(uint64_t& offset, const std::vector<uint8_t>& expression) {
     // DW_OP_GNU_parameter_ref references a formal parameter DIE
     // to describe where an optimized-out parameter's value was passed
-    uint64_t die_offset = 0;
-    if (context_.offset_size == 8) {
-        die_offset = readU64(offset, expression);
-    } else {
-        die_offset = readU32(offset, expression);
-    }
+    uint64_t die_offset = readOffsetSized(offset, expression);
+    if (execution_error_) return;
 
     // GNU parameter ref uses a section-relative DIE reference (not CU-relative).
     // Preserve any DWO/supplementary bias from cu_base_offset so lookups work with biased DIE caches.
@@ -1631,27 +1695,118 @@ void ExpressionEvaluator::handleGnuConstIndex(uint64_t& offset, const std::vecto
 
 // Helper methods
 uint64_t ExpressionEvaluator::readULEB128(uint64_t& offset, const std::vector<uint8_t>& data) const {
-    return DwarfUtils::readULEB128(data.data(), offset, data.size());
+    if (offset >= data.size()) {
+        setExecutionError("truncated uleb128");
+        return 0;
+    }
+
+    uint64_t result = 0;
+    uint64_t shift = 0;
+    while (true) {
+        if (offset >= data.size()) {
+            setExecutionError("truncated uleb128");
+            return result;
+        }
+        uint8_t byte = data[offset++];
+        if (shift > 63 || (shift == 63 && (byte & 0x7f) > 1)) {
+            setExecutionError("uleb128 overflow");
+            return result;
+        }
+        result |= (static_cast<uint64_t>(byte & 0x7f) << shift);
+        if ((byte & 0x80) == 0) break;
+        shift += 7;
+    }
+    return result;
 }
 
 int64_t ExpressionEvaluator::readSLEB128(uint64_t& offset, const std::vector<uint8_t>& data) const {
-    return DwarfUtils::readSLEB128(data.data(), offset, data.size());
+    if (offset >= data.size()) {
+        setExecutionError("truncated sleb128");
+        return 0;
+    }
+
+    int64_t result = 0;
+    int shift = 0;
+    uint8_t byte = 0;
+    while (true) {
+        if (offset >= data.size()) {
+            setExecutionError("truncated sleb128");
+            return result;
+        }
+        byte = data[offset++];
+        if (shift > 63 || (shift == 63 && (byte & 0x7f) != 0 && (byte & 0x7f) != 0x7f)) {
+            setExecutionError("sleb128 overflow");
+            return result;
+        }
+        result |= (static_cast<int64_t>(byte & 0x7f) << shift);
+        shift += 7;
+        if ((byte & 0x80) == 0) break;
+    }
+    if ((shift < 64) && (byte & 0x40)) {
+        result |= -(static_cast<int64_t>(1) << shift);
+    }
+    return result;
 }
 
 uint8_t ExpressionEvaluator::readU8(uint64_t& offset, const std::vector<uint8_t>& data) const {
+    uint64_t avail = (offset <= data.size()) ? (data.size() - offset) : 0;
+    if (avail < 1) {
+        setExecutionError("truncated u8");
+        offset = data.size();
+        return 0;
+    }
     return DwarfUtils::readU8(data.data(), offset, data.size());
 }
 
 uint16_t ExpressionEvaluator::readU16(uint64_t& offset, const std::vector<uint8_t>& data) const {
+    uint64_t avail = (offset <= data.size()) ? (data.size() - offset) : 0;
+    if (avail < 2) {
+        setExecutionError("truncated u16");
+        offset = data.size();
+        return 0;
+    }
     return DwarfUtils::readU16(data.data(), offset, data.size());
 }
 
 uint32_t ExpressionEvaluator::readU32(uint64_t& offset, const std::vector<uint8_t>& data) const {
+    uint64_t avail = (offset <= data.size()) ? (data.size() - offset) : 0;
+    if (avail < 4) {
+        setExecutionError("truncated u32");
+        offset = data.size();
+        return 0;
+    }
     return DwarfUtils::readU32(data.data(), offset, data.size());
 }
 
 uint64_t ExpressionEvaluator::readU64(uint64_t& offset, const std::vector<uint8_t>& data) const {
+    uint64_t avail = (offset <= data.size()) ? (data.size() - offset) : 0;
+    if (avail < 8) {
+        setExecutionError("truncated u64");
+        offset = data.size();
+        return 0;
+    }
     return DwarfUtils::readU64(data.data(), offset, data.size());
+}
+
+uint64_t ExpressionEvaluator::readAddressSized(uint64_t& offset, const std::vector<uint8_t>& data) const {
+    if (context_.address_size == 4) return readU32(offset, data);
+    if (context_.address_size == 8) return readU64(offset, data);
+    setExecutionError("invalid address_size");
+    return 0;
+}
+
+uint64_t ExpressionEvaluator::readOffsetSized(uint64_t& offset, const std::vector<uint8_t>& data) const {
+    if (context_.offset_size == 4) return readU32(offset, data);
+    if (context_.offset_size == 8) return readU64(offset, data);
+    setExecutionError("invalid offset_size");
+    return 0;
+}
+
+size_t ExpressionEvaluator::pointerByteSize(const char* op_name) const {
+    if (context_.address_size == 4) return 4;
+    if (context_.address_size == 8) return 8;
+    setExecutionError(std::string("invalid address_size in ") + op_name);
+    return 0;
 }
 
 } // namespace dwarf

@@ -80,6 +80,120 @@ static std::optional<uint64_t> evalDwarfExprU64(
     if (r.type == ExpressionResult::INVALID) return std::nullopt;
     return r.value;
 }
+
+static bool readInstrU8(const std::vector<uint8_t>& ins, uint64_t& off, uint8_t& out) {
+    if (off >= ins.size()) return false;
+    out = ins[off++];
+    return true;
+}
+
+static bool readInstrU16(const std::vector<uint8_t>& ins, uint64_t& off, uint16_t& out) {
+    if (off + 2 > ins.size()) return false;
+    uint64_t tmp = off;
+    out = DwarfUtils::readU16(ins.data(), tmp, ins.size());
+    off = tmp;
+    return true;
+}
+
+static bool readInstrU32(const std::vector<uint8_t>& ins, uint64_t& off, uint32_t& out) {
+    if (off + 4 > ins.size()) return false;
+    uint64_t tmp = off;
+    out = DwarfUtils::readU32(ins.data(), tmp, ins.size());
+    off = tmp;
+    return true;
+}
+
+static bool readInstrU64(const std::vector<uint8_t>& ins, uint64_t& off, uint64_t& out) {
+    if (off + 8 > ins.size()) return false;
+    uint64_t tmp = off;
+    out = DwarfUtils::readU64(ins.data(), tmp, ins.size());
+    off = tmp;
+    return true;
+}
+
+static bool readInstrULEB(const std::vector<uint8_t>& ins, uint64_t& off, uint64_t& out) {
+    if (off >= ins.size()) return false;
+    uint64_t result = 0;
+    uint64_t shift = 0;
+    while (off < ins.size()) {
+        uint8_t byte = ins[off++];
+        uint64_t bits = static_cast<uint64_t>(byte & 0x7f);
+        if (shift > 63 || (shift == 63 && bits > 1)) return false;
+        result |= (bits << shift);
+        if ((byte & 0x80) == 0) {
+            out = result;
+            return true;
+        }
+        shift += 7;
+    }
+    return false;
+}
+
+static bool readInstrSLEB(const std::vector<uint8_t>& ins, uint64_t& off, int64_t& out) {
+    if (off >= ins.size()) return false;
+    int64_t result = 0;
+    int shift = 0;
+    uint8_t byte = 0;
+    while (off < ins.size()) {
+        byte = ins[off++];
+        if (shift > 63 || (shift == 63 && (byte & 0x7f) != 0 && (byte & 0x7f) != 0x7f)) return false;
+        result |= (static_cast<int64_t>(byte & 0x7f) << shift);
+        shift += 7;
+        if ((byte & 0x80) == 0) {
+            if (shift < 64 && (byte & 0x40)) {
+                result |= -(static_cast<int64_t>(1) << shift);
+            }
+            out = result;
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool readBoundedU8(const std::vector<uint8_t>& data, uint64_t& off, uint64_t end, uint8_t& out) {
+    if (off >= end || off >= data.size()) return false;
+    out = data[off++];
+    return true;
+}
+
+static bool readBoundedULEB(const std::vector<uint8_t>& data, uint64_t& off, uint64_t end, uint64_t& out) {
+    if (off >= end || off >= data.size()) return false;
+    uint64_t result = 0;
+    uint64_t shift = 0;
+    while (off < end && off < data.size()) {
+        uint8_t byte = data[off++];
+        uint64_t bits = static_cast<uint64_t>(byte & 0x7f);
+        if (shift > 63 || (shift == 63 && bits > 1)) return false;
+        result |= (bits << shift);
+        if ((byte & 0x80) == 0) {
+            out = result;
+            return true;
+        }
+        shift += 7;
+    }
+    return false;
+}
+
+static bool readBoundedSLEB(const std::vector<uint8_t>& data, uint64_t& off, uint64_t end, int64_t& out) {
+    if (off >= end || off >= data.size()) return false;
+    int64_t result = 0;
+    int shift = 0;
+    uint8_t byte = 0;
+    while (off < end && off < data.size()) {
+        byte = data[off++];
+        if (shift > 63 || (shift == 63 && (byte & 0x7f) != 0 && (byte & 0x7f) != 0x7f)) return false;
+        result |= (static_cast<int64_t>(byte & 0x7f) << shift);
+        shift += 7;
+        if ((byte & 0x80) == 0) {
+            if (shift < 64 && (byte & 0x40)) {
+                result |= -(static_cast<int64_t>(1) << shift);
+            }
+            out = result;
+            return true;
+        }
+    }
+    return false;
+}
 } // namespace
 
 uint64_t UnwindInfo::computeCFA(const std::vector<uint64_t>& reg_values,
@@ -279,41 +393,81 @@ bool CFIParser::parseCIE(uint64_t offset, uint64_t length, bool is_64bit) {
     uint64_t end_pos = offset + (is_64bit ? 12 : 4) + length;
 
     // Version
-    cie->version = DwarfUtils::readU8(section_data_.data(), pos, end_pos);
+    uint8_t version = 0;
+    if (!readBoundedU8(section_data_, pos, end_pos, version)) {
+        return false;
+    }
+    cie->version = version;
 
     // Augmentation string
+    bool found_aug_nul = false;
     while (pos < end_pos) {
-        char c = static_cast<char>(DwarfUtils::readU8(section_data_.data(), pos, end_pos));
-        if (c == 0) break;
+        uint8_t c8 = 0;
+        if (!readBoundedU8(section_data_, pos, end_pos, c8)) {
+            return false;
+        }
+        char c = static_cast<char>(c8);
+        if (c == 0) {
+            found_aug_nul = true;
+            break;
+        }
         cie->augmentation += c;
+    }
+    if (!found_aug_nul) {
+        return false;
     }
 
     // DWARF 4+ has address_size and segment_selector_size
     if (cie->version >= 4) {
-        cie->address_size = DwarfUtils::readU8(section_data_.data(), pos, end_pos);
-        cie->segment_selector_size = DwarfUtils::readU8(section_data_.data(), pos, end_pos);
+        uint8_t address_size = 0;
+        uint8_t seg_sel_size = 0;
+        if (!readBoundedU8(section_data_, pos, end_pos, address_size) ||
+            !readBoundedU8(section_data_, pos, end_pos, seg_sel_size)) {
+            return false;
+        }
+        cie->address_size = address_size;
+        cie->segment_selector_size = seg_sel_size;
     } else {
         cie->address_size = address_size_;
         cie->segment_selector_size = 0;
     }
 
     // Code alignment factor
-    cie->code_alignment_factor = DwarfUtils::readULEB128(section_data_.data(), pos, end_pos);
+    uint64_t code_align = 0;
+    if (!readBoundedULEB(section_data_, pos, end_pos, code_align)) {
+        return false;
+    }
+    cie->code_alignment_factor = code_align;
 
     // Data alignment factor
-    cie->data_alignment_factor = DwarfUtils::readSLEB128(section_data_.data(), pos, end_pos);
+    int64_t data_align = 0;
+    if (!readBoundedSLEB(section_data_, pos, end_pos, data_align)) {
+        return false;
+    }
+    cie->data_alignment_factor = data_align;
 
     // Return address register
     if (cie->version == 1) {
-        cie->return_address_register = DwarfUtils::readU8(section_data_.data(), pos, end_pos);
+        uint8_t ra = 0;
+        if (!readBoundedU8(section_data_, pos, end_pos, ra)) {
+            return false;
+        }
+        cie->return_address_register = ra;
     } else {
-        cie->return_address_register = DwarfUtils::readULEB128(section_data_.data(), pos, end_pos);
+        uint64_t ra = 0;
+        if (!readBoundedULEB(section_data_, pos, end_pos, ra)) {
+            return false;
+        }
+        cie->return_address_register = ra;
     }
 
     // Parse augmentation data if present (for .eh_frame)
     if (!cie->augmentation.empty() && cie->augmentation[0] == 'z') {
         cie->has_augmentation_data = true;
-        uint64_t aug_length = DwarfUtils::readULEB128(section_data_.data(), pos, end_pos);
+        uint64_t aug_length = 0;
+        if (!readBoundedULEB(section_data_, pos, end_pos, aug_length)) {
+            return false;
+        }
         uint64_t aug_end = pos + aug_length;
         if (aug_end > end_pos) {
             // Malformed/truncated augmentation length; clamp to this CIE to avoid bleeding into next entries.
@@ -324,20 +478,21 @@ bool CFIParser::parseCIE(uint64_t offset, uint64_t length, bool is_64bit) {
             char aug_char = cie->augmentation[i];
             switch (aug_char) {
                 case 'L':
-                    if (pos < aug_end) {
-                        cie->lsda_pointer_encoding = DwarfUtils::readU8(section_data_.data(), pos, aug_end);
+                    if (pos < aug_end && pos < section_data_.size()) {
+                        cie->lsda_pointer_encoding = section_data_[pos++];
                     }
                     break;
                 case 'P': {
                     if (pos >= aug_end) break;
-                    cie->personality_encoding = DwarfUtils::readU8(section_data_.data(), pos, aug_end);
+                    if (pos >= section_data_.size()) break;
+                    cie->personality_encoding = section_data_[pos++];
                     uint64_t field_addr = section_base_ + pos;
                     cie->personality_routine = decodePointerBounded(pos, aug_end, cie->personality_encoding, field_addr);
                     break;
                 }
                 case 'R':
-                    if (pos < aug_end) {
-                        cie->fde_pointer_encoding = DwarfUtils::readU8(section_data_.data(), pos, aug_end);
+                    if (pos < aug_end && pos < section_data_.size()) {
+                        cie->fde_pointer_encoding = section_data_[pos++];
                     }
                     break;
                 case 'S':
@@ -396,17 +551,24 @@ bool CFIParser::parseFDE(uint64_t offset, uint64_t length, uint64_t cie_pointer,
 
     {
         uint64_t field_addr = section_base_ + pos;
-        fde->initial_location = decodePointerBounded(pos, end_pos, ptr_encoding, field_addr);
+        bool ok = false;
+        fde->initial_location = decodePointerBounded(pos, end_pos, ptr_encoding, field_addr, &ok);
+        if (!ok) return false;
     }
     {
         uint64_t field_addr = section_base_ + pos;
         // Size uses only low bits.
-        fde->address_range = decodePointerBounded(pos, end_pos, ptr_encoding & 0x0f, field_addr);
+        bool ok = false;
+        fde->address_range = decodePointerBounded(pos, end_pos, ptr_encoding & 0x0f, field_addr, &ok);
+        if (!ok) return false;
     }
 
     // Parse augmentation data if present
     if (fde->cie->has_augmentation_data) {
-        uint64_t aug_length = DwarfUtils::readULEB128(section_data_.data(), pos, end_pos);
+        uint64_t aug_length = 0;
+        if (!readBoundedULEB(section_data_, pos, end_pos, aug_length)) {
+            return false;
+        }
         uint64_t aug_end = pos + aug_length;
         if (aug_end > end_pos) {
             // Malformed/truncated augmentation length; clamp to this FDE.
@@ -539,9 +701,10 @@ uint64_t CFIParser::executeInstruction(uint64_t offset,
     if (primary == 0x80) {
         // DW_CFA_offset: register operand, offset is ULEB128 * data_alignment_factor
         uint64_t reg = operand;
-        uint64_t tmp = offset;
-        uint64_t off_val = DwarfUtils::readULEB128(instructions.data(), tmp, instructions.size());
-        offset = tmp;
+        uint64_t off_val = 0;
+        if (!readInstrULEB(instructions, offset, off_val)) {
+            return instructions.size();
+        }
 
         RegisterRule rule;
         rule.type = CFA_RegRule::OFFSET;
@@ -569,54 +732,70 @@ uint64_t CFIParser::executeInstruction(uint64_t offset,
 
         case 0x1d: { // DW_CFA_MIPS_advance_loc8
             // 8-byte delta (target-specific extension). Used on some toolchains; harmless elsewhere.
-            uint64_t tmp = offset;
-            uint64_t delta = DwarfUtils::readU64(instructions.data(), tmp, instructions.size());
-            offset = tmp;
+            uint64_t delta = 0;
+            if (!readInstrU64(instructions, offset, delta)) {
+                return instructions.size();
+            }
             row.location += delta * cie.code_alignment_factor;
             break;
         }
 
         case 0x01: { // DW_CFA_set_loc
             // Address is encoded in the object endianness.
-            uint64_t tmp = offset;
             // Use the CIE's address_size (DWARF4+), not the parser default.
             if (cie.address_size == 8) {
-                row.location = DwarfUtils::readU64(instructions.data(), tmp, instructions.size());
+                uint64_t v = 0;
+                if (!readInstrU64(instructions, offset, v)) {
+                    return instructions.size();
+                }
+                row.location = v;
+            } else if (cie.address_size == 4) {
+                uint32_t v = 0;
+                if (!readInstrU32(instructions, offset, v)) {
+                    return instructions.size();
+                }
+                row.location = v;
             } else {
-                row.location = DwarfUtils::readU32(instructions.data(), tmp, instructions.size());
+                // Invalid CIE address_size. Cannot safely decode DW_CFA_set_loc operand.
+                return instructions.size();
             }
-            offset = tmp;
             break;
         }
 
         case 0x02: { // DW_CFA_advance_loc1
-            if (offset < instructions.size()) {
-                row.location += instructions[offset++] * cie.code_alignment_factor;
+            uint8_t delta = 0;
+            if (!readInstrU8(instructions, offset, delta)) {
+                return instructions.size();
             }
+            row.location += static_cast<uint64_t>(delta) * cie.code_alignment_factor;
             break;
         }
 
         case 0x03: { // DW_CFA_advance_loc2
-            uint64_t tmp = offset;
-            uint16_t delta = DwarfUtils::readU16(instructions.data(), tmp, instructions.size());
-            offset = tmp;
+            uint16_t delta = 0;
+            if (!readInstrU16(instructions, offset, delta)) {
+                return instructions.size();
+            }
             row.location += static_cast<uint64_t>(delta) * cie.code_alignment_factor;
             break;
         }
 
         case 0x04: { // DW_CFA_advance_loc4
-            uint64_t tmp = offset;
-            uint32_t delta = DwarfUtils::readU32(instructions.data(), tmp, instructions.size());
-            offset = tmp;
+            uint32_t delta = 0;
+            if (!readInstrU32(instructions, offset, delta)) {
+                return instructions.size();
+            }
             row.location += static_cast<uint64_t>(delta) * cie.code_alignment_factor;
             break;
         }
 
         case 0x05: { // DW_CFA_offset_extended
-            uint64_t tmp = offset;
-            uint64_t reg = DwarfUtils::readULEB128(instructions.data(), tmp, instructions.size());
-            uint64_t off = DwarfUtils::readULEB128(instructions.data(), tmp, instructions.size());
-            offset = tmp;
+            uint64_t reg = 0;
+            uint64_t off = 0;
+            if (!readInstrULEB(instructions, offset, reg) ||
+                !readInstrULEB(instructions, offset, off)) {
+                return instructions.size();
+            }
 
             RegisterRule rule;
             rule.type = CFA_RegRule::OFFSET;
@@ -626,9 +805,10 @@ uint64_t CFIParser::executeInstruction(uint64_t offset,
         }
 
         case 0x06: { // DW_CFA_restore_extended
-            uint64_t tmp = offset;
-            uint64_t reg = DwarfUtils::readULEB128(instructions.data(), tmp, instructions.size());
-            offset = tmp;
+            uint64_t reg = 0;
+            if (!readInstrULEB(instructions, offset, reg)) {
+                return instructions.size();
+            }
 
             auto it = cie.initial_row.registers.find(reg);
             if (it != cie.initial_row.registers.end()) {
@@ -640,9 +820,10 @@ uint64_t CFIParser::executeInstruction(uint64_t offset,
         }
 
         case 0x07: { // DW_CFA_undefined
-            uint64_t tmp = offset;
-            uint64_t reg = DwarfUtils::readULEB128(instructions.data(), tmp, instructions.size());
-            offset = tmp;
+            uint64_t reg = 0;
+            if (!readInstrULEB(instructions, offset, reg)) {
+                return instructions.size();
+            }
 
             RegisterRule rule;
             rule.type = CFA_RegRule::UNDEFINED;
@@ -651,9 +832,10 @@ uint64_t CFIParser::executeInstruction(uint64_t offset,
         }
 
         case 0x08: { // DW_CFA_same_value
-            uint64_t tmp = offset;
-            uint64_t reg = DwarfUtils::readULEB128(instructions.data(), tmp, instructions.size());
-            offset = tmp;
+            uint64_t reg = 0;
+            if (!readInstrULEB(instructions, offset, reg)) {
+                return instructions.size();
+            }
 
             RegisterRule rule;
             rule.type = CFA_RegRule::SAME_VALUE;
@@ -662,10 +844,12 @@ uint64_t CFIParser::executeInstruction(uint64_t offset,
         }
 
         case 0x09: { // DW_CFA_register
-            uint64_t tmp = offset;
-            uint64_t reg1 = DwarfUtils::readULEB128(instructions.data(), tmp, instructions.size());
-            uint64_t reg2 = DwarfUtils::readULEB128(instructions.data(), tmp, instructions.size());
-            offset = tmp;
+            uint64_t reg1 = 0;
+            uint64_t reg2 = 0;
+            if (!readInstrULEB(instructions, offset, reg1) ||
+                !readInstrULEB(instructions, offset, reg2)) {
+                return instructions.size();
+            }
 
             RegisterRule rule;
             rule.type = CFA_RegRule::REGISTER;
@@ -688,10 +872,12 @@ uint64_t CFIParser::executeInstruction(uint64_t offset,
             break;
 
         case 0x0c: { // DW_CFA_def_cfa
-            uint64_t tmp = offset;
-            uint64_t reg = DwarfUtils::readULEB128(instructions.data(), tmp, instructions.size());
-            uint64_t off = DwarfUtils::readULEB128(instructions.data(), tmp, instructions.size());
-            offset = tmp;
+            uint64_t reg = 0;
+            uint64_t off = 0;
+            if (!readInstrULEB(instructions, offset, reg) ||
+                !readInstrULEB(instructions, offset, off)) {
+                return instructions.size();
+            }
 
             row.cfa.type = CFA_Type::REGISTER_OFFSET;
             row.cfa.reg_num = reg;
@@ -700,9 +886,10 @@ uint64_t CFIParser::executeInstruction(uint64_t offset,
         }
 
         case 0x0d: { // DW_CFA_def_cfa_register
-            uint64_t tmp = offset;
-            uint64_t reg = DwarfUtils::readULEB128(instructions.data(), tmp, instructions.size());
-            offset = tmp;
+            uint64_t reg = 0;
+            if (!readInstrULEB(instructions, offset, reg)) {
+                return instructions.size();
+            }
 
             row.cfa.type = CFA_Type::REGISTER_OFFSET;
             row.cfa.reg_num = reg;
@@ -710,9 +897,10 @@ uint64_t CFIParser::executeInstruction(uint64_t offset,
         }
 
         case 0x0e: { // DW_CFA_def_cfa_offset
-            uint64_t tmp = offset;
-            uint64_t off = DwarfUtils::readULEB128(instructions.data(), tmp, instructions.size());
-            offset = tmp;
+            uint64_t off = 0;
+            if (!readInstrULEB(instructions, offset, off)) {
+                return instructions.size();
+            }
 
             row.cfa.type = CFA_Type::REGISTER_OFFSET;
             row.cfa.offset = static_cast<int64_t>(off);
@@ -735,31 +923,38 @@ uint64_t CFIParser::executeInstruction(uint64_t offset,
             }
 
             // DW_CFA_def_cfa_expression (DWARF3+)
-            uint64_t tmp = offset;
-            uint64_t len = DwarfUtils::readULEB128(instructions.data(), tmp, instructions.size());
-            offset = tmp;
-
-            row.cfa.type = CFA_Type::EXPRESSION;
-            row.cfa.expression.clear();
+            uint64_t len = 0;
+            if (!readInstrULEB(instructions, offset, len)) {
+                return instructions.size();
+            }
             uint64_t avail = (offset <= instructions.size()) ? (instructions.size() - offset) : 0;
-            if (len > avail) len = avail;
-            row.cfa.expression.insert(row.cfa.expression.end(),
+            if (len > avail) {
+                return instructions.size();
+            }
+            std::vector<uint8_t> expr;
+            expr.insert(expr.end(),
                                       instructions.begin() + static_cast<int64_t>(offset),
                                       instructions.begin() + static_cast<int64_t>(offset + len));
             offset += len;
+            row.cfa.type = CFA_Type::EXPRESSION;
+            row.cfa.expression = std::move(expr);
             break;
         }
 
         case 0x10: { // DW_CFA_expression
-            uint64_t tmp = offset;
-            uint64_t reg = DwarfUtils::readULEB128(instructions.data(), tmp, instructions.size());
-            uint64_t len = DwarfUtils::readULEB128(instructions.data(), tmp, instructions.size());
-            offset = tmp;
+            uint64_t reg = 0;
+            uint64_t len = 0;
+            if (!readInstrULEB(instructions, offset, reg) ||
+                !readInstrULEB(instructions, offset, len)) {
+                return instructions.size();
+            }
 
+            uint64_t avail = (offset <= instructions.size()) ? (instructions.size() - offset) : 0;
+            if (len > avail) {
+                return instructions.size();
+            }
             RegisterRule rule;
             rule.type = CFA_RegRule::EXPRESSION;
-            uint64_t avail = (offset <= instructions.size()) ? (instructions.size() - offset) : 0;
-            if (len > avail) len = avail;
             rule.expression.insert(rule.expression.end(),
                                    instructions.begin() + static_cast<int64_t>(offset),
                                    instructions.begin() + static_cast<int64_t>(offset + len));
@@ -769,10 +964,12 @@ uint64_t CFIParser::executeInstruction(uint64_t offset,
         }
 
         case 0x11: { // DW_CFA_offset_extended_sf
-            uint64_t tmp = offset;
-            uint64_t reg = DwarfUtils::readULEB128(instructions.data(), tmp, instructions.size());
-            int64_t off = DwarfUtils::readSLEB128(instructions.data(), tmp, instructions.size());
-            offset = tmp;
+            uint64_t reg = 0;
+            int64_t off = 0;
+            if (!readInstrULEB(instructions, offset, reg) ||
+                !readInstrSLEB(instructions, offset, off)) {
+                return instructions.size();
+            }
 
             RegisterRule rule;
             rule.type = CFA_RegRule::OFFSET;
@@ -782,10 +979,12 @@ uint64_t CFIParser::executeInstruction(uint64_t offset,
         }
 
         case 0x12: { // DW_CFA_def_cfa_sf
-            uint64_t tmp = offset;
-            uint64_t reg = DwarfUtils::readULEB128(instructions.data(), tmp, instructions.size());
-            int64_t off = DwarfUtils::readSLEB128(instructions.data(), tmp, instructions.size());
-            offset = tmp;
+            uint64_t reg = 0;
+            int64_t off = 0;
+            if (!readInstrULEB(instructions, offset, reg) ||
+                !readInstrSLEB(instructions, offset, off)) {
+                return instructions.size();
+            }
 
             row.cfa.type = CFA_Type::REGISTER_OFFSET;
             row.cfa.reg_num = reg;
@@ -794,9 +993,10 @@ uint64_t CFIParser::executeInstruction(uint64_t offset,
         }
 
         case 0x13: { // DW_CFA_def_cfa_offset_sf
-            uint64_t tmp = offset;
-            int64_t off = DwarfUtils::readSLEB128(instructions.data(), tmp, instructions.size());
-            offset = tmp;
+            int64_t off = 0;
+            if (!readInstrSLEB(instructions, offset, off)) {
+                return instructions.size();
+            }
 
             row.cfa.type = CFA_Type::REGISTER_OFFSET;
             row.cfa.offset = off * cie.data_alignment_factor;
@@ -804,10 +1004,12 @@ uint64_t CFIParser::executeInstruction(uint64_t offset,
         }
 
         case 0x14: { // DW_CFA_val_offset
-            uint64_t tmp = offset;
-            uint64_t reg = DwarfUtils::readULEB128(instructions.data(), tmp, instructions.size());
-            uint64_t off = DwarfUtils::readULEB128(instructions.data(), tmp, instructions.size());
-            offset = tmp;
+            uint64_t reg = 0;
+            uint64_t off = 0;
+            if (!readInstrULEB(instructions, offset, reg) ||
+                !readInstrULEB(instructions, offset, off)) {
+                return instructions.size();
+            }
 
             RegisterRule rule;
             rule.type = CFA_RegRule::VAL_OFFSET;
@@ -817,10 +1019,12 @@ uint64_t CFIParser::executeInstruction(uint64_t offset,
         }
 
         case 0x15: { // DW_CFA_val_offset_sf
-            uint64_t tmp = offset;
-            uint64_t reg = DwarfUtils::readULEB128(instructions.data(), tmp, instructions.size());
-            int64_t off = DwarfUtils::readSLEB128(instructions.data(), tmp, instructions.size());
-            offset = tmp;
+            uint64_t reg = 0;
+            int64_t off = 0;
+            if (!readInstrULEB(instructions, offset, reg) ||
+                !readInstrSLEB(instructions, offset, off)) {
+                return instructions.size();
+            }
 
             RegisterRule rule;
             rule.type = CFA_RegRule::VAL_OFFSET;
@@ -830,15 +1034,19 @@ uint64_t CFIParser::executeInstruction(uint64_t offset,
         }
 
         case 0x16: { // DW_CFA_val_expression
-            uint64_t tmp = offset;
-            uint64_t reg = DwarfUtils::readULEB128(instructions.data(), tmp, instructions.size());
-            uint64_t len = DwarfUtils::readULEB128(instructions.data(), tmp, instructions.size());
-            offset = tmp;
+            uint64_t reg = 0;
+            uint64_t len = 0;
+            if (!readInstrULEB(instructions, offset, reg) ||
+                !readInstrULEB(instructions, offset, len)) {
+                return instructions.size();
+            }
 
+            uint64_t avail = (offset <= instructions.size()) ? (instructions.size() - offset) : 0;
+            if (len > avail) {
+                return instructions.size();
+            }
             RegisterRule rule;
             rule.type = CFA_RegRule::VAL_EXPRESSION;
-            uint64_t avail = (offset <= instructions.size()) ? (instructions.size() - offset) : 0;
-            if (len > avail) len = avail;
             rule.expression.insert(rule.expression.end(),
                                    instructions.begin() + static_cast<int64_t>(offset),
                                    instructions.begin() + static_cast<int64_t>(offset + len));
@@ -859,17 +1067,20 @@ uint64_t CFIParser::executeInstruction(uint64_t offset,
 
         case 0x2e: { // DW_CFA_GNU_args_size
             // Skip a ULEB128 argument.
-            uint64_t tmp = offset;
-            (void)DwarfUtils::readULEB128(instructions.data(), tmp, instructions.size());
-            offset = tmp;
+            uint64_t ignored = 0;
+            if (!readInstrULEB(instructions, offset, ignored)) {
+                return instructions.size();
+            }
             break;
         }
 
         case 0x2f: { // DW_CFA_GNU_negative_offset_extended
-            uint64_t tmp = offset;
-            uint64_t reg = DwarfUtils::readULEB128(instructions.data(), tmp, instructions.size());
-            uint64_t off = DwarfUtils::readULEB128(instructions.data(), tmp, instructions.size());
-            offset = tmp;
+            uint64_t reg = 0;
+            uint64_t off = 0;
+            if (!readInstrULEB(instructions, offset, reg) ||
+                !readInstrULEB(instructions, offset, off)) {
+                return instructions.size();
+            }
 
             RegisterRule rule;
             rule.type = CFA_RegRule::OFFSET;
@@ -895,7 +1106,9 @@ uint64_t CFIParser::decodePointer(uint64_t& offset, uint8_t encoding, uint64_t p
 uint64_t CFIParser::decodePointerBounded(uint64_t& offset,
                                         uint64_t end,
                                         uint8_t encoding,
-                                        uint64_t pc_rel_base) const {
+                                        uint64_t pc_rel_base,
+                                        bool* decoded_ok) const {
+    if (decoded_ok) *decoded_ok = true;
     if (encoding == 0xff) {
         return 0; // Omitted
     }
@@ -918,6 +1131,7 @@ uint64_t CFIParser::decodePointerBounded(uint64_t& offset,
                 offset += pad;
             } else {
                 offset = end;
+                if (decoded_ok) *decoded_ok = false;
                 return 0;
             }
         }
@@ -930,6 +1144,7 @@ uint64_t CFIParser::decodePointerBounded(uint64_t& offset,
         case 0x00: // DW_EH_PE_absptr
             if (!canRead((address_size_ == 8) ? 8 : 4)) {
                 offset = end;
+                if (decoded_ok) *decoded_ok = false;
                 return 0;
             }
             value = (address_size_ == 8)
@@ -939,13 +1154,23 @@ uint64_t CFIParser::decodePointerBounded(uint64_t& offset,
         case 0x01: // DW_EH_PE_uleb128
             if (offset >= end) {
                 offset = end;
+                if (decoded_ok) *decoded_ok = false;
                 return 0;
             }
-            value = DwarfUtils::readULEB128(section_data_.data(), offset, end);
+            {
+                uint64_t tmp = offset;
+                if (!readBoundedULEB(section_data_, tmp, end, value)) {
+                    offset = end;
+                    if (decoded_ok) *decoded_ok = false;
+                    return 0;
+                }
+                offset = tmp;
+            }
             break;
         case 0x02: // DW_EH_PE_udata2
             if (!canRead(2)) {
                 offset = end;
+                if (decoded_ok) *decoded_ok = false;
                 return 0;
             }
             value = DwarfUtils::readU16(section_data_.data(), offset, end);
@@ -953,6 +1178,7 @@ uint64_t CFIParser::decodePointerBounded(uint64_t& offset,
         case 0x03: // DW_EH_PE_udata4
             if (!canRead(4)) {
                 offset = end;
+                if (decoded_ok) *decoded_ok = false;
                 return 0;
             }
             value = DwarfUtils::readU32(section_data_.data(), offset, end);
@@ -960,6 +1186,7 @@ uint64_t CFIParser::decodePointerBounded(uint64_t& offset,
         case 0x04: // DW_EH_PE_udata8
             if (!canRead(8)) {
                 offset = end;
+                if (decoded_ok) *decoded_ok = false;
                 return 0;
             }
             value = DwarfUtils::readU64(section_data_.data(), offset, end);
@@ -967,13 +1194,25 @@ uint64_t CFIParser::decodePointerBounded(uint64_t& offset,
         case 0x09: // DW_EH_PE_sleb128
             if (offset >= end) {
                 offset = end;
+                if (decoded_ok) *decoded_ok = false;
                 return 0;
             }
-            value = static_cast<uint64_t>(DwarfUtils::readSLEB128(section_data_.data(), offset, end));
+            {
+                int64_t sv = 0;
+                uint64_t tmp = offset;
+                if (!readBoundedSLEB(section_data_, tmp, end, sv)) {
+                    offset = end;
+                    if (decoded_ok) *decoded_ok = false;
+                    return 0;
+                }
+                offset = tmp;
+                value = static_cast<uint64_t>(sv);
+            }
             break;
         case 0x0a: { // DW_EH_PE_sdata2
             if (!canRead(2)) {
                 offset = end;
+                if (decoded_ok) *decoded_ok = false;
                 return 0;
             }
             int16_t v = static_cast<int16_t>(DwarfUtils::readU16(section_data_.data(), offset, end));
@@ -983,6 +1222,7 @@ uint64_t CFIParser::decodePointerBounded(uint64_t& offset,
         case 0x0b: { // DW_EH_PE_sdata4
             if (!canRead(4)) {
                 offset = end;
+                if (decoded_ok) *decoded_ok = false;
                 return 0;
             }
             int32_t v = static_cast<int32_t>(DwarfUtils::readU32(section_data_.data(), offset, end));
@@ -992,6 +1232,7 @@ uint64_t CFIParser::decodePointerBounded(uint64_t& offset,
         case 0x0c: { // DW_EH_PE_sdata8
             if (!canRead(8)) {
                 offset = end;
+                if (decoded_ok) *decoded_ok = false;
                 return 0;
             }
             value = DwarfUtils::readU64(section_data_.data(), offset, end);
@@ -999,6 +1240,7 @@ uint64_t CFIParser::decodePointerBounded(uint64_t& offset,
         }
         default:
             offset = end;
+            if (decoded_ok) *decoded_ok = false;
             return 0;
     }
 
