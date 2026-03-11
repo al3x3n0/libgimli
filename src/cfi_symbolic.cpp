@@ -1,4 +1,5 @@
 #include "cfi_symbolic.hpp"
+#include "smt_verifier.hpp"
 
 #include <algorithm>
 #include <sstream>
@@ -54,6 +55,13 @@ std::string summarizeUnwind(const UnwindInfo& u) {
     }
     ss << "}";
     return ss.str();
+}
+
+void setVerifierMetadata(SymbolicCFIStateComparisonResult& out, const ExpressionVerificationResult& er) {
+    out.verifier_backend = er.verifier_backend;
+    out.solver_result = er.solver_result;
+    out.counterexample_model = er.counterexample_model;
+    out.counterexample_witness = er.counterexample_witness;
 }
 
 bool readU8(const std::vector<uint8_t>& ins, uint64_t& off, uint8_t& out) {
@@ -318,23 +326,31 @@ SymbolicCFIStateComparisonResult SymbolicCFIVerifier::compareUnwindInfo(
     if (!lhs.valid && !rhs.valid) {
         out.verdict = ExpressionVerificationResult::Verdict::EQUIVALENT;
         out.reason = "both unwind states invalid";
+        out.verifier_backend = "structural";
+        out.solver_result = "precheck_both_invalid";
         return out;
     }
     if (lhs.valid != rhs.valid) {
         out.verdict = ExpressionVerificationResult::Verdict::DIFFERENT;
         out.reason = lhs.valid ? "rhs unwind invalid" : "lhs unwind invalid";
+        out.verifier_backend = "structural";
+        out.solver_result = lhs.valid ? "precheck_rhs_invalid" : "precheck_lhs_invalid";
         return out;
     }
 
     if (lhs.cfa.type != rhs.cfa.type) {
         out.verdict = ExpressionVerificationResult::Verdict::DIFFERENT;
         out.reason = "CFA type mismatch";
+        out.verifier_backend = "structural";
+        out.solver_result = "precheck_cfa_type_mismatch";
         return out;
     }
     if (lhs.cfa.type == CFA_Type::REGISTER_OFFSET) {
         if (lhs.cfa.reg_num != rhs.cfa.reg_num || lhs.cfa.offset != rhs.cfa.offset) {
             out.verdict = ExpressionVerificationResult::Verdict::DIFFERENT;
             out.reason = "CFA register/offset mismatch";
+            out.verifier_backend = "structural";
+            out.solver_result = "precheck_cfa_reg_offset_mismatch";
             return out;
         }
     } else {
@@ -345,6 +361,7 @@ SymbolicCFIStateComparisonResult SymbolicCFIVerifier::compareUnwindInfo(
         if (er.verdict != ExpressionVerificationResult::Verdict::EQUIVALENT) {
             out.verdict = er.verdict;
             out.reason = "CFA expression mismatch: " + er.reason;
+            setVerifierMetadata(out, er);
             return out;
         }
     }
@@ -352,11 +369,15 @@ SymbolicCFIStateComparisonResult SymbolicCFIVerifier::compareUnwindInfo(
     if (lhs.return_address_register != rhs.return_address_register) {
         out.verdict = ExpressionVerificationResult::Verdict::DIFFERENT;
         out.reason = "return-address register mismatch";
+        out.verifier_backend = "structural";
+        out.solver_result = "precheck_ra_register_mismatch";
         return out;
     }
     if (lhs.aarch64_ra_sign_state != rhs.aarch64_ra_sign_state) {
         out.verdict = ExpressionVerificationResult::Verdict::DIFFERENT;
         out.reason = "AArch64 RA sign-state mismatch";
+        out.verifier_backend = "structural";
+        out.solver_result = "precheck_aarch64_ra_sign_state_mismatch";
         return out;
     }
 
@@ -386,11 +407,15 @@ SymbolicCFIStateComparisonResult SymbolicCFIVerifier::compareUnwindInfo(
         if (!l || !r) {
             out.verdict = ExpressionVerificationResult::Verdict::DIFFERENT;
             out.reason = "register rule missing for reg " + std::to_string(reg);
+            out.verifier_backend = "structural";
+            out.solver_result = "precheck_register_rule_missing";
             return out;
         }
         if (l->type != r->type) {
             out.verdict = ExpressionVerificationResult::Verdict::DIFFERENT;
             out.reason = "register rule type mismatch for reg " + std::to_string(reg);
+            out.verifier_backend = "structural";
+            out.solver_result = "precheck_register_rule_type_mismatch";
             return out;
         }
 
@@ -400,6 +425,8 @@ SymbolicCFIStateComparisonResult SymbolicCFIVerifier::compareUnwindInfo(
                 if (l->offset != r->offset) {
                     out.verdict = ExpressionVerificationResult::Verdict::DIFFERENT;
                     out.reason = "register offset mismatch for reg " + std::to_string(reg);
+                    out.verifier_backend = "structural";
+                    out.solver_result = "precheck_register_offset_mismatch";
                     return out;
                 }
                 break;
@@ -407,6 +434,8 @@ SymbolicCFIStateComparisonResult SymbolicCFIVerifier::compareUnwindInfo(
                 if (l->reg_num != r->reg_num) {
                     out.verdict = ExpressionVerificationResult::Verdict::DIFFERENT;
                     out.reason = "register indirection mismatch for reg " + std::to_string(reg);
+                    out.verifier_backend = "structural";
+                    out.solver_result = "precheck_register_indirection_mismatch";
                     return out;
                 }
                 break;
@@ -420,6 +449,7 @@ SymbolicCFIStateComparisonResult SymbolicCFIVerifier::compareUnwindInfo(
                     out.verdict = er.verdict;
                     out.reason = "register expression mismatch for reg " + std::to_string(reg) +
                                  ": " + er.reason;
+                    setVerifierMetadata(out, er);
                     return out;
                 }
                 break;
@@ -433,6 +463,10 @@ SymbolicCFIStateComparisonResult SymbolicCFIVerifier::compareUnwindInfo(
 
     out.verdict = ExpressionVerificationResult::Verdict::EQUIVALENT;
     out.reason = "symbolic unwind state equivalence established";
+    out.verifier_backend = SMTExpressionVerifier::isAvailable()
+        ? "structural+z3"
+        : "structural+solver-unavailable";
+    out.solver_result = "equivalent";
     return out;
 }
 
@@ -458,6 +492,8 @@ SymbolicCFIIntervalComparisonResult SymbolicCFIVerifier::compareFDEByIndex(
     if (lhs_fde_index >= l_fdes.size() || rhs_fde_index >= r_fdes.size()) {
         out.verdict = ExpressionVerificationResult::Verdict::UNKNOWN;
         out.reason = "FDE index out of range";
+        out.verifier_backend = "structural";
+        out.solver_result = "precheck_fde_index_out_of_range";
         return out;
     }
 
@@ -466,12 +502,16 @@ SymbolicCFIIntervalComparisonResult SymbolicCFIVerifier::compareFDEByIndex(
     if (!lf.cie || !rf.cie) {
         out.verdict = ExpressionVerificationResult::Verdict::UNKNOWN;
         out.reason = "missing CIE for FDE";
+        out.verifier_backend = "structural";
+        out.solver_result = "precheck_missing_cie";
         return out;
     }
 
     if (opts.require_same_range && lf.address_range != rf.address_range) {
         out.verdict = ExpressionVerificationResult::Verdict::DIFFERENT;
         out.reason = "FDE range mismatch";
+        out.verifier_backend = "structural";
+        out.solver_result = "precheck_fde_range_mismatch";
         return out;
     }
 
@@ -479,6 +519,8 @@ SymbolicCFIIntervalComparisonResult SymbolicCFIVerifier::compareFDEByIndex(
     if (common_range == 0) {
         out.verdict = ExpressionVerificationResult::Verdict::EQUIVALENT;
         out.reason = "both FDE ranges empty";
+        out.verifier_backend = "structural";
+        out.solver_result = "precheck_both_ranges_empty";
         return out;
     }
 
@@ -502,14 +544,21 @@ SymbolicCFIIntervalComparisonResult SymbolicCFIVerifier::compareFDEByIndex(
             out.reason = "mismatch at relative pc " + std::to_string(d) + ": " + r.reason;
             out.mismatch_relative_pc = d;
             out.has_mismatch_relative_pc = true;
+            out.verifier_backend = r.verifier_backend;
+            out.solver_result = r.solver_result;
+            out.counterexample_model = r.counterexample_model;
+            out.counterexample_witness = r.counterexample_witness;
             return out;
         }
     }
 
     out.verdict = ExpressionVerificationResult::Verdict::EQUIVALENT;
     out.reason = "symbolic CFI interval equivalence established";
+    out.verifier_backend = SMTExpressionVerifier::isAvailable()
+        ? "structural+z3"
+        : "structural+solver-unavailable";
+    out.solver_result = "equivalent";
     return out;
 }
 
 } // namespace dwarf
-

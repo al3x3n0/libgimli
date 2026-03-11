@@ -153,6 +153,10 @@ std::optional<DebugMacroHeader> DebugMacroParser::parseHeader(uint64_t& offset) 
     // Read flags
     header.flags = readU8(offset, unit_end);
     if (hasDecodeError()) return std::nullopt;
+    // DWARF5 defines only the low 3 bits; higher bits are reserved.
+    if ((header.flags & 0xF8) != 0) {
+        return std::nullopt;
+    }
 
     // Determine offset size from flags
     header.offset_size = (header.flags & 0x01) ? 8 : 4;
@@ -413,7 +417,9 @@ std::optional<MacroEntry> DebugMacroParser::parseEntry(uint64_t& offset, uint64_
 	                            case DwarfForm::DW_FORM_udata:
 	                            case DwarfForm::DW_FORM_ref_udata:
 	                            case DwarfForm::DW_FORM_strx:
+                            case DwarfForm::DW_FORM_GNU_str_index:
 	                            case DwarfForm::DW_FORM_addrx:
+                            case DwarfForm::DW_FORM_GNU_addr_index:
 	                            case DwarfForm::DW_FORM_loclistx:
                             case DwarfForm::DW_FORM_rnglistx:
                                 (void)readULEB128(offset, unit_end);
@@ -441,10 +447,14 @@ std::optional<MacroEntry> DebugMacroParser::parseEntry(uint64_t& offset, uint64_
                             case DwarfForm::DW_FORM_addrx4:
                                 (void)readU32(offset, unit_end);
                                 return !hasDecodeError() && offset <= unit_end;
-	                            case DwarfForm::DW_FORM_strp:
-	                            case DwarfForm::DW_FORM_sec_offset:
+                            case DwarfForm::DW_FORM_strp:
+                            case DwarfForm::DW_FORM_sec_offset:
                             case DwarfForm::DW_FORM_line_strp:
                             case DwarfForm::DW_FORM_strp_sup:
+                            case DwarfForm::DW_FORM_GNU_strp_alt:
+                            case DwarfForm::DW_FORM_GNU_ref_alt:
+                            case DwarfForm::DW_FORM_addr:
+                            case DwarfForm::DW_FORM_ref_addr:
                                 (void)readOffset(offset, header.offset_size, unit_end);
                                 return !hasDecodeError() && offset <= unit_end;
                             case DwarfForm::DW_FORM_ref_sup4:
@@ -571,6 +581,7 @@ std::vector<MacroDefinition> DebugMacroParser::getDefinitions(uint64_t offset) {
     for (const auto& entry : entries) {
         if (entry.type == DW_MACRO::DW_MACRO_define ||
             entry.type == DW_MACRO::DW_MACRO_define_strp ||
+            entry.type == DW_MACRO::DW_MACRO_define_sup ||
             entry.type == DW_MACRO::DW_MACRO_define_strx) {
             MacroDefinition def;
             def.line = entry.line;
@@ -593,6 +604,7 @@ std::vector<MacroUndefinition> DebugMacroParser::getUndefinitions(uint64_t offse
     for (const auto& entry : entries) {
         if (entry.type == DW_MACRO::DW_MACRO_undef ||
             entry.type == DW_MACRO::DW_MACRO_undef_strp ||
+            entry.type == DW_MACRO::DW_MACRO_undef_sup ||
             entry.type == DW_MACRO::DW_MACRO_undef_strx) {
             MacroUndefinition undef;
             undef.line = entry.line;

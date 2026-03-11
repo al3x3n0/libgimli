@@ -20,6 +20,32 @@ namespace dwarf {
 
 class DwarfParser {
 public:
+    struct SplitDwarfStats {
+        size_t dwp_hits = 0;
+        size_t dwo_hits = 0;
+        size_t dwo_fallback_hits = 0;
+        size_t fallback_no_index = 0;
+        size_t fallback_invalid_index = 0;
+        size_t fallback_sig_miss = 0;
+    };
+    struct SupportTelemetry {
+        struct VendorFormSkipExample {
+            uint16_t form = 0;
+            uint64_t offset = 0;
+            uint64_t cu_offset = 0;
+            uint64_t die_offset = 0;
+            DwarfAttribute attr = static_cast<DwarfAttribute>(0);
+            std::string severity;
+        };
+        size_t vendor_form_skips = 0;
+        std::vector<std::string> vendor_form_skip_examples;
+        std::vector<std::string> vendor_form_skip_example_keys;
+        std::vector<VendorFormSkipExample> vendor_form_skip_examples_structured;
+        std::map<uint16_t, uint64_t> vendor_form_skip_histogram;
+        std::map<std::string, uint64_t> vendor_form_skip_offset_buckets;
+        std::map<std::string, uint64_t> vendor_form_skip_severity_buckets;
+    };
+
     explicit DwarfParser(const std::string& filename);
     ~DwarfParser() = default;
     
@@ -58,6 +84,8 @@ public:
     // Accelerated name lookup (uses .debug_names if available)
     std::vector<std::shared_ptr<DIE>> findDIEsByNameFast(const std::string& name) const;
     bool hasAcceleratedLookup() const { return names_parser_ != nullptr; }
+    const std::vector<DebugNamesHeader>& getDebugNamesUnitHeaders() const;
+    const DebugNamesHeader* getPrimaryDebugNamesHeader() const;
 
     // Macro information access
     std::vector<MacroDefinition> getMacroDefinitions(uint64_t offset = 0) const;
@@ -104,6 +132,16 @@ public:
     bool loadDWOFile(const std::string& path);
     bool loadDWPFile(const std::string& path);
     bool hasSplitDwarf() const { return split_loader_ != nullptr || dwp_loader_ != nullptr; }
+    bool hasLoadedDWP() const { return dwp_loader_ && dwp_loader_->isLoaded(); }
+    std::string getLoadedDWPPath() const { return dwp_loader_ ? dwp_loader_->getPath() : std::string(); }
+    bool hasDWPIndexSection() const { return dwp_loader_ && dwp_loader_->hasCUIndexSection(); }
+    bool isDWPIndexValid() const { return dwp_loader_ && dwp_loader_->isCUIndexValid(); }
+    size_t getDWPIndexedUnitCount() const { return dwp_loader_ ? dwp_loader_->getCUIndexedUnitCount() : 0; }
+    bool hasDWPTUIndexSection() const { return dwp_loader_ && dwp_loader_->hasTUIndexSection(); }
+    bool isDWPTUIndexValid() const { return dwp_loader_ && dwp_loader_->isTUIndexValid(); }
+    size_t getDWPTUIndexedUnitCount() const { return dwp_loader_ ? dwp_loader_->getTUIndexedUnitCount() : 0; }
+    const SplitDwarfStats& getSplitDwarfStats() const { return split_stats_; }
+    const SupportTelemetry& getSupportTelemetry() const { return support_telemetry_; }
 
     // Debug information
     void printDebugInfo() const;
@@ -180,6 +218,8 @@ private:
     // Cached DWO section payloads needed at query time (notably for DWPs where slices are temporary).
     std::unordered_map<uint64_t, std::vector<uint8_t>> dwo_debug_addr_by_id_;
     mutable std::unordered_map<uint64_t, std::vector<uint64_t>> debug_addr_table_cache_;
+    SplitDwarfStats split_stats_;
+    SupportTelemetry support_telemetry_;
 
     // Parsed data
     std::vector<std::shared_ptr<DIE>> compilation_units_;

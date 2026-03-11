@@ -146,6 +146,10 @@ std::string DwarfUtils::formToString(DwarfForm form) {
         case DwarfForm::DW_FORM_addrx2: return "DW_FORM_addrx2";
         case DwarfForm::DW_FORM_addrx3: return "DW_FORM_addrx3";
         case DwarfForm::DW_FORM_addrx4: return "DW_FORM_addrx4";
+        case DwarfForm::DW_FORM_GNU_addr_index: return "DW_FORM_GNU_addr_index";
+        case DwarfForm::DW_FORM_GNU_str_index: return "DW_FORM_GNU_str_index";
+        case DwarfForm::DW_FORM_GNU_ref_alt: return "DW_FORM_GNU_ref_alt";
+        case DwarfForm::DW_FORM_GNU_strp_alt: return "DW_FORM_GNU_strp_alt";
         default:
             return "DW_FORM_unknown_" + std::to_string(static_cast<int>(form));
     }
@@ -195,6 +199,10 @@ DwarfForm DwarfUtils::stringToForm(const std::string& str) {
     if (str == "DW_FORM_addrx2") return DwarfForm::DW_FORM_addrx2;
     if (str == "DW_FORM_addrx3") return DwarfForm::DW_FORM_addrx3;
     if (str == "DW_FORM_addrx4") return DwarfForm::DW_FORM_addrx4;
+    if (str == "DW_FORM_GNU_addr_index") return DwarfForm::DW_FORM_GNU_addr_index;
+    if (str == "DW_FORM_GNU_str_index") return DwarfForm::DW_FORM_GNU_str_index;
+    if (str == "DW_FORM_GNU_ref_alt") return DwarfForm::DW_FORM_GNU_ref_alt;
+    if (str == "DW_FORM_GNU_strp_alt") return DwarfForm::DW_FORM_GNU_strp_alt;
     return static_cast<DwarfForm>(0);
 }
 
@@ -212,23 +220,105 @@ DwarfOp DwarfUtils::stringToOperation(const std::string& str) {
     if (str == "DW_OP_const8s") return DwarfOp::DW_OP_const8s;
     if (str == "DW_OP_constu") return DwarfOp::DW_OP_constu;
     if (str == "DW_OP_consts") return DwarfOp::DW_OP_consts;
+    if (str == "DW_OP_dup") return DwarfOp::DW_OP_dup;
+    if (str == "DW_OP_drop") return DwarfOp::DW_OP_drop;
+    if (str == "DW_OP_over") return DwarfOp::DW_OP_over;
+    if (str == "DW_OP_pick") return DwarfOp::DW_OP_pick;
+    if (str == "DW_OP_swap") return DwarfOp::DW_OP_swap;
+    if (str == "DW_OP_rot") return DwarfOp::DW_OP_rot;
+    if (str == "DW_OP_xderef") return DwarfOp::DW_OP_xderef;
+    if (str == "DW_OP_abs") return DwarfOp::DW_OP_abs;
+    if (str == "DW_OP_and") return DwarfOp::DW_OP_and;
+    if (str == "DW_OP_div") return DwarfOp::DW_OP_div;
+    if (str == "DW_OP_minus") return DwarfOp::DW_OP_minus;
+    if (str == "DW_OP_mod") return DwarfOp::DW_OP_mod;
+    if (str == "DW_OP_mul") return DwarfOp::DW_OP_mul;
+    if (str == "DW_OP_neg") return DwarfOp::DW_OP_neg;
+    if (str == "DW_OP_not") return DwarfOp::DW_OP_not;
+    if (str == "DW_OP_or") return DwarfOp::DW_OP_or;
     if (str == "DW_OP_plus") return DwarfOp::DW_OP_plus;
     if (str == "DW_OP_plus_uconst") return DwarfOp::DW_OP_plus_uconst;
+    if (str == "DW_OP_shl") return DwarfOp::DW_OP_shl;
+    if (str == "DW_OP_shr") return DwarfOp::DW_OP_shr;
+    if (str == "DW_OP_shra") return DwarfOp::DW_OP_shra;
+    if (str == "DW_OP_xor") return DwarfOp::DW_OP_xor;
     if (str == "DW_OP_bra") return DwarfOp::DW_OP_bra;
+    if (str == "DW_OP_eq") return DwarfOp::DW_OP_eq;
+    if (str == "DW_OP_ge") return DwarfOp::DW_OP_ge;
+    if (str == "DW_OP_gt") return DwarfOp::DW_OP_gt;
+    if (str == "DW_OP_le") return DwarfOp::DW_OP_le;
+    if (str == "DW_OP_lt") return DwarfOp::DW_OP_lt;
+    if (str == "DW_OP_ne") return DwarfOp::DW_OP_ne;
     if (str == "DW_OP_skip") return DwarfOp::DW_OP_skip;
     if (str == "DW_OP_regx") return DwarfOp::DW_OP_regx;
     if (str == "DW_OP_bregx") return DwarfOp::DW_OP_bregx;
     if (str == "DW_OP_fbreg") return DwarfOp::DW_OP_fbreg;
     if (str == "DW_OP_piece") return DwarfOp::DW_OP_piece;
+    if (str == "DW_OP_deref_size") return DwarfOp::DW_OP_deref_size;
+    if (str == "DW_OP_xderef_size") return DwarfOp::DW_OP_xderef_size;
+    if (str == "DW_OP_nop") return DwarfOp::DW_OP_nop;
+    if (str == "DW_OP_push_object_address") return DwarfOp::DW_OP_push_object_address;
     if (str == "DW_OP_bit_piece") return DwarfOp::DW_OP_bit_piece;
     if (str == "DW_OP_implicit_value") return DwarfOp::DW_OP_implicit_value;
     if (str == "DW_OP_stack_value") return DwarfOp::DW_OP_stack_value;
+    if (str == "DW_OP_implicit_pointer") return DwarfOp::DW_OP_implicit_pointer;
     if (str == "DW_OP_call2") return DwarfOp::DW_OP_call2;
     if (str == "DW_OP_call4") return DwarfOp::DW_OP_call4;
     if (str == "DW_OP_call_ref") return DwarfOp::DW_OP_call_ref;
+    if (str == "DW_OP_form_tls_address") return DwarfOp::DW_OP_form_tls_address;
+    if (str == "DW_OP_call_frame_cfa") return DwarfOp::DW_OP_call_frame_cfa;
+    if (str == "DW_OP_addrx") return DwarfOp::DW_OP_addrx;
+    if (str == "DW_OP_constx") return DwarfOp::DW_OP_constx;
     if (str == "DW_OP_entry_value") return DwarfOp::DW_OP_entry_value;
+    if (str == "DW_OP_const_type") return DwarfOp::DW_OP_const_type;
+    if (str == "DW_OP_regval_type") return DwarfOp::DW_OP_regval_type;
+    if (str == "DW_OP_deref_type") return DwarfOp::DW_OP_deref_type;
+    if (str == "DW_OP_xderef_type") return DwarfOp::DW_OP_xderef_type;
     if (str == "DW_OP_convert") return DwarfOp::DW_OP_convert;
     if (str == "DW_OP_reinterpret") return DwarfOp::DW_OP_reinterpret;
+    if (str == "DW_OP_GNU_push_tls_address") return DwarfOp::DW_OP_GNU_push_tls_address;
+    if (str == "DW_OP_WASM_location") return DwarfOp::DW_OP_WASM_location;
+    if (str == "DW_OP_GNU_uninit") return DwarfOp::DW_OP_GNU_uninit;
+    if (str == "DW_OP_GNU_encoded_addr") return DwarfOp::DW_OP_GNU_encoded_addr;
+    if (str == "DW_OP_GNU_implicit_pointer") return DwarfOp::DW_OP_GNU_implicit_pointer;
+    if (str == "DW_OP_GNU_entry_value") return DwarfOp::DW_OP_GNU_entry_value;
+    if (str == "DW_OP_GNU_const_type") return DwarfOp::DW_OP_GNU_const_type;
+    if (str == "DW_OP_GNU_regval_type") return DwarfOp::DW_OP_GNU_regval_type;
+    if (str == "DW_OP_GNU_deref_type") return DwarfOp::DW_OP_GNU_deref_type;
+    if (str == "DW_OP_GNU_convert") return DwarfOp::DW_OP_GNU_convert;
+    if (str == "DW_OP_GNU_reinterpret") return DwarfOp::DW_OP_GNU_reinterpret;
+    if (str == "DW_OP_GNU_parameter_ref") return DwarfOp::DW_OP_GNU_parameter_ref;
+    if (str == "DW_OP_GNU_addr_index") return DwarfOp::DW_OP_GNU_addr_index;
+    if (str == "DW_OP_GNU_const_index") return DwarfOp::DW_OP_GNU_const_index;
+
+    auto parseIndexed = [&](const char* prefix, uint8_t base, uint8_t max) -> DwarfOp {
+        const std::string p(prefix);
+        if (str.rfind(p, 0) != 0) return static_cast<DwarfOp>(0);
+        const std::string tail = str.substr(p.size());
+        if (tail.empty()) return static_cast<DwarfOp>(0);
+        try {
+            size_t consumed = 0;
+            const unsigned long n = std::stoul(tail, &consumed, 10);
+            if (consumed != tail.size() || n > max) return static_cast<DwarfOp>(0);
+            return static_cast<DwarfOp>(base + static_cast<uint8_t>(n));
+        } catch (...) {
+            return static_cast<DwarfOp>(0);
+        }
+    };
+
+    if (auto op = parseIndexed("DW_OP_lit", static_cast<uint8_t>(DwarfOp::DW_OP_lit0), 31);
+        op != static_cast<DwarfOp>(0)) {
+        return op;
+    }
+    if (auto op = parseIndexed("DW_OP_reg", static_cast<uint8_t>(DwarfOp::DW_OP_reg0), 31);
+        op != static_cast<DwarfOp>(0)) {
+        return op;
+    }
+    if (auto op = parseIndexed("DW_OP_breg", static_cast<uint8_t>(DwarfOp::DW_OP_breg0), 31);
+        op != static_cast<DwarfOp>(0)) {
+        return op;
+    }
+
     return static_cast<DwarfOp>(0);
 }
 
@@ -444,6 +534,14 @@ std::string DwarfUtils::getFileExtension(const std::string& filename) {
 
 // Size utilities
 size_t DwarfUtils::getFormSize(DwarfForm form, const uint8_t* data, size_t offset, size_t max_offset) {
+    return getFormSize(form, data, offset, max_offset, SizeContext{});
+}
+
+size_t DwarfUtils::getFormSize(DwarfForm form,
+                               const uint8_t* data,
+                               size_t offset,
+                               size_t max_offset,
+                               const SizeContext& ctx) {
     if (!data || offset >= max_offset) return 0;
     auto avail = [&](size_t n) -> bool { return offset + n <= max_offset; };
 
@@ -457,29 +555,29 @@ size_t DwarfUtils::getFormSize(DwarfForm form, const uint8_t* data, size_t offse
         case DwarfForm::DW_FORM_ref1:
         case DwarfForm::DW_FORM_strx1:
         case DwarfForm::DW_FORM_addrx1:
-            return 1;
+            return (max_offset - offset >= 1) ? 1 : (max_offset - offset);
 
         case DwarfForm::DW_FORM_data2:
         case DwarfForm::DW_FORM_ref2:
         case DwarfForm::DW_FORM_strx2:
         case DwarfForm::DW_FORM_addrx2:
-            return 2;
+            return (max_offset - offset >= 2) ? 2 : (max_offset - offset);
 
         case DwarfForm::DW_FORM_data4:
         case DwarfForm::DW_FORM_ref4:
         case DwarfForm::DW_FORM_ref_sup4:
         case DwarfForm::DW_FORM_strx4:
         case DwarfForm::DW_FORM_addrx4:
-            return 4;
+            return (max_offset - offset >= 4) ? 4 : (max_offset - offset);
 
         case DwarfForm::DW_FORM_data8:
         case DwarfForm::DW_FORM_ref8:
         case DwarfForm::DW_FORM_ref_sig8:
         case DwarfForm::DW_FORM_ref_sup8:
-            return 8;
+            return (max_offset - offset >= 8) ? 8 : (max_offset - offset);
 
         case DwarfForm::DW_FORM_data16:
-            return 16;
+            return (max_offset - offset >= 16) ? 16 : (max_offset - offset);
 
         case DwarfForm::DW_FORM_string: {
             size_t i = offset;
@@ -521,7 +619,9 @@ size_t DwarfUtils::getFormSize(DwarfForm form, const uint8_t* data, size_t offse
         case DwarfForm::DW_FORM_sdata:
         case DwarfForm::DW_FORM_ref_udata:
         case DwarfForm::DW_FORM_strx:
+        case DwarfForm::DW_FORM_GNU_str_index:
         case DwarfForm::DW_FORM_addrx:
+        case DwarfForm::DW_FORM_GNU_addr_index:
         case DwarfForm::DW_FORM_loclistx:
         case DwarfForm::DW_FORM_rnglistx: {
             uint64_t tmp = offset;
@@ -534,24 +634,40 @@ size_t DwarfUtils::getFormSize(DwarfForm form, const uint8_t* data, size_t offse
             uint64_t tmp = offset;
             uint64_t f = readULEB128(data, tmp, max_offset);
             size_t head = static_cast<size_t>(tmp - offset);
-            size_t tail = getFormSize(static_cast<DwarfForm>(f), data, static_cast<size_t>(tmp), max_offset);
+            size_t tail = getFormSize(static_cast<DwarfForm>(f),
+                                      data,
+                                      static_cast<size_t>(tmp),
+                                      max_offset,
+                                      ctx);
             return head + tail;
         }
 
         // Forms whose size depends on DWARF32/64 or address size. Without CU context,
-        // choose conservative defaults (DWARF32 / 4-byte offsets) when ambiguous.
-        case DwarfForm::DW_FORM_addr:
-            return (max_offset - offset >= 8) ? 8 : 4;
+        // choose conservative defaults (DWARF32 / 4-byte address/offset) when ambiguous.
+        case DwarfForm::DW_FORM_addr: {
+            const size_t n = (ctx.address_size == 8) ? 8 : 4;
+            return (max_offset - offset >= n) ? n : (max_offset - offset);
+        }
         case DwarfForm::DW_FORM_strp:
         case DwarfForm::DW_FORM_line_strp:
         case DwarfForm::DW_FORM_sec_offset:
         case DwarfForm::DW_FORM_strp_sup:
-        case DwarfForm::DW_FORM_ref_addr:
-            return (max_offset - offset >= 4) ? 4 : (max_offset - offset);
+        case DwarfForm::DW_FORM_GNU_strp_alt:
+        case DwarfForm::DW_FORM_GNU_ref_alt: {
+            const size_t n = (ctx.offset_size == 8) ? 8 : 4;
+            return (max_offset - offset >= n) ? n : (max_offset - offset);
+        }
+        case DwarfForm::DW_FORM_ref_addr: {
+            const uint8_t ref_size = (ctx.ref_addr_size == 0)
+                ? (ctx.ref_addr_uses_address_size ? ctx.address_size : ctx.offset_size)
+                : ctx.ref_addr_size;
+            const size_t n = (ref_size == 8) ? 8 : 4;
+            return (max_offset - offset >= n) ? n : (max_offset - offset);
+        }
 
         case DwarfForm::DW_FORM_strx3:
         case DwarfForm::DW_FORM_addrx3:
-            return 3;
+            return (max_offset - offset >= 3) ? 3 : (max_offset - offset);
 
         default:
             return 0;
@@ -568,13 +684,24 @@ static size_t lebSize(const uint8_t* data, size_t offset, size_t max_offset) {
 }
 
 size_t DwarfUtils::getOperationSize(DwarfOp op, const uint8_t* data, size_t offset, size_t max_offset) {
+    return getOperationSize(op, data, offset, max_offset, SizeContext{});
+}
+
+size_t DwarfUtils::getOperationSize(DwarfOp op,
+                                    const uint8_t* data,
+                                    size_t offset,
+                                    size_t max_offset,
+                                    const SizeContext& ctx) {
     if (!data || offset >= max_offset) return 0;
 
     // offset points to the first byte *after* the opcode in most callers.
     // This utility expects offset to be the start of operands (same convention).
     switch (op) {
         case DwarfOp::DW_OP_addr:
-            return (max_offset - offset >= 8) ? 8 : 4;
+            {
+                const size_t n = (ctx.address_size == 8) ? 8 : 4;
+                return (max_offset - offset >= n) ? n : (max_offset - offset);
+            }
         case DwarfOp::DW_OP_const1u:
         case DwarfOp::DW_OP_const1s:
         case DwarfOp::DW_OP_deref_size:
@@ -585,18 +712,15 @@ size_t DwarfUtils::getOperationSize(DwarfOp op, const uint8_t* data, size_t offs
         case DwarfOp::DW_OP_bra:
         case DwarfOp::DW_OP_skip:
         case DwarfOp::DW_OP_call2:
-            return 2;
+            return (max_offset - offset >= 2) ? 2 : (max_offset - offset);
         case DwarfOp::DW_OP_const4u:
         case DwarfOp::DW_OP_const4s:
         case DwarfOp::DW_OP_call4:
-        case DwarfOp::DW_OP_GNU_parameter_ref:
-            return 4;
+            return (max_offset - offset >= 4) ? 4 : (max_offset - offset);
         case DwarfOp::DW_OP_const8u:
         case DwarfOp::DW_OP_const8s:
-        case DwarfOp::DW_OP_GNU_implicit_pointer:
-        case DwarfOp::DW_OP_implicit_pointer:
-            // DIE offset size is target-dependent; best-effort use 4 if available.
-            return (max_offset - offset >= 8) ? 8 : 4;
+            // Fixed-width 8-byte immediates; on truncation consume remaining bytes.
+            return (max_offset - offset >= 8) ? 8 : (max_offset - offset);
 
         case DwarfOp::DW_OP_constu:
         case DwarfOp::DW_OP_consts:
@@ -605,8 +729,12 @@ size_t DwarfUtils::getOperationSize(DwarfOp op, const uint8_t* data, size_t offs
         case DwarfOp::DW_OP_piece:
         case DwarfOp::DW_OP_addrx:
         case DwarfOp::DW_OP_constx:
+        case DwarfOp::DW_OP_GNU_addr_index:
+        case DwarfOp::DW_OP_GNU_const_index:
         case DwarfOp::DW_OP_convert:
         case DwarfOp::DW_OP_reinterpret:
+        case DwarfOp::DW_OP_GNU_convert:
+        case DwarfOp::DW_OP_GNU_reinterpret:
             return lebSize(data, offset, max_offset);
 
         case DwarfOp::DW_OP_bregx: {
@@ -615,7 +743,8 @@ size_t DwarfUtils::getOperationSize(DwarfOp op, const uint8_t* data, size_t offs
             return a + b;
         }
 
-        case DwarfOp::DW_OP_entry_value: {
+        case DwarfOp::DW_OP_entry_value:
+        case DwarfOp::DW_OP_GNU_entry_value: {
             size_t a = lebSize(data, offset, max_offset);
             uint64_t tmp = offset;
             uint64_t n = readULEB128(data, tmp, max_offset);
@@ -631,6 +760,19 @@ size_t DwarfUtils::getOperationSize(DwarfOp op, const uint8_t* data, size_t offs
             return a + payload;
         }
 
+        case DwarfOp::DW_OP_WASM_location: {
+            // WebAssembly extension opcode:
+            //   u8 wasm_location_type followed by optional ULEB index for local/global/stack.
+            size_t remaining = (max_offset > offset) ? (max_offset - offset) : 0;
+            if (remaining == 0) return 0;
+            uint8_t kind = data[offset];
+            size_t size = 1; // location type byte
+            if (kind <= 0x02) {
+                size += lebSize(data, offset + 1, max_offset);
+            }
+            return std::min(size, remaining);
+        }
+
         case DwarfOp::DW_OP_bit_piece: {
             size_t a = lebSize(data, offset, max_offset);
             size_t b = lebSize(data, offset + a, max_offset);
@@ -640,29 +782,89 @@ size_t DwarfUtils::getOperationSize(DwarfOp op, const uint8_t* data, size_t offs
         case DwarfOp::DW_OP_const_type:
         case DwarfOp::DW_OP_deref_type:
         case DwarfOp::DW_OP_xderef_type:
-        case DwarfOp::DW_OP_regval_type: {
+        case DwarfOp::DW_OP_regval_type:
+        case DwarfOp::DW_OP_GNU_const_type:
+        case DwarfOp::DW_OP_GNU_deref_type:
+        case DwarfOp::DW_OP_GNU_regval_type: {
             // Typed ops: uleb type/ref + other operands.
             // Best-effort sizes based on spec encodings.
-            if (op == DwarfOp::DW_OP_regval_type) {
+            if (op == DwarfOp::DW_OP_regval_type || op == DwarfOp::DW_OP_GNU_regval_type) {
                 size_t a = lebSize(data, offset, max_offset);        // reg
                 size_t b = lebSize(data, offset + a, max_offset);    // type
                 return a + b;
             }
-            if (op == DwarfOp::DW_OP_const_type) {
+            if (op == DwarfOp::DW_OP_const_type || op == DwarfOp::DW_OP_GNU_const_type) {
                 size_t a = lebSize(data, offset, max_offset);        // type
                 if (offset + a >= max_offset) return a;
                 uint8_t sz = data[offset + a];                       // 1-byte size
                 size_t payload = std::min<size_t>(sz, (max_offset > (offset + a + 1)) ? (max_offset - (offset + a + 1)) : 0);
                 return a + 1 + payload;
             }
-            // deref_type / xderef_type: 1-byte size + uleb type
+            // deref_type / xderef_type and GNU_deref_type: 1-byte size + uleb type
             if (max_offset - offset < 1) return 0;
             size_t b = lebSize(data, offset + 1, max_offset);
             return 1 + b;
         }
 
+        case DwarfOp::DW_OP_implicit_pointer:
+        case DwarfOp::DW_OP_GNU_implicit_pointer: {
+            // Ref-sized DIE offset, followed by SLEB128 displacement.
+            size_t remaining = (max_offset > offset) ? (max_offset - offset) : 0;
+            const size_t ref_size = (ctx.offset_size == 8) ? 8 : 4;
+            if (remaining < ref_size) return remaining;
+            size_t sleb = lebSize(data, offset + ref_size, max_offset);
+            return ref_size + sleb;
+        }
+
+        case DwarfOp::DW_OP_GNU_encoded_addr: {
+            // 1-byte encoding selector, then encoded payload.
+            if (offset >= max_offset) return 0;
+            const uint8_t encoding = data[offset];
+            const uint8_t format = static_cast<uint8_t>(encoding & 0x0f);
+            const size_t value_off = offset + 1;
+            size_t payload = 0;
+            switch (format) {
+                case 0x00: // DW_EH_PE_absptr
+                    payload = (max_offset > value_off)
+                        ? std::min<size_t>((ctx.address_size == 8) ? 8 : 4, max_offset - value_off)
+                        : 0;
+                    break;
+                case 0x01: // DW_EH_PE_uleb128
+                case 0x09: // DW_EH_PE_sleb128
+                    payload = lebSize(data, value_off, max_offset);
+                    break;
+                case 0x02: // DW_EH_PE_udata2
+                case 0x0a: // DW_EH_PE_sdata2
+                    payload = (max_offset - value_off >= 2) ? 2 : (max_offset - value_off);
+                    break;
+                case 0x03: // DW_EH_PE_udata4
+                case 0x0b: // DW_EH_PE_sdata4
+                    payload = (max_offset - value_off >= 4) ? 4 : (max_offset - value_off);
+                    break;
+                case 0x04: // DW_EH_PE_udata8
+                case 0x0c: // DW_EH_PE_sdata8
+                    payload = (max_offset - value_off >= 8) ? 8 : (max_offset - value_off);
+                    break;
+                default:
+                    // Unknown/unsupported encoding: conservative best-effort.
+                    payload = (max_offset > value_off)
+                        ? std::min<size_t>((ctx.address_size == 8) ? 8 : 4, max_offset - value_off)
+                        : 0;
+                    break;
+            }
+            return 1 + payload;
+        }
+
         case DwarfOp::DW_OP_call_ref:
-            return (max_offset - offset >= 4) ? 4 : (max_offset - offset);
+            {
+                const size_t n = (ctx.offset_size == 8) ? 8 : 4;
+                return (max_offset - offset >= n) ? n : (max_offset - offset);
+            }
+        case DwarfOp::DW_OP_GNU_parameter_ref:
+            {
+                const size_t n = (ctx.offset_size == 8) ? 8 : 4;
+                return (max_offset - offset >= n) ? n : (max_offset - offset);
+            }
 
         // Most ops have no operands.
         default:
@@ -709,20 +911,56 @@ void DwarfUtils::printHexDump(const std::vector<uint8_t>& data, size_t offset) {
 
 // Expression utilities
 std::vector<std::string> DwarfUtils::expressionToTokens(const std::vector<uint8_t>& expression) {
+    return expressionToTokens(expression, SizeContext{});
+}
+
+std::vector<std::string> DwarfUtils::expressionToTokens(const std::vector<uint8_t>& expression,
+                                                        const SizeContext& ctx) {
     std::vector<std::string> out;
     size_t off = 0;
     while (off < expression.size()) {
         DwarfOp op = static_cast<DwarfOp>(expression[off++]);
-        out.push_back(operationToString(op));
-        size_t opsz = getOperationSize(op, expression.data(), off, expression.size());
+        std::string tok = operationToString(op);
+        size_t opsz = getOperationSize(op, expression.data(), off, expression.size(), ctx);
+
+        if (op == DwarfOp::DW_OP_WASM_location && opsz > 0) {
+            size_t operand_off = off;
+            uint8_t kind = expression[operand_off];
+            const char* kind_name = "unknown";
+            switch (kind) {
+                case 0x00: kind_name = "local"; break;
+                case 0x01: kind_name = "global"; break;
+                case 0x02: kind_name = "stack"; break;
+                default: break;
+            }
+
+            std::ostringstream ss;
+            ss << tok << "(kind=" << kind_name;
+
+            if (kind <= 0x02 && opsz > 1) {
+                uint64_t tmp = static_cast<uint64_t>(operand_off + 1);
+                uint64_t end = static_cast<uint64_t>(std::min(expression.size(), operand_off + opsz));
+                uint64_t idx = readULEB128(expression.data(), tmp, end);
+                ss << ",index=" << idx;
+            }
+            ss << ")";
+            tok = ss.str();
+        }
+
+        out.push_back(tok);
         off = std::min(expression.size(), off + opsz);
     }
     return out;
 }
 
 std::string DwarfUtils::expressionToAssembly(const std::vector<uint8_t>& expression) {
+    return expressionToAssembly(expression, SizeContext{});
+}
+
+std::string DwarfUtils::expressionToAssembly(const std::vector<uint8_t>& expression,
+                                             const SizeContext& ctx) {
     std::ostringstream oss;
-    auto toks = expressionToTokens(expression);
+    auto toks = expressionToTokens(expression, ctx);
     for (size_t i = 0; i < toks.size(); ++i) {
         if (i) oss << " ";
         oss << toks[i];
@@ -925,6 +1163,46 @@ std::string DwarfUtils::operationToString(DwarfOp op) {
         case DwarfOp::DW_OP_breg29: return "DW_OP_breg29";
         case DwarfOp::DW_OP_breg30: return "DW_OP_breg30";
         case DwarfOp::DW_OP_breg31: return "DW_OP_breg31";
+        case DwarfOp::DW_OP_regx: return "DW_OP_regx";
+        case DwarfOp::DW_OP_fbreg: return "DW_OP_fbreg";
+        case DwarfOp::DW_OP_bregx: return "DW_OP_bregx";
+        case DwarfOp::DW_OP_piece: return "DW_OP_piece";
+        case DwarfOp::DW_OP_deref_size: return "DW_OP_deref_size";
+        case DwarfOp::DW_OP_xderef_size: return "DW_OP_xderef_size";
+        case DwarfOp::DW_OP_nop: return "DW_OP_nop";
+        case DwarfOp::DW_OP_push_object_address: return "DW_OP_push_object_address";
+        case DwarfOp::DW_OP_call2: return "DW_OP_call2";
+        case DwarfOp::DW_OP_call4: return "DW_OP_call4";
+        case DwarfOp::DW_OP_call_ref: return "DW_OP_call_ref";
+        case DwarfOp::DW_OP_form_tls_address: return "DW_OP_form_tls_address";
+        case DwarfOp::DW_OP_call_frame_cfa: return "DW_OP_call_frame_cfa";
+        case DwarfOp::DW_OP_bit_piece: return "DW_OP_bit_piece";
+        case DwarfOp::DW_OP_implicit_value: return "DW_OP_implicit_value";
+        case DwarfOp::DW_OP_stack_value: return "DW_OP_stack_value";
+        case DwarfOp::DW_OP_implicit_pointer: return "DW_OP_implicit_pointer";
+        case DwarfOp::DW_OP_addrx: return "DW_OP_addrx";
+        case DwarfOp::DW_OP_constx: return "DW_OP_constx";
+        case DwarfOp::DW_OP_entry_value: return "DW_OP_entry_value";
+        case DwarfOp::DW_OP_const_type: return "DW_OP_const_type";
+        case DwarfOp::DW_OP_regval_type: return "DW_OP_regval_type";
+        case DwarfOp::DW_OP_deref_type: return "DW_OP_deref_type";
+        case DwarfOp::DW_OP_xderef_type: return "DW_OP_xderef_type";
+        case DwarfOp::DW_OP_convert: return "DW_OP_convert";
+        case DwarfOp::DW_OP_reinterpret: return "DW_OP_reinterpret";
+        case DwarfOp::DW_OP_GNU_push_tls_address: return "DW_OP_GNU_push_tls_address";
+        case DwarfOp::DW_OP_WASM_location: return "DW_OP_WASM_location";
+        case DwarfOp::DW_OP_GNU_uninit: return "DW_OP_GNU_uninit";
+        case DwarfOp::DW_OP_GNU_encoded_addr: return "DW_OP_GNU_encoded_addr";
+        case DwarfOp::DW_OP_GNU_implicit_pointer: return "DW_OP_GNU_implicit_pointer";
+        case DwarfOp::DW_OP_GNU_entry_value: return "DW_OP_GNU_entry_value";
+        case DwarfOp::DW_OP_GNU_const_type: return "DW_OP_GNU_const_type";
+        case DwarfOp::DW_OP_GNU_regval_type: return "DW_OP_GNU_regval_type";
+        case DwarfOp::DW_OP_GNU_deref_type: return "DW_OP_GNU_deref_type";
+        case DwarfOp::DW_OP_GNU_convert: return "DW_OP_GNU_convert";
+        case DwarfOp::DW_OP_GNU_reinterpret: return "DW_OP_GNU_reinterpret";
+        case DwarfOp::DW_OP_GNU_parameter_ref: return "DW_OP_GNU_parameter_ref";
+        case DwarfOp::DW_OP_GNU_addr_index: return "DW_OP_GNU_addr_index";
+        case DwarfOp::DW_OP_GNU_const_index: return "DW_OP_GNU_const_index";
         default: return "DW_OP_unknown";
     }
 }

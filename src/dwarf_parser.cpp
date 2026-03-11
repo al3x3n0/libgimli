@@ -7,10 +7,66 @@
 #include <algorithm>
 #include <unordered_set>
 #include <cstdint>
+#include <sstream>
 
 namespace dwarf {
 
 static std::string pathDirname(const std::string& path);
+
+static void appendVendorFormSkipSamples(DwarfParser::SupportTelemetry& telemetry,
+                                        const std::vector<DIEParser::VendorFormSkipDetail>& samples) {
+    constexpr size_t kMaxExamples = 8;
+    for (const auto& s : samples) {
+        std::string bucket = "child_die_payload";
+        if (s.payload_offset < s.die_offset) {
+            bucket = "before_die";
+        } else if (s.is_unit_die) {
+            bucket = "unit_die_payload";
+        }
+        telemetry.vendor_form_skip_offset_buckets[bucket] += 1;
+
+        const std::string key = [&]() {
+            std::ostringstream ks;
+            ks << "form=0x" << std::hex << s.form << std::dec
+               << ",attr=" << DwarfUtils::attributeToString(s.attr);
+            return ks.str();
+        }();
+        if (std::find(telemetry.vendor_form_skip_example_keys.begin(),
+                      telemetry.vendor_form_skip_example_keys.end(),
+                      key) != telemetry.vendor_form_skip_example_keys.end()) {
+            continue;
+        }
+        if (telemetry.vendor_form_skip_examples.size() >= kMaxExamples) break;
+        std::ostringstream os;
+        os << "form=0x" << std::hex << s.form
+           << ",off=0x" << s.payload_offset
+           << ",cu=0x" << s.cu_offset
+           << ",die=0x" << s.die_offset
+           << std::dec
+           << ",attr=" << DwarfUtils::attributeToString(s.attr)
+           << ",severity=" << (s.severity.empty() ? "unspecified" : s.severity);
+        telemetry.vendor_form_skip_example_keys.push_back(key);
+        telemetry.vendor_form_skip_examples.push_back(os.str());
+        telemetry.vendor_form_skip_examples_structured.push_back(
+            DwarfParser::SupportTelemetry::VendorFormSkipExample{
+                s.form, s.payload_offset, s.cu_offset, s.die_offset, s.attr,
+                s.severity.empty() ? "unspecified" : s.severity});
+    }
+}
+
+static void mergeVendorFormSkipHistogram(DwarfParser::SupportTelemetry& telemetry,
+                                         const std::vector<std::pair<uint16_t, uint64_t>>& hist) {
+    for (const auto& kv : hist) {
+        telemetry.vendor_form_skip_histogram[kv.first] += kv.second;
+    }
+}
+
+static void mergeVendorFormSkipSeverityBuckets(DwarfParser::SupportTelemetry& telemetry,
+                                               const std::vector<std::pair<std::string, uint64_t>>& hist) {
+    for (const auto& kv : hist) {
+        telemetry.vendor_form_skip_severity_buckets[kv.first] += kv.second;
+    }
+}
 
 DwarfParser::DwarfParser(const std::string& filename)
     : filename_(filename), version_(DwarfVersion::DWARF4), address_size_(AddressSize::ADDR_64), is_valid_(false), verbose_(false) {
@@ -18,6 +74,7 @@ DwarfParser::DwarfParser(const std::string& filename)
 }
 
 bool DwarfParser::load() {
+    support_telemetry_ = SupportTelemetry{};
     if (!loadELFFile()) {
         return false;
     }
@@ -284,6 +341,10 @@ bool DwarfParser::parseCompilationUnits() {
     
     // Parse compilation units
     compilation_units_ = die_parser_->parseCompilationUnits();
+    support_telemetry_.vendor_form_skips += die_parser_->getUnsupportedVendorFormSkipCount();
+    appendVendorFormSkipSamples(support_telemetry_, die_parser_->getUnsupportedVendorFormSkipDetails());
+    mergeVendorFormSkipHistogram(support_telemetry_, die_parser_->getUnsupportedVendorFormSkipHistogram());
+    mergeVendorFormSkipSeverityBuckets(support_telemetry_, die_parser_->getUnsupportedVendorFormSkipSeverityBuckets());
     
     // Cache all DIEs
     for (const auto& cu : compilation_units_) {
@@ -322,6 +383,10 @@ void DwarfParser::integrateSupplementary() {
         /*supplementary_debug_info_offset_bias=*/supplementary_debug_info_offset_bias_);
 
     supplementary_units_ = sup_die_parser_->parseCompilationUnits();
+    support_telemetry_.vendor_form_skips += sup_die_parser_->getUnsupportedVendorFormSkipCount();
+    appendVendorFormSkipSamples(support_telemetry_, sup_die_parser_->getUnsupportedVendorFormSkipDetails());
+    mergeVendorFormSkipHistogram(support_telemetry_, sup_die_parser_->getUnsupportedVendorFormSkipHistogram());
+    mergeVendorFormSkipSeverityBuckets(support_telemetry_, sup_die_parser_->getUnsupportedVendorFormSkipSeverityBuckets());
     for (const auto& cu : supplementary_units_) {
         cacheDIE(cu);
     }
@@ -496,6 +561,8 @@ const std::vector<uint64_t>* DwarfParser::getDebugAddrTableForSection(const std:
 }
 
 void DwarfParser::integrateSplitDwarf() {
+    split_stats_ = SplitDwarfStats{};
+
     // Scan existing compilation units for DW_AT_dwo_name. If present, attempt to load
     // the corresponding .dwo file and parse its .debug_* sections.
     if (compilation_units_.empty()) return;
@@ -553,6 +620,10 @@ void DwarfParser::integrateSplitDwarf() {
         }
 
         auto dwo_cus = dwo_parser.parseCompilationUnits();
+        support_telemetry_.vendor_form_skips += dwo_parser.getUnsupportedVendorFormSkipCount();
+        appendVendorFormSkipSamples(support_telemetry_, dwo_parser.getUnsupportedVendorFormSkipDetails());
+        mergeVendorFormSkipHistogram(support_telemetry_, dwo_parser.getUnsupportedVendorFormSkipHistogram());
+        mergeVendorFormSkipSeverityBuckets(support_telemetry_, dwo_parser.getUnsupportedVendorFormSkipSeverityBuckets());
         for (const auto& dwo_cu : dwo_cus) {
             compilation_units_.push_back(dwo_cu);
             cacheDIE(dwo_cu);
@@ -609,8 +680,36 @@ void DwarfParser::integrateSplitDwarf() {
         if (dwp_loader_ && dwp_loader_->isLoaded()) {
             auto dwp_sections = dwp_loader_->getSectionsForUnit(dwo_id);
             if (dwp_sections) {
+                ++split_stats_.dwp_hits;
+                if (verbose_) {
+                    std::cerr << "Debug: split-dwarf source=dwp dwo_id=0x"
+                              << std::hex << dwo_id << std::dec << std::endl;
+                }
                 parseDWOSections(dwo_id, *dwp_sections);
                 continue;
+            } else if (verbose_) {
+                ++split_stats_.dwo_fallback_hits;
+                std::cerr << "Debug: split-dwarf source=dwo fallback reason=";
+                if (!dwp_loader_->hasCUIndexSection()) {
+                    ++split_stats_.fallback_no_index;
+                    std::cerr << "no_cu_index";
+                } else if (!dwp_loader_->isCUIndexValid()) {
+                    ++split_stats_.fallback_invalid_index;
+                    std::cerr << "invalid_cu_index";
+                } else {
+                    ++split_stats_.fallback_sig_miss;
+                    std::cerr << "signature_not_found";
+                }
+                std::cerr << " dwo_id=0x" << std::hex << dwo_id << std::dec << std::endl;
+            } else {
+                ++split_stats_.dwo_fallback_hits;
+                if (!dwp_loader_->hasCUIndexSection()) {
+                    ++split_stats_.fallback_no_index;
+                } else if (!dwp_loader_->isCUIndexValid()) {
+                    ++split_stats_.fallback_invalid_index;
+                } else {
+                    ++split_stats_.fallback_sig_miss;
+                }
             }
         }
 
@@ -635,6 +734,11 @@ void DwarfParser::integrateSplitDwarf() {
 
         auto sections_opt = split_loader_->getDWOSections(dwo_id);
         if (!sections_opt) continue;
+        ++split_stats_.dwo_hits;
+        if (verbose_) {
+            std::cerr << "Debug: split-dwarf source=dwo dwo_id=0x"
+                      << std::hex << dwo_id << std::dec << std::endl;
+        }
         parseDWOSections(dwo_id, *sections_opt);
     }
 }
@@ -691,6 +795,19 @@ std::vector<std::shared_ptr<DIE>> DwarfParser::findDIEsByNameFast(const std::str
 
     // Fall back to linear search
     return findDIEsByName(name);
+}
+
+const std::vector<DebugNamesHeader>& DwarfParser::getDebugNamesUnitHeaders() const {
+    static const std::vector<DebugNamesHeader> kEmptyHeaders;
+    if (!names_parser_) return kEmptyHeaders;
+    return names_parser_->getUnitHeaders();
+}
+
+const DebugNamesHeader* DwarfParser::getPrimaryDebugNamesHeader() const {
+    if (!names_parser_) return nullptr;
+    const auto& headers = names_parser_->getUnitHeaders();
+    if (headers.empty()) return nullptr;
+    return &headers[0];
 }
 
 std::vector<MacroDefinition> DwarfParser::getMacroDefinitions(uint64_t offset) const {
@@ -1186,10 +1303,21 @@ VariableLocation DwarfParser::getVariableLocation(const std::shared_ptr<DIE>& va
         return VariableLocation();
     }
 
+    // Keep evaluator context call-local so diagnostics and CU-specific address data
+    // do not leak into unrelated future evaluations.
+    EvaluationContext prev_ctx = var_evaluator_->getContext();
+    struct ContextRestoreGuard {
+        VariableLocationEvaluator* evaluator;
+        EvaluationContext previous;
+        ~ContextRestoreGuard() {
+            if (evaluator) evaluator->setContext(previous);
+        }
+    } restore{var_evaluator_.get(), prev_ctx};
+
     // Augment the existing evaluation context with CU-specific address-base info
     // so expression ops like DW_OP_addrx/DW_OP_constx can resolve.
     {
-        EvaluationContext ctx = var_evaluator_->getContext();
+        EvaluationContext ctx = prev_ctx;
         ctx.address_size = (address_size_ == AddressSize::ADDR_64) ? 8 : 4;
         ctx.offset_size = 4; // Default; we'll refine from containing CU if possible.
         ctx.cu_base_offset = 0;
@@ -1210,6 +1338,7 @@ VariableLocation DwarfParser::getVariableLocation(const std::shared_ptr<DIE>& va
         if (best_cu) {
             ctx.offset_size = best_cu->getOffsetSize();
             ctx.cu_base_offset = best_cu->getCUBaseOffset();
+            ctx.diagnostic_cu_offset = best_cu->getOffset();
 
             auto addr_base_attr = best_cu->getAttribute(DwarfAttribute::DW_AT_addr_base);
             auto addr_base_u = std::dynamic_pointer_cast<UnsignedAttributeValue>(addr_base_attr);
@@ -1238,6 +1367,10 @@ VariableLocation DwarfParser::getVariableLocation(const std::shared_ptr<DIE>& va
                 ctx.debug_addr_table = getDebugAddrTableForSection(*dbg_addr, ctx.addr_base, ctx.address_size);
             }
         }
+
+        // Attach concrete DIE/attribute context for evaluator diagnostics.
+        ctx.diagnostic_die_offset = variable->getOffset();
+        ctx.diagnostic_attribute = "DW_AT_location";
 
         // Allow ExpressionEvaluator to resolve DW_OP_call* and typed ops.
         ctx.resolve_dwarf_procedure = [this](uint64_t die_offset, uint64_t pc) -> std::optional<std::vector<uint8_t>> {

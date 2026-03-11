@@ -144,8 +144,47 @@ DIEParser::DIEParser(const ELFIO::elfio& elf, const std::vector<uint8_t>& debug_
     attribute_parser_->setSupplementaryDebugInfoOffsetBias(supplementary_debug_info_offset_bias);
 }
 
+uint64_t DIEParser::getUnsupportedVendorFormSkipCount() const {
+    if (!attribute_parser_) return 0;
+    return attribute_parser_->getUnsupportedVendorFormSkipCount();
+}
+
+std::vector<std::pair<uint16_t, uint64_t>> DIEParser::getUnsupportedVendorFormSkipSamples() const {
+    std::vector<std::pair<uint16_t, uint64_t>> out;
+    if (!attribute_parser_) return out;
+    const auto& samples = attribute_parser_->getUnsupportedVendorFormSkipSamples();
+    out.reserve(samples.size());
+    for (const auto& s : samples) {
+        out.emplace_back(s.form, s.offset);
+    }
+    return out;
+}
+
+std::vector<std::pair<uint16_t, uint64_t>> DIEParser::getUnsupportedVendorFormSkipHistogram() const {
+    std::vector<std::pair<uint16_t, uint64_t>> out;
+    if (!attribute_parser_) return out;
+    const auto& hist = attribute_parser_->getUnsupportedVendorFormSkipHistogram();
+    out.reserve(hist.size());
+    for (const auto& kv : hist) {
+        out.emplace_back(kv.first, kv.second);
+    }
+    return out;
+}
+
+std::vector<std::pair<std::string, uint64_t>> DIEParser::getUnsupportedVendorFormSkipSeverityBuckets() const {
+    std::vector<std::pair<std::string, uint64_t>> out;
+    if (!attribute_parser_) return out;
+    const auto& hist = attribute_parser_->getUnsupportedVendorFormSkipSeverityBuckets();
+    out.reserve(hist.size());
+    for (const auto& kv : hist) {
+        out.emplace_back(kv.first, kv.second);
+    }
+    return out;
+}
+
 std::vector<std::shared_ptr<DIE>> DIEParser::parseCompilationUnits() {
     std::vector<std::shared_ptr<DIE>> compilation_units;
+    vendor_form_skip_details_.clear();
     uint64_t offset = 0;
     
     DEBUG_OUT("Debug: Starting to parse compilation units, debug_info size: " << debug_info_.size());
@@ -190,6 +229,7 @@ std::vector<std::shared_ptr<DIE>> DIEParser::parseCompilationUnits() {
         
         uint64_t abbrev_offset;
         uint8_t address_size;
+        uint8_t unit_type_raw = 0;
         
         if (version >= 5) {
             // DWARF 5 format: version, unit_type, address_size, abbrev_offset
@@ -198,13 +238,34 @@ std::vector<std::shared_ptr<DIE>> DIEParser::parseCompilationUnits() {
                 offset = unit_end;
                 continue;
             }
-            uint8_t unit_type = readU8(offset);
-            DEBUG_OUT("Debug: DWARF 5 unit type: " << (int)unit_type);
+            unit_type_raw = readU8(offset);
+            DEBUG_OUT("Debug: DWARF 5 unit type: " << (int)unit_type_raw);
             address_size = readU8(offset);
             DEBUG_OUT("Debug: Address size: " << (int)address_size);
 
             abbrev_offset = is_dwarf64 ? readU64(offset) : readU32(offset);
             DEBUG_OUT("Debug: Abbrev offset: 0x" << std::hex << abbrev_offset << std::dec);
+
+            // DWARF 5 unit headers have extra fields based on unit_type.
+            // See DWARF v5 section 7.5.1.1 (Unit header).
+            const auto unit_type = static_cast<DwarfUnitType>(unit_type_raw);
+            if (unit_type == DwarfUnitType::DW_UT_type || unit_type == DwarfUnitType::DW_UT_split_type) {
+                // type_signature (8 bytes) + type_offset (offset_size bytes)
+                uint64_t need_extra = 8 + (is_dwarf64 ? 8 : 4);
+                if (offset + need_extra > unit_end) {
+                    offset = unit_end;
+                    continue;
+                }
+                (void)readU64(offset); // type_signature
+                (void)(is_dwarf64 ? readU64(offset) : readU32(offset)); // type_offset
+            } else if (unit_type == DwarfUnitType::DW_UT_skeleton || unit_type == DwarfUnitType::DW_UT_split_compile) {
+                // dwo_id (8 bytes)
+                if (offset + 8 > unit_end) {
+                    offset = unit_end;
+                    continue;
+                }
+                (void)readU64(offset);
+            }
         } else {
             // DWARF 2-4 format: version, abbrev_offset, address_size
             uint64_t need = (is_dwarf64 ? 8 : 4) + 1;
@@ -285,27 +346,67 @@ std::shared_ptr<DIE> DIEParser::parseDIE(uint64_t& offset,
     die->setOffsetSize(offset_size);
     
     // Parse attributes using attribute-aware parsing
-    const bool is_cu_die = (die->getTag() == DwarfTag::DW_TAG_compile_unit);
+    const auto isUnitDIE = [](DwarfTag tag) -> bool {
+        switch (tag) {
+            case DwarfTag::DW_TAG_compile_unit:
+            case DwarfTag::DW_TAG_partial_unit:
+            case DwarfTag::DW_TAG_type_unit:
+                return true;
+            default:
+                return false;
+        }
+    };
+    const bool is_unit_die = isUnitDIE(die->getTag());
     uint64_t rnglists_base = 0;
     uint64_t loclists_base = 0;
     uint64_t addr_base = 0;
     uint64_t str_offsets_base = 0;
     uint64_t base_address = 0;
     for (const auto& attr_spec : abbrev_entry.attributes) {
+        const uint64_t attr_payload_offset = offset;
+        const uint64_t before_skip_count = attribute_parser_
+            ? attribute_parser_->getUnsupportedVendorFormSkipCount()
+            : 0;
+        const size_t before_sample_count = attribute_parser_
+            ? attribute_parser_->getUnsupportedVendorFormSkipSamples().size()
+            : 0;
         std::shared_ptr<AttributeValue> attr_value;
         if (attr_spec.form == DwarfForm::DW_FORM_implicit_const) {
             // Implicit const values live in the abbrev stream; no bytes consumed from .debug_info.
-            attr_value = std::make_shared<SignedAttributeValue>(attr_spec.implicit_const);
+            attribute_parser_->setImplicitConstValue(attr_spec.implicit_const);
+            attr_value = attribute_parser_->parseAttribute(attr_spec.attr, attr_spec.form, offset);
+            attribute_parser_->setImplicitConstValue(std::nullopt);
         } else {
             attr_value = attribute_parser_->parseAttribute(attr_spec.attr, attr_spec.form, offset);
         }
+
+        if (attribute_parser_ &&
+            attribute_parser_->getUnsupportedVendorFormSkipCount() > before_skip_count) {
+            VendorFormSkipDetail d{};
+            d.form = static_cast<uint16_t>(attr_spec.form);
+            d.payload_offset = attr_payload_offset;
+            d.cu_offset = cu_base_offset;
+            d.die_offset = die->getOffset();
+            d.attr = attr_spec.attr;
+            d.is_unit_die = is_unit_die;
+            const auto& samples = attribute_parser_->getUnsupportedVendorFormSkipSamples();
+            if (samples.size() > before_sample_count) {
+                d.payload_offset = samples.back().offset;
+                d.form = samples.back().form;
+                d.severity = samples.back().severity;
+            }
+            if (vendor_form_skip_details_.size() < 128) {
+                vendor_form_skip_details_.push_back(d);
+            }
+        }
+
         if (attr_value) {
             die->addAttribute(attr_spec.attr, attr_value);
         }
 
         // For the CU DIE itself, update context as soon as we learn base attributes so
         // subsequent attributes in the CU can resolve indexed forms.
-        if (is_cu_die && attribute_parser_ && attr_value) {
+        if (is_unit_die && attribute_parser_ && attr_value) {
             switch (attr_spec.attr) {
                 case DwarfAttribute::DW_AT_rnglists_base: {
                     auto u = std::dynamic_pointer_cast<UnsignedAttributeValue>(attr_value);
@@ -345,7 +446,7 @@ std::shared_ptr<DIE> DIEParser::parseDIE(uint64_t& offset,
     }
 
     // Ensure CU context is set before parsing children even if base attributes were absent.
-    if (is_cu_die && attribute_parser_) {
+    if (is_unit_die && attribute_parser_) {
         attribute_parser_->setCUContext(rnglists_base, loclists_base, addr_base, str_offsets_base, base_address);
     }
     

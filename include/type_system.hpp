@@ -37,6 +37,14 @@ struct BaseClass {
     bool is_private;
 };
 
+enum class ModifiedTypeKind {
+    TYPEDEF,
+    CONST,
+    VOLATILE,
+    RESTRICT,
+    REFERENCE
+};
+
 // Forward declaration
 class TypeSystem;
 
@@ -83,6 +91,29 @@ private:
     std::string name_;
 };
 
+class ModifiedType : public Type {
+public:
+    ModifiedType(ModifiedTypeKind kind,
+                 std::shared_ptr<Type> underlying_type,
+                 uint64_t size = 0,
+                 const std::string& name = "");
+    std::string getName() const override;
+    uint64_t getSize() const override;
+    std::string getDescription() const override;
+    bool isComplete() const override;
+    std::shared_ptr<Type> resolve() override;
+
+    ModifiedTypeKind getKind() const { return kind_; }
+    std::shared_ptr<Type> getUnderlyingType() const { return underlying_type_; }
+    const std::string& getAliasName() const { return name_; }
+
+private:
+    ModifiedTypeKind kind_;
+    std::shared_ptr<Type> underlying_type_;
+    uint64_t size_;
+    std::string name_;
+};
+
 // Composite types
 class CompositeType : public Type {
 public:
@@ -103,12 +134,14 @@ public:
     
     // Member management
     void addMember(const std::string& name, std::shared_ptr<Type> type, uint64_t offset = 0);
+    void addMember(const Member& member);
     const std::vector<dwarf::Member>& getMembers() const { return members_; }
     std::shared_ptr<Type> getMemberType(const std::string& name) const;
     uint64_t getMemberOffset(const std::string& name) const;
     
     // Inheritance
     void addBaseClass(std::shared_ptr<CompositeType> base, uint64_t offset = 0);
+    void addBaseClass(const BaseClass& base);
     const std::vector<dwarf::BaseClass>& getBaseClasses() const { return base_classes_; }
     
 private:
@@ -198,11 +231,16 @@ public:
     std::shared_ptr<Type> createPrimitiveType(PrimitiveType::Kind kind, uint64_t size, 
                                               const std::string& name = "");
     std::shared_ptr<Type> createPointerType(std::shared_ptr<Type> pointee_type);
+    std::shared_ptr<Type> createReferenceType(std::shared_ptr<Type> referee_type);
     std::shared_ptr<Type> createArrayType(std::shared_ptr<Type> element_type, 
                                           const std::vector<uint64_t>& dimensions);
     std::shared_ptr<Type> createFunctionType(std::shared_ptr<Type> return_type,
                                              const std::vector<std::shared_ptr<Type>>& parameter_types,
                                              bool is_variadic = false);
+    std::shared_ptr<Type> createModifiedType(ModifiedTypeKind kind,
+                                             std::shared_ptr<Type> underlying_type,
+                                             uint64_t size = 0,
+                                             const std::string& name = "");
     std::shared_ptr<Type> createCompositeType(CompositeType::Kind kind, const std::string& name,
                                               uint64_t size = 0);
     std::shared_ptr<Type> createEnumType(const std::string& name, 
@@ -236,11 +274,13 @@ private:
     std::shared_ptr<Type> resolveEnumType(std::shared_ptr<DIE> die);
     std::shared_ptr<Type> resolveFunctionType(std::shared_ptr<DIE> die);
     std::shared_ptr<Type> resolveTypedefType(std::shared_ptr<DIE> die);
-    
+    std::shared_ptr<Type> resolveModifiedType(std::shared_ptr<DIE> die, ModifiedTypeKind kind);
+
     // Attribute helpers
     std::string getTypeName(std::shared_ptr<DIE> die) const;
     uint64_t getTypeSize(std::shared_ptr<DIE> die) const;
     std::shared_ptr<DIE> getTypeReference(std::shared_ptr<DIE> die) const;
+    uint64_t getSubrangeCount(std::shared_ptr<DIE> die) const;
 };
 
 } // namespace dwarf

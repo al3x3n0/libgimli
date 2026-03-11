@@ -7,6 +7,9 @@
 #include "source_location.hpp"
 #include "expression_compare.hpp"
 #include "cfi_symbolic.hpp"
+#include "dwarf_compare.hpp"
+#include "dwarf_support_matrix.hpp"
+#include "dwarf_utils.hpp"
 #include <iostream>
 #include <iomanip>
 #include <string>
@@ -16,8 +19,10 @@
 #include <cstring>
 #include <getopt.h>
 #include <limits>
+#include <map>
 #include <set>
 #include <fstream>
+#include <array>
 
 using namespace dwarf;
 
@@ -36,6 +41,7 @@ static uint64_t getDIELowPC(const std::shared_ptr<DIE>& die) {
 // Command-line options
 struct Options {
     std::string input_file;
+    std::string dwp_file;           // --dwp
     bool dump_info = false;         // -i, --debug-info
     bool dump_abbrev = false;       // -a, --debug-abbrev
     bool dump_line = false;         // -l, --debug-line
@@ -52,6 +58,10 @@ struct Options {
     uint64_t die_offset = 0;        // --die-offset
     std::string find_name;          // --find
     bool summary = false;           // --summary
+    bool show_support = false;      // --show-support
+    std::string output_format = "text"; // --format (for --show-support in main mode)
+    int support_schema_version = 1; // --schema-version for --show-support json
+    bool support_schema_version_set = false;
 };
 
 void printUsage(const char* prog) {
@@ -62,6 +72,8 @@ void printUsage(const char* prog) {
               << "    Compare DWARF location expressions across two binaries.\n"
               << "  " << prog << " compare-cfi <lhs-elf> <rhs-elf> [options]\n"
               << "    Compare unwind/CFI semantics across two binaries.\n"
+              << "  " << prog << " verify-reloc <elf> [options]\n"
+              << "    Verify relocation/index integrity of DWARF references.\n"
               << "\n"
               << "Section Options:\n"
               << "  -i, --debug-info      Dump .debug_info section\n"
@@ -77,6 +89,9 @@ void printUsage(const char* prog) {
               << "\n"
               << "Display Options:\n"
               << "  --show-form           Show attribute form alongside value\n"
+              << "  --show-support        Show DWARF v5/split-DWARF support matrix\n"
+              << "  --format=<text|json>  Output format for --show-support in main mode\n"
+              << "  --schema-version=<N>  JSON schema version for --show-support (1|2)\n"
               << "  --no-children         Don't show DIE children\n"
               << "  -v, --verbose         Verbose output\n"
               << "  --summary             Show summary statistics only\n"
@@ -84,13 +99,15 @@ void printUsage(const char* prog) {
               << "Filter Options:\n"
               << "  --die-offset=OFFSET   Dump only DIE at given offset\n"
               << "  --find=NAME           Find DIEs with given name\n"
+              << "  --dwp=PATH            Load .dwp package for split-DWARF lookups\n"
               << "\n"
               << "Examples:\n"
               << "  " << prog << " -i program          # Dump debug_info\n"
               << "  " << prog << " -l program          # Dump line tables\n"
               << "  " << prog << " --find=main program # Find 'main' function\n"
               << "  " << prog << " -A program          # Dump everything\n"
-              << "  " << prog << " compare-expr a b --format=json --max-different=0\n";
+              << "  " << prog << " compare-expr a b --format=json --max-different=0\n"
+              << "  " << prog << " verify-reloc program --format=json\n";
 }
 
 void printCompareExprUsage(const char* prog) {
@@ -104,10 +121,17 @@ void printCompareExprUsage(const char* prog) {
               << "  --name-contains=<TEXT>           Keep rows whose symbol name contains TEXT\n"
               << "  --key-mode=<name|linkage>        Match key mode (default: name)\n"
               << "  --strict-attr-present            Compare only pairs where attr exists on both sides\n"
+              << "  --reloc-check                    Enable relocation/index sanity checks (optional)\n"
+              << "  --normalize-loc                  Canonicalize location-list entries before compare\n"
+              << "  --range-aware                    Compare location lists over PC ranges/coverage\n"
+              << "  --verify-features=<LIST>         Enable compare checks: section-reloc,loc-normalize,range-aware (special: all,none)\n"
+              << "  --emit-profile-only              Emit only active verification/gate profile\n"
+              << "  --emit-solver-summary-only       Emit only solver/backend bucket summary\n"
               << "  --format=<text|json>             Report format (default: text)\n"
               << "  --schema-version=<N>             JSON schema version (currently supports 1)\n"
               << "  --output=<PATH>                  Write report to file instead of stdout\n"
               << "  --summary-only                   Emit only summary line/object (no rows)\n"
+              << "  --verify-profile=<P>             Verification preset: off|minimal|default|full|strict|balanced|lenient\n"
               << "  --only-verdict=<KIND>            Keep only verdict kind (repeatable: equivalent|different|unknown)\n"
               << "  --sort=<name|verdict>            Sort rows by name or verdict\n"
               << "  --max-rows=<N>                   Limit rows in report (0 = all)\n"
@@ -142,13 +166,20 @@ void printCompareExprUsage(const char* prog) {
               << "  --register-count=<N>             Synthetic register count per trial (default: 64)\n"
               << "  --seed=<VAL>                     Differential seed (default: 0x9e3779b97f4a7c15)\n"
               << "  --no-differential                Disable concrete differential search\n"
+              << "  --solver-timeout-ms=<N>          Z3 timeout per expression check in milliseconds (0 = no timeout)\n"
               << "  --max-different=<N>              Gate threshold (default: 0)\n"
               << "  --max-unknown=<N>                Gate threshold (default: unlimited)\n"
               << "  --max-missing-lhs=<N>            Gate threshold (default: unlimited)\n"
               << "  --max-missing-rhs=<N>            Gate threshold (default: unlimited)\n"
               << "  --fail-on-unknown                Gate fails if unknown>0\n"
               << "  --fail-on-missing                Gate fails if missing>0\n"
+              << "  --fail-on-solver-result=<K>      Gate fails if any row has solver_result K (repeatable)\n"
+              << "  --fail-on-verifier-backend=<K>   Gate fails if any row has verifier_backend K (repeatable)\n"
+              << "  --min-equivalent-coverage=<R>    Range-aware min equivalent coverage ratio [0,1]\n"
+              << "  --max-different-coverage=<R>     Range-aware max different coverage ratio [0,1]\n"
+              << "  --fail-on-uncovered              Range-aware gate fails if uncovered segments exist\n"
               << "  --report-only                    Do not enforce gate thresholds (always exit 0 on compare)\n"
+              << "  --gate-profile=<P>               Gate preset: strict|balanced|lenient\n"
               << "\n"
               << "Policy presets:\n"
               << "  --strict                         Equivalent-only gate (no different/unknown/missing)\n"
@@ -200,6 +231,7 @@ void printCompareCFIUsage(const char* prog) {
               << "  --register-count=<N>             Synthetic register count per trial (>0)\n"
               << "  --seed=<VAL>                     Differential seed\n"
               << "  --no-differential                Disable concrete differential search\n"
+              << "  --solver-timeout-ms=<N>          Z3 timeout per expression check in milliseconds (0 = no timeout)\n"
               << "  --format=<text|json>             Report format (default: text)\n"
               << "  --schema-version=<N>             JSON schema version (0=legacy,1=wrapped)\n"
               << "  --output=<PATH>                  Write report to file instead of stdout\n"
@@ -211,18 +243,62 @@ void printCompareCFIUsage(const char* prog) {
               << "  --hide-equivalent                Exclude EQUIVALENT rows in row output\n"
               << "  --only-different                 Include only DIFFERENT rows in row output\n"
               << "  --only-unknown                   Include only UNKNOWN rows in row output\n"
+              << "  --emit-profile-only              Emit only active gate profile\n"
+              << "  --emit-solver-summary-only       Emit only solver/backend bucket summary\n"
+              << "  --emit-gate-signature-only       Emit only gate signature line/object\n"
               << "  --report-only                    Do not enforce gate thresholds\n"
+              << "  --gate-profile=<P>               Gate preset: strict|balanced|lenient\n"
               << "  --max-different=<N>              Gate threshold (default: 0)\n"
               << "  --max-unknown=<N>                Gate threshold (default: unlimited)\n"
               << "  --max-missing-lhs=<N>            Gate threshold (default: unlimited)\n"
               << "  --max-missing-rhs=<N>            Gate threshold (default: unlimited)\n"
               << "  --fail-on-unknown                Gate fails if unknown>0\n"
               << "  --fail-on-missing                Gate fails if missing>0\n"
+              << "  --fail-on-solver-result=<K>      Gate fails if any row has solver_result K (repeatable)\n"
+              << "  --fail-on-verifier-backend=<K>   Gate fails if any row has verifier_backend K (repeatable)\n"
               << "\n"
               << "Policy presets:\n"
-              << "  --strict                         Equivalent-only gate (no different/unknown/missing)\n"
+              << "  --strict                         Equivalent-only gate (same as --gate-profile=strict)\n"
               << "  --allow-unknown                  Disable unknown failures\n"
               << "  --allow-missing                  Disable missing failures\n";
+}
+
+void printVerifyRelocUsage(const char* prog) {
+    std::cerr << "Usage: " << prog << " verify-reloc <elf> [options]\n\n"
+              << "Options:\n"
+              << "  --format=<text|json>             Report format (default: text)\n"
+              << "  --output=<PATH>                  Write report to file instead of stdout\n"
+              << "  --summary-only                   Emit only summary (no issue rows)\n"
+              << "  --verify-profile=<P>             Verification preset: off|minimal|default|full|strict|balanced|lenient\n"
+              << "  --verify-features=<LIST>         Enable checks: section-reloc,loc-normalize,range-aware (special: all,none)\n"
+              << "  --emit-profile-only              Emit only active verification/gate profile\n"
+              << "  --only-code=<CODE>               Keep only selected issue code (repeatable)\n"
+              << "  --only-section=<SECTION>         Keep only selected section (repeatable)\n"
+              << "  --only-severity=<S>              Keep only selected severity (repeatable: error|warning)\n"
+              << "  --sort-issues=<K>                Sort issues by severity|code|section|cu|die\n"
+              << "  --top-codes=<N>                  Show top-N issue codes in summary (0 = disabled)\n"
+              << "  --sort-top-codes=<K>             Sort top-code summary by count|code\n"
+              << "  --min-count=<N>                  Suppress code summaries below count N\n"
+              << "  --max-total=<N>                  Gate threshold for total issues (default: unlimited)\n"
+              << "  --max-per-code=<CODE:N>          Gate threshold for specific issue code (repeatable)\n"
+              << "  --max-per-section=<SECTION:N>    Gate threshold for specific section (repeatable)\n"
+              << "  --fail-on-code=<CODE>            Shorthand for --max-per-code=CODE:0 (repeatable)\n"
+              << "  --fail-on-section=<SECTION>      Shorthand for --max-per-section=SECTION:0 (repeatable)\n"
+              << "  --gate-profile=<P>               Gate preset: strict|balanced|lenient\n"
+              << "  --explain-gate[=<M>]             Gate explanation mode: off|on-fail|always\n"
+              << "  --emit-gate-signature-only       Emit only gate signature line/object\n"
+              << "  --max-issues=<N>                 Limit issue rows in report (0 = all)\n"
+              << "  --max-errors=<N>                 Gate threshold for error issues (default: 0)\n"
+              << "  --max-warnings=<N>               Gate threshold for warning issues (default: unlimited)\n"
+              << "  --strict                         Equivalent to --max-errors=0 --max-warnings=0\n"
+              << "  --report-only                    Do not enforce gate thresholds\n";
+}
+
+static bool isValidRelocSectionFilter(const std::string& s) {
+    return s == ".debug_str_offsets" ||
+           s == ".debug_loclists" ||
+           s == ".debug_rnglists" ||
+           s == "other";
 }
 
 // Helper to format hex values
@@ -458,6 +534,44 @@ void dumpDebugFrame(const DwarfParser& parser, const Options& opts) {
     }
 }
 
+void dumpDebugNames(const DwarfParser& parser, const Options& opts) {
+    (void)opts;
+    std::cout << "\n.debug_names contents:\n\n";
+
+    if (!parser.hasAcceleratedLookup()) {
+        std::cout << "  (no .debug_names available)\n";
+        return;
+    }
+
+    const auto& headers = parser.getDebugNamesUnitHeaders();
+    if (headers.empty()) {
+        std::cout << "  (no parsed .debug_names units)\n";
+        return;
+    }
+
+    std::cout << "  Unit count: " << headers.size() << "\n\n";
+    for (size_t i = 0; i < headers.size(); ++i) {
+        const auto& h = headers[i];
+        std::cout << "  Unit " << i << ":\n";
+        std::cout << "    version: " << h.version << "\n";
+        std::cout << "    dwarf64: " << (h.is_dwarf64 ? "yes" : "no") << "\n";
+        std::cout << "    unit_length: " << h.unit_length << "\n";
+        std::cout << "    comp_units: " << h.comp_unit_count << "\n";
+        std::cout << "    local_type_units: " << h.local_type_unit_count << "\n";
+        std::cout << "    foreign_type_units: " << h.foreign_type_unit_count << "\n";
+        std::cout << "    buckets: " << h.bucket_count << "\n";
+        std::cout << "    names: " << h.name_count << "\n";
+        std::cout << "    abbrev_table_size: " << h.abbrev_table_size << "\n";
+        if (!h.augmentation_vendor_id.empty()) {
+            std::cout << "    augmentation_vendor: " << h.augmentation_vendor_id << "\n";
+        }
+        if (h.augmentation_payload_size != 0) {
+            std::cout << "    augmentation_payload_size: " << h.augmentation_payload_size << "\n";
+        }
+        std::cout << "\n";
+    }
+}
+
 // Find DIEs by name
 void findByName(const DwarfParser& parser, const std::string& name, const Options& opts) {
     std::cout << "\nSearching for \"" << name << "\":\n\n";
@@ -479,6 +593,7 @@ void findByName(const DwarfParser& parser, const std::string& name, const Option
 
 // Print summary statistics
 void printSummary(const DwarfParser& parser) {
+    const auto& s = parser.getSplitDwarfStats();
     std::cout << "\nDWARF Summary:\n";
     std::cout << "  File: " << parser.getFilename() << "\n";
     std::cout << "  DWARF version: " << static_cast<int>(parser.getVersion()) << "\n";
@@ -492,6 +607,251 @@ void printSummary(const DwarfParser& parser) {
     std::cout << "  Has CFI: " << (parser.hasCFI() ? "yes" : "no") << "\n";
     std::cout << "  Has macro info: " << (parser.hasMacroInfo() ? "yes" : "no") << "\n";
     std::cout << "  Has split DWARF: " << (parser.hasSplitDwarf() ? "yes" : "no") << "\n";
+    std::cout << "  Has loaded DWP: " << (parser.hasLoadedDWP() ? "yes" : "no") << "\n";
+    if (parser.hasLoadedDWP()) {
+        std::cout << "  DWP path: " << parser.getLoadedDWPPath() << "\n";
+    }
+    std::cout << "  Has DWP CU index: " << (parser.hasDWPIndexSection() ? "yes" : "no") << "\n";
+    std::cout << "  DWP CU index valid: " << (parser.isDWPIndexValid() ? "yes" : "no") << "\n";
+    std::cout << "  DWP indexed units: " << parser.getDWPIndexedUnitCount() << "\n";
+    std::cout << "  Has DWP TU index: " << (parser.hasDWPTUIndexSection() ? "yes" : "no") << "\n";
+    std::cout << "  DWP TU index valid: " << (parser.isDWPTUIndexValid() ? "yes" : "no") << "\n";
+    std::cout << "  DWP TU indexed units: " << parser.getDWPTUIndexedUnitCount() << "\n";
+    std::cout << "  Split DWP hits: " << s.dwp_hits << "\n";
+    std::cout << "  Split DWO hits: " << s.dwo_hits << "\n";
+    std::cout << "  Split DWO fallback hits: " << s.dwo_fallback_hits << "\n";
+}
+
+void printSupportMatrix(const DwarfParser* parser = nullptr,
+                        const std::string& format = "text",
+                        int schema_version = 1) {
+    struct RuntimeField {
+        std::string key;
+        std::string text_value;
+        std::string json_value;
+    };
+
+    const auto& rows = getSupportMatrixRows();
+
+    auto esc = [](const std::string& s) -> std::string {
+        std::ostringstream out;
+        for (char ch : s) {
+            switch (ch) {
+                case '\\': out << "\\\\"; break;
+                case '"': out << "\\\""; break;
+                case '\n': out << "\\n"; break;
+                case '\r': out << "\\r"; break;
+                case '\t': out << "\\t"; break;
+                default:
+                    if (static_cast<unsigned char>(ch) < 0x20) {
+                        out << "\\u00";
+                        const char* hex = "0123456789abcdef";
+                        unsigned v = static_cast<unsigned char>(ch);
+                        out << hex[(v >> 4) & 0xf] << hex[v & 0xf];
+                    } else {
+                        out << ch;
+                    }
+                    break;
+            }
+        }
+        return out.str();
+    };
+
+    std::vector<RuntimeField> runtime_fields;
+    if (parser) {
+        const auto& s = parser->getSplitDwarfStats();
+        const auto& t = parser->getSupportTelemetry();
+        auto pushBool = [&](const char* key, bool v) {
+            runtime_fields.push_back({key, v ? "yes" : "no", v ? "true" : "false"});
+        };
+        auto pushInt = [&](const char* key, uint64_t v) {
+            runtime_fields.push_back({key, std::to_string(v), std::to_string(v)});
+        };
+        auto pushString = [&](const char* key, const std::string& v) {
+            runtime_fields.push_back({key, v, "\"" + esc(v) + "\""});
+        };
+
+        pushInt("dwarf_version", static_cast<uint64_t>(parser->getVersion()));
+        pushInt("address_size", static_cast<uint64_t>(parser->getAddressSize()));
+        pushBool("has_split_dwarf", parser->hasSplitDwarf());
+        pushBool("has_loaded_dwp", parser->hasLoadedDWP());
+        pushString("dwp_path", parser->getLoadedDWPPath());
+        pushBool("has_dwp_cu_index", parser->hasDWPIndexSection());
+        pushBool("dwp_cu_index_valid", parser->isDWPIndexValid());
+        pushInt("dwp_cu_index_units", parser->getDWPIndexedUnitCount());
+        pushBool("has_dwp_tu_index", parser->hasDWPTUIndexSection());
+        pushBool("dwp_tu_index_valid", parser->isDWPTUIndexValid());
+        pushInt("dwp_tu_index_units", parser->getDWPTUIndexedUnitCount());
+        pushInt("dwp_hits", s.dwp_hits);
+        pushInt("dwo_hits", s.dwo_hits);
+        pushInt("dwo_fallback_hits", s.dwo_fallback_hits);
+        pushInt("fallback_no_index", s.fallback_no_index);
+        pushInt("fallback_invalid_index", s.fallback_invalid_index);
+        pushInt("fallback_sig_miss", s.fallback_sig_miss);
+        pushBool("has_debug_names", parser->hasAcceleratedLookup());
+        pushBool("has_cfi", parser->hasCFI());
+        pushInt("vendor_form_skips", static_cast<uint64_t>(t.vendor_form_skips));
+        std::ostringstream examples;
+        for (size_t i = 0; i < t.vendor_form_skip_examples.size(); ++i) {
+            if (i != 0) examples << ";";
+            examples << t.vendor_form_skip_examples[i];
+        }
+        pushString("vendor_form_skip_examples", examples.str());
+
+        std::vector<std::pair<uint16_t, uint64_t>> hist(t.vendor_form_skip_histogram.begin(),
+                                                        t.vendor_form_skip_histogram.end());
+        std::sort(hist.begin(), hist.end(),
+                  [](const auto& a, const auto& b) {
+                      if (a.second != b.second) return a.second > b.second;
+                      return a.first < b.first;
+                  });
+        std::ostringstream hist_ss;
+        const size_t hist_limit = std::min<size_t>(hist.size(), 8);
+        for (size_t i = 0; i < hist_limit; ++i) {
+            if (i != 0) hist_ss << ";";
+            hist_ss << "0x" << std::hex << hist[i].first << std::dec << ":" << hist[i].second;
+        }
+        pushString("vendor_form_skip_histogram", hist_ss.str());
+
+        std::vector<std::pair<std::string, uint64_t>> buckets(t.vendor_form_skip_offset_buckets.begin(),
+                                                               t.vendor_form_skip_offset_buckets.end());
+        std::sort(buckets.begin(), buckets.end(),
+                  [](const auto& a, const auto& b) {
+                      if (a.second != b.second) return a.second > b.second;
+                      return a.first < b.first;
+                  });
+        std::ostringstream bucket_ss;
+        for (size_t i = 0; i < buckets.size(); ++i) {
+            if (i != 0) bucket_ss << ";";
+            bucket_ss << buckets[i].first << ":" << buckets[i].second;
+        }
+        pushString("vendor_form_skip_offset_buckets", bucket_ss.str());
+
+        std::vector<std::pair<std::string, uint64_t>> severities(t.vendor_form_skip_severity_buckets.begin(),
+                                                                  t.vendor_form_skip_severity_buckets.end());
+        std::sort(severities.begin(), severities.end(),
+                  [](const auto& a, const auto& b) {
+                      if (a.second != b.second) return a.second > b.second;
+                      return a.first < b.first;
+                  });
+        std::ostringstream severity_ss;
+        for (size_t i = 0; i < severities.size(); ++i) {
+            if (i != 0) severity_ss << ";";
+            severity_ss << severities[i].first << ":" << severities[i].second;
+        }
+        pushString("vendor_form_skip_severity_buckets", severity_ss.str());
+    }
+
+    if (format == "json") {
+        std::ostringstream out;
+        out << "{";
+        out << "\"kind\":\"dwarf_support\",";
+        out << "\"schema_version\":" << schema_version << ",";
+        out << "\"rows\":[";
+        for (size_t i = 0; i < rows.size(); ++i) {
+            const auto& r = rows[i];
+            if (i > 0) out << ",";
+            out << "{"
+                << "\"area\":\"" << esc(r.area) << "\","
+                << "\"feature\":\"" << esc(r.feature) << "\","
+                << "\"status\":\"" << esc(r.status) << "\","
+                << "\"notes\":\"" << esc(r.notes) << "\""
+                << "}";
+        }
+        out << "]";
+        if (!runtime_fields.empty()) {
+            out << ",\"runtime\":{";
+            for (size_t i = 0; i < runtime_fields.size(); ++i) {
+                if (i > 0) out << ",";
+                out << "\"" << esc(runtime_fields[i].key) << "\":" << runtime_fields[i].json_value;
+            }
+            if (parser && schema_version >= 2) {
+                const auto& t = parser->getSupportTelemetry();
+                const auto& examples = t.vendor_form_skip_examples_structured;
+                out << ",\"vendor_form_skip_examples_structured\":[";
+                for (size_t i = 0; i < examples.size(); ++i) {
+                    if (i > 0) out << ",";
+                    out << "{"
+                        << "\"form\":" << static_cast<uint64_t>(examples[i].form) << ","
+                        << "\"offset\":" << examples[i].offset << ","
+                        << "\"cu_offset\":" << examples[i].cu_offset << ","
+                        << "\"die_offset\":" << examples[i].die_offset << ","
+                        << "\"attr\":\"" << esc(DwarfUtils::attributeToString(examples[i].attr)) << "\","
+                        << "\"severity\":\"" << esc(examples[i].severity) << "\""
+                        << "}";
+                }
+                out << "]";
+
+                std::vector<std::pair<uint16_t, uint64_t>> hist(t.vendor_form_skip_histogram.begin(),
+                                                                t.vendor_form_skip_histogram.end());
+                std::sort(hist.begin(), hist.end(),
+                          [](const auto& a, const auto& b) {
+                              if (a.second != b.second) return a.second > b.second;
+                              return a.first < b.first;
+                          });
+                out << ",\"vendor_form_skip_histogram_structured\":[";
+                for (size_t i = 0; i < hist.size(); ++i) {
+                    if (i > 0) out << ",";
+                    out << "{"
+                        << "\"form\":" << static_cast<uint64_t>(hist[i].first) << ","
+                        << "\"count\":" << hist[i].second
+                        << "}";
+                }
+                out << "]";
+
+                std::vector<std::pair<std::string, uint64_t>> buckets(t.vendor_form_skip_offset_buckets.begin(),
+                                                                       t.vendor_form_skip_offset_buckets.end());
+                std::sort(buckets.begin(), buckets.end(),
+                          [](const auto& a, const auto& b) {
+                              if (a.second != b.second) return a.second > b.second;
+                              return a.first < b.first;
+                          });
+                out << ",\"vendor_form_skip_offset_buckets_structured\":[";
+                for (size_t i = 0; i < buckets.size(); ++i) {
+                    if (i > 0) out << ",";
+                    out << "{"
+                        << "\"bucket\":\"" << esc(buckets[i].first) << "\","
+                        << "\"count\":" << buckets[i].second
+                        << "}";
+                }
+                out << "]";
+
+                std::vector<std::pair<std::string, uint64_t>> severities(t.vendor_form_skip_severity_buckets.begin(),
+                                                                          t.vendor_form_skip_severity_buckets.end());
+                std::sort(severities.begin(), severities.end(),
+                          [](const auto& a, const auto& b) {
+                              if (a.second != b.second) return a.second > b.second;
+                              return a.first < b.first;
+                          });
+                out << ",\"vendor_form_skip_severity_buckets_structured\":[";
+                for (size_t i = 0; i < severities.size(); ++i) {
+                    if (i > 0) out << ",";
+                    out << "{"
+                        << "\"severity\":\"" << esc(severities[i].first) << "\","
+                        << "\"count\":" << severities[i].second
+                        << "}";
+                }
+                out << "]";
+            }
+            out << "}";
+        }
+        out << "}\n";
+        std::cout << out.str();
+        return;
+    }
+
+    std::cout << "DWARF v5 Support Matrix\n";
+    std::cout << "area\tfeature\tstatus\tnotes\n";
+    for (const auto& r : rows) {
+        std::cout << r.area << "\t" << r.feature << "\t" << r.status << "\t" << r.notes << "\n";
+    }
+
+    if (!runtime_fields.empty()) {
+        std::cout << "\nRuntime (loaded file)\n";
+        for (const auto& f : runtime_fields) {
+            std::cout << f.key << "=" << f.text_value << "\n";
+        }
+    }
 }
 
 static bool parseTag(const std::string& s, DwarfTag& out) {
@@ -524,6 +884,20 @@ static bool parseUIntOption(const std::string& raw, uint64_t& out) {
         size_t consumed = 0;
         uint64_t v = std::stoull(raw, &consumed, 0);
         if (consumed != raw.size()) return false;
+        out = v;
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+static bool parseRatioOption(const std::string& raw, double& out) {
+    if (raw.empty()) return false;
+    try {
+        size_t consumed = 0;
+        double v = std::stod(raw, &consumed);
+        if (consumed != raw.size()) return false;
+        if (v < 0.0 || v > 1.0) return false;
         out = v;
         return true;
     } catch (...) {
@@ -567,15 +941,6 @@ static bool parseVerdictName(const std::string& raw, ExpressionVerificationResul
     return false;
 }
 
-static const char* verdictToString(ExpressionVerificationResult::Verdict v) {
-    switch (v) {
-        case ExpressionVerificationResult::Verdict::EQUIVALENT: return "EQUIVALENT";
-        case ExpressionVerificationResult::Verdict::DIFFERENT: return "DIFFERENT";
-        case ExpressionVerificationResult::Verdict::UNKNOWN: return "UNKNOWN";
-    }
-    return "UNKNOWN";
-}
-
 static std::string jsonEscape(const std::string& s) {
     std::ostringstream out;
     for (char ch : s) {
@@ -598,6 +963,1368 @@ static std::string jsonEscape(const std::string& s) {
         }
     }
     return out.str();
+}
+
+enum class RelocIssueSeverity {
+    ERROR,
+    WARNING
+};
+
+struct RelocIssue {
+    RelocIssueSeverity severity = RelocIssueSeverity::ERROR;
+    std::string code;
+    std::string section;
+    uint64_t cu_offset = 0;
+    uint64_t die_offset = 0;
+    std::string attribute;
+    std::string detail;
+};
+
+static const char* relocSeverityToString(RelocIssueSeverity s) {
+    switch (s) {
+        case RelocIssueSeverity::ERROR: return "error";
+        case RelocIssueSeverity::WARNING: return "warning";
+    }
+    return "error";
+}
+
+static bool parseRelocSeverityFilter(const std::string& s, RelocIssueSeverity& out) {
+    if (s == "error") {
+        out = RelocIssueSeverity::ERROR;
+        return true;
+    }
+    if (s == "warning") {
+        out = RelocIssueSeverity::WARNING;
+        return true;
+    }
+    return false;
+}
+
+static bool hasPlaceholderPrefix(const std::string& value) {
+    return value.rfind("<strx", 0) == 0 || value.rfind("<line_strp:", 0) == 0;
+}
+
+struct RelocSectionCounts {
+    size_t debug_str_offsets = 0;
+    size_t debug_loclists = 0;
+    size_t debug_rnglists = 0;
+    size_t other = 0;
+};
+
+struct VerifyRelocFeatures {
+    bool section_reloc = true;
+    bool loc_normalize = true;
+    bool range_aware = true;
+};
+
+static bool applyVerifyFeatureToken(const std::string& token, VerifyRelocFeatures& features) {
+    if (token == "all") {
+        features.section_reloc = true;
+        features.loc_normalize = true;
+        features.range_aware = true;
+        return true;
+    }
+    if (token == "none") {
+        features.section_reloc = false;
+        features.loc_normalize = false;
+        features.range_aware = false;
+        return true;
+    }
+    if (token == "section-reloc") {
+        features.section_reloc = true;
+        return true;
+    }
+    if (token == "loc-normalize") {
+        features.loc_normalize = true;
+        return true;
+    }
+    if (token == "range-aware") {
+        features.range_aware = true;
+        return true;
+    }
+    return false;
+}
+
+static bool parseVerifyFeaturesOption(const std::string& raw, VerifyRelocFeatures& features) {
+    if (raw.empty()) return false;
+    size_t start = 0;
+    bool saw_token = false;
+    while (start <= raw.size()) {
+        size_t end = raw.find(',', start);
+        std::string token = (end == std::string::npos)
+            ? raw.substr(start)
+            : raw.substr(start, end - start);
+        if (token.empty()) return false;
+        if (!applyVerifyFeatureToken(token, features)) return false;
+        saw_token = true;
+        if (end == std::string::npos) break;
+        start = end + 1;
+    }
+    return saw_token;
+}
+
+static bool parseVerifyFeatureProfile(const std::string& raw, VerifyRelocFeatures& features) {
+    if (raw == "default" || raw == "full") {
+        features.section_reloc = true;
+        features.loc_normalize = true;
+        features.range_aware = true;
+        return true;
+    }
+    if (raw == "minimal") {
+        features.section_reloc = true;
+        features.loc_normalize = false;
+        features.range_aware = false;
+        return true;
+    }
+    if (raw == "off" || raw == "none") {
+        features.section_reloc = false;
+        features.loc_normalize = false;
+        features.range_aware = false;
+        return true;
+    }
+    return false;
+}
+
+static bool applyVerifyRelocGateProfile(const std::string& raw,
+                                        std::string& gate_profile,
+                                        size_t& max_total,
+                                        size_t& max_errors,
+                                        size_t& max_warnings,
+                                        bool explain_gate_explicit,
+                                        std::string& explain_gate_mode) {
+    if (raw == "strict") {
+        gate_profile = "strict";
+        max_total = 0;
+        max_errors = 0;
+        max_warnings = 0;
+        if (!explain_gate_explicit) explain_gate_mode = "on-fail";
+        return true;
+    }
+    if (raw == "balanced") {
+        gate_profile = "balanced";
+        max_total = 100;
+        max_errors = 0;
+        max_warnings = 25;
+        if (!explain_gate_explicit) explain_gate_mode = "off";
+        return true;
+    }
+    if (raw == "lenient") {
+        gate_profile = "lenient";
+        max_total = 1000;
+        max_errors = 25;
+        max_warnings = std::numeric_limits<size_t>::max();
+        if (!explain_gate_explicit) explain_gate_mode = "off";
+        return true;
+    }
+    return false;
+}
+
+static bool applyCompareExprGateProfile(const std::string& raw,
+                                        CrossBinaryGateOptions& gate_opts) {
+    if (raw == "strict") {
+        gate_opts.max_different = 0;
+        gate_opts.max_unknown = 0;
+        gate_opts.max_missing_lhs = 0;
+        gate_opts.max_missing_rhs = 0;
+        gate_opts.fail_on_unknown = true;
+        gate_opts.fail_on_missing = true;
+        gate_opts.min_equivalent_coverage = 1.0;
+        gate_opts.max_different_coverage = 0.0;
+        gate_opts.fail_on_uncovered = true;
+        return true;
+    }
+    if (raw == "balanced") {
+        gate_opts.max_different = 0;
+        gate_opts.max_unknown = 25;
+        gate_opts.max_missing_lhs = std::numeric_limits<size_t>::max();
+        gate_opts.max_missing_rhs = std::numeric_limits<size_t>::max();
+        gate_opts.fail_on_unknown = false;
+        gate_opts.fail_on_missing = false;
+        gate_opts.min_equivalent_coverage = 0.90;
+        gate_opts.max_different_coverage = 0.10;
+        gate_opts.fail_on_uncovered = false;
+        return true;
+    }
+    if (raw == "lenient") {
+        gate_opts.max_different = 1000;
+        gate_opts.max_unknown = std::numeric_limits<size_t>::max();
+        gate_opts.max_missing_lhs = std::numeric_limits<size_t>::max();
+        gate_opts.max_missing_rhs = std::numeric_limits<size_t>::max();
+        gate_opts.fail_on_unknown = false;
+        gate_opts.fail_on_missing = false;
+        gate_opts.min_equivalent_coverage = 0.0;
+        gate_opts.max_different_coverage = 1.0;
+        gate_opts.fail_on_uncovered = false;
+        return true;
+    }
+    return false;
+}
+
+static bool applyCompareCfiGateProfile(const std::string& raw,
+                                       size_t& max_different,
+                                       size_t& max_unknown,
+                                       size_t& max_missing_lhs,
+                                       size_t& max_missing_rhs,
+                                       bool& fail_on_unknown,
+                                       bool& fail_on_missing) {
+    if (raw == "strict") {
+        max_different = 0;
+        max_unknown = 0;
+        max_missing_lhs = 0;
+        max_missing_rhs = 0;
+        fail_on_unknown = true;
+        fail_on_missing = true;
+        return true;
+    }
+    if (raw == "balanced") {
+        max_different = 0;
+        max_unknown = 25;
+        max_missing_lhs = std::numeric_limits<size_t>::max();
+        max_missing_rhs = std::numeric_limits<size_t>::max();
+        fail_on_unknown = false;
+        fail_on_missing = false;
+        return true;
+    }
+    if (raw == "lenient") {
+        max_different = 1000;
+        max_unknown = std::numeric_limits<size_t>::max();
+        max_missing_lhs = std::numeric_limits<size_t>::max();
+        max_missing_rhs = std::numeric_limits<size_t>::max();
+        fail_on_unknown = false;
+        fail_on_missing = false;
+        return true;
+    }
+    return false;
+}
+
+static std::string renderVerifyFeaturesText(const VerifyRelocFeatures& features) {
+    std::vector<std::string> names;
+    if (features.section_reloc) names.push_back("section-reloc");
+    if (features.loc_normalize) names.push_back("loc-normalize");
+    if (features.range_aware) names.push_back("range-aware");
+    if (names.empty()) return "none";
+    std::ostringstream out;
+    for (size_t i = 0; i < names.size(); ++i) {
+        if (i != 0) out << ",";
+        out << names[i];
+    }
+    return out.str();
+}
+
+static std::string renderCodeCountsText(const std::map<std::string, size_t>& code_counts) {
+    if (code_counts.empty()) return "none";
+    std::ostringstream out;
+    bool first = true;
+    for (const auto& kv : code_counts) {
+        if (!first) out << ",";
+        first = false;
+        out << kv.first << ":" << kv.second;
+    }
+    return out.str();
+}
+
+static std::vector<std::pair<std::string, size_t>> topCodeCounts(
+    const std::map<std::string, size_t>& code_counts,
+    size_t top_n,
+    const std::string& sort_mode) {
+    std::vector<std::pair<std::string, size_t>> ranked(code_counts.begin(), code_counts.end());
+    if (sort_mode == "code") {
+        std::sort(ranked.begin(), ranked.end(),
+                  [](const auto& a, const auto& b) {
+                      if (a.first != b.first) return a.first < b.first;
+                      return a.second > b.second;
+                  });
+    } else {
+        std::sort(ranked.begin(), ranked.end(),
+                  [](const auto& a, const auto& b) {
+                      if (a.second != b.second) return a.second > b.second;
+                      return a.first < b.first;
+                  });
+    }
+    if (top_n != 0 && ranked.size() > top_n) ranked.resize(top_n);
+    return ranked;
+}
+
+static std::map<std::string, size_t> filterCodeCountsByMin(
+    const std::map<std::string, size_t>& code_counts,
+    size_t min_count) {
+    if (min_count <= 1) return code_counts;
+    std::map<std::string, size_t> filtered;
+    for (const auto& kv : code_counts) {
+        if (kv.second >= min_count) filtered.insert(kv);
+    }
+    return filtered;
+}
+
+static std::string renderTopCodesText(const std::vector<std::pair<std::string, size_t>>& top_codes) {
+    if (top_codes.empty()) return "none";
+    std::ostringstream out;
+    for (size_t i = 0; i < top_codes.size(); ++i) {
+        if (i != 0) out << ",";
+        out << top_codes[i].first << ":" << top_codes[i].second;
+    }
+    return out.str();
+}
+
+static std::string renderSeveritySetText(const std::set<RelocIssueSeverity>& severities) {
+    if (severities.empty()) return "none";
+    std::ostringstream out;
+    bool first = true;
+    for (RelocIssueSeverity s : severities) {
+        if (!first) out << ",";
+        first = false;
+        out << relocSeverityToString(s);
+    }
+    return out.str();
+}
+
+static bool parseRelocSortMode(const std::string& s) {
+    return s == "severity" || s == "code" || s == "section" || s == "cu" || s == "die";
+}
+
+static bool parseTopCodeSortMode(const std::string& s) {
+    return s == "count" || s == "code";
+}
+
+static bool parseExplainGateMode(const std::string& s) {
+    return s == "off" || s == "on-fail" || s == "always";
+}
+
+static bool parseMaxPerCodeOption(const std::string& raw,
+                                  std::string& code,
+                                  size_t& limit) {
+    auto colon = raw.rfind(':');
+    if (colon == std::string::npos || colon == 0 || colon + 1 >= raw.size()) return false;
+    std::string code_part = raw.substr(0, colon);
+    std::string limit_part = raw.substr(colon + 1);
+    uint64_t parsed = 0;
+    if (!parseUIntOption(limit_part, parsed)) return false;
+    code = code_part;
+    limit = static_cast<size_t>(parsed);
+    return true;
+}
+
+static std::string renderMaxPerCodeText(const std::map<std::string, size_t>& limits) {
+    if (limits.empty()) return "none";
+    std::ostringstream out;
+    bool first = true;
+    for (const auto& kv : limits) {
+        if (!first) out << ",";
+        first = false;
+        out << kv.first << ":" << kv.second;
+    }
+    return out.str();
+}
+
+static bool parseMaxPerSectionOption(const std::string& raw,
+                                     std::string& section,
+                                     size_t& limit) {
+    auto colon = raw.rfind(':');
+    if (colon == std::string::npos || colon == 0 || colon + 1 >= raw.size()) return false;
+    std::string section_part = raw.substr(0, colon);
+    std::string limit_part = raw.substr(colon + 1);
+    if (!isValidRelocSectionFilter(section_part)) return false;
+    uint64_t parsed = 0;
+    if (!parseUIntOption(limit_part, parsed)) return false;
+    section = section_part;
+    limit = static_cast<size_t>(parsed);
+    return true;
+}
+
+static std::string renderMaxPerSectionText(const std::map<std::string, size_t>& limits) {
+    if (limits.empty()) return "none";
+    std::ostringstream out;
+    bool first = true;
+    for (const auto& kv : limits) {
+        if (!first) out << ",";
+        first = false;
+        out << kv.first << ":" << kv.second;
+    }
+    return out.str();
+}
+
+static size_t sectionCountValue(const RelocSectionCounts& counts, const std::string& section) {
+    if (section == ".debug_str_offsets") return counts.debug_str_offsets;
+    if (section == ".debug_loclists") return counts.debug_loclists;
+    if (section == ".debug_rnglists") return counts.debug_rnglists;
+    return counts.other;
+}
+
+static int relocSeverityRank(RelocIssueSeverity s) {
+    return (s == RelocIssueSeverity::ERROR) ? 0 : 1;
+}
+
+static void addSectionCount(RelocSectionCounts& counts, const std::string& section) {
+    if (section == ".debug_str_offsets") {
+        ++counts.debug_str_offsets;
+        return;
+    }
+    if (section == ".debug_loclists") {
+        ++counts.debug_loclists;
+        return;
+    }
+    if (section == ".debug_rnglists") {
+        ++counts.debug_rnglists;
+        return;
+    }
+    ++counts.other;
+}
+
+static void scanRelocIssuesInDIE(const std::shared_ptr<DIE>& die,
+                                 uint64_t cu_offset,
+                                 const VerifyRelocFeatures& features,
+                                 std::vector<RelocIssue>& out) {
+    if (!die) return;
+    for (const auto& kv : die->getAttributes()) {
+        const auto attr = kv.first;
+        const auto& value = kv.second;
+        if (features.section_reloc) {
+            if (auto s = std::dynamic_pointer_cast<StringAttributeValue>(value)) {
+                if (hasPlaceholderPrefix(s->getValue())) {
+                    out.push_back({RelocIssueSeverity::ERROR,
+                                   "UNRESOLVED_INDEXED_STRING",
+                                   ".debug_str_offsets",
+                                   cu_offset,
+                                   die->getOffset(),
+                                   getAttrName(attr),
+                                   "attribute resolved to placeholder '" + s->getValue() + "'"});
+                }
+            }
+        }
+        if (features.loc_normalize || features.range_aware) {
+            if (auto loc = std::dynamic_pointer_cast<LocationAttributeValue>(value)) {
+                if (loc->getLocationType() == LocationAttributeValue::LocationType::LIST) {
+                    for (const auto& entry : loc->getEntries()) {
+                        if (features.range_aware && !entry.is_default && entry.end <= entry.start) {
+                            out.push_back({RelocIssueSeverity::ERROR,
+                                           "INVALID_LOCATION_RANGE",
+                                           ".debug_loclists",
+                                           cu_offset,
+                                           die->getOffset(),
+                                           getAttrName(attr),
+                                           "location list entry has end <= start"});
+                            break;
+                        }
+                        if (features.loc_normalize && !entry.is_default && entry.expression.empty()) {
+                            out.push_back({RelocIssueSeverity::WARNING,
+                                           "EMPTY_LOCATION_EXPRESSION",
+                                           ".debug_loclists",
+                                           cu_offset,
+                                           die->getOffset(),
+                                           getAttrName(attr),
+                                           "location list entry has empty expression"});
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        if (features.range_aware) {
+            if (auto ranges = std::dynamic_pointer_cast<RangeAttributeValue>(value)) {
+                for (const auto& entry : ranges->getRanges()) {
+                    if (!entry.is_base_address && entry.end <= entry.start) {
+                        out.push_back({RelocIssueSeverity::ERROR,
+                                       "INVALID_RANGE_ENTRY",
+                                       ".debug_rnglists",
+                                       cu_offset,
+                                       die->getOffset(),
+                                       getAttrName(attr),
+                                       "range list entry has end <= start"});
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    for (const auto& child : die->getChildren()) {
+        scanRelocIssuesInDIE(child, cu_offset, features, out);
+    }
+}
+
+static int runVerifyReloc(int argc, char* argv[]) {
+    for (int i = 2; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--help" || arg == "-h") {
+            printVerifyRelocUsage(argv[0]);
+            return 0;
+        }
+    }
+    if (argc < 3) {
+        printVerifyRelocUsage(argv[0]);
+        return 1;
+    }
+
+    std::string input_file = argv[2];
+    std::string format = "text";
+    std::string output_path;
+    bool summary_only = false;
+    std::set<std::string> only_codes;
+    std::set<std::string> only_sections;
+    std::set<RelocIssueSeverity> only_severities;
+    std::string sort_issues = "cu";
+    size_t top_codes = 0;
+    std::string sort_top_codes = "count";
+    size_t min_count = 1;
+    size_t max_total = std::numeric_limits<size_t>::max();
+    std::map<std::string, size_t> max_per_code;
+    std::map<std::string, size_t> max_per_section;
+    std::set<std::string> fail_on_codes;
+    std::set<std::string> fail_on_sections;
+    std::string verify_profile = "custom";
+    std::string gate_profile = "custom";
+    std::string explain_gate_mode = "off";
+    bool explain_gate_explicit = false;
+    bool emit_profile_only = false;
+    bool emit_gate_signature_only = false;
+    VerifyRelocFeatures verify_features;
+    size_t max_issues = 0;
+    size_t max_errors = 0;
+    size_t max_warnings = std::numeric_limits<size_t>::max();
+    bool report_only = false;
+
+    for (int i = 3; i < argc; ++i) {
+        std::string arg = argv[i];
+        auto split = arg.find('=');
+        auto key = (split == std::string::npos) ? arg : arg.substr(0, split);
+        auto val = (split == std::string::npos) ? std::string() : arg.substr(split + 1);
+
+        if (key == "--format") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            if (val != "text" && val != "json") {
+                std::cerr << "Error: invalid --format value '" << val << "'\n";
+                return 1;
+            }
+            format = val;
+            continue;
+        }
+        if (key == "--output") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            if (val.empty()) {
+                std::cerr << "Error: invalid --output value (empty)\n";
+                return 1;
+            }
+            output_path = val;
+            continue;
+        }
+        if (key == "--summary-only") {
+            summary_only = true;
+            continue;
+        }
+        if (key == "--emit-profile-only") {
+            emit_profile_only = true;
+            continue;
+        }
+        if (key == "--verify-profile") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            bool is_feature_profile = parseVerifyFeatureProfile(val, verify_features);
+            bool is_gate_profile = applyVerifyRelocGateProfile(
+                val,
+                gate_profile,
+                max_total,
+                max_errors,
+                max_warnings,
+                explain_gate_explicit,
+                explain_gate_mode);
+            if (!is_feature_profile && !is_gate_profile) {
+                std::cerr << "Error: invalid --verify-profile value '" << val
+                          << "' (expected off|minimal|default|full|strict|balanced|lenient)\n";
+                return 1;
+            }
+            verify_profile = val;
+            if (is_gate_profile && !is_feature_profile) {
+                verify_features.section_reloc = true;
+                verify_features.loc_normalize = true;
+                verify_features.range_aware = true;
+            }
+            continue;
+        }
+        if (key == "--verify-features") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            if (!parseVerifyFeaturesOption(val, verify_features)) {
+                std::cerr << "Error: invalid --verify-features value '" << val
+                          << "' (expected comma-separated section-reloc|loc-normalize|range-aware|all|none)\n";
+                return 1;
+            }
+            continue;
+        }
+        if (key == "--emit-gate-signature-only") {
+            emit_gate_signature_only = true;
+            continue;
+        }
+        if (key == "--explain-gate") {
+            explain_gate_explicit = true;
+            if (val.empty() && i + 1 < argc) {
+                std::string next = argv[i + 1];
+                if (next == "off" || next == "on-fail" || next == "always") {
+                    val = argv[++i];
+                }
+            }
+            if (val.empty()) {
+                explain_gate_mode = "always";
+            } else if (!parseExplainGateMode(val)) {
+                std::cerr << "Error: invalid --explain-gate value '" << val
+                          << "' (expected off|on-fail|always)\n";
+                return 1;
+            } else {
+                explain_gate_mode = val;
+            }
+            continue;
+        }
+        if (key == "--only-code") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            if (val.empty()) {
+                std::cerr << "Error: invalid --only-code value (empty)\n";
+                return 1;
+            }
+            only_codes.insert(val);
+            continue;
+        }
+        if (key == "--only-section") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            if (val.empty() || !isValidRelocSectionFilter(val)) {
+                std::cerr << "Error: invalid --only-section value '" << val
+                          << "' (expected .debug_str_offsets|.debug_loclists|.debug_rnglists|other)\n";
+                return 1;
+            }
+            only_sections.insert(val);
+            continue;
+        }
+        if (key == "--only-severity") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            RelocIssueSeverity sev = RelocIssueSeverity::ERROR;
+            if (!parseRelocSeverityFilter(val, sev)) {
+                std::cerr << "Error: invalid --only-severity value '" << val
+                          << "' (expected error|warning)\n";
+                return 1;
+            }
+            only_severities.insert(sev);
+            continue;
+        }
+        if (key == "--sort-issues") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            if (!parseRelocSortMode(val)) {
+                std::cerr << "Error: invalid --sort-issues value '" << val
+                          << "' (expected severity|code|section|cu|die)\n";
+                return 1;
+            }
+            sort_issues = val;
+            continue;
+        }
+        if (key == "--max-issues") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            uint64_t parsed = 0;
+            if (!parseUIntOption(val, parsed)) {
+                std::cerr << "Error: invalid --max-issues value '" << val << "'\n";
+                return 1;
+            }
+            max_issues = static_cast<size_t>(parsed);
+            continue;
+        }
+        if (key == "--gate-profile") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            if (!applyVerifyRelocGateProfile(
+                    val,
+                    gate_profile,
+                    max_total,
+                    max_errors,
+                    max_warnings,
+                    explain_gate_explicit,
+                    explain_gate_mode)) {
+                std::cerr << "Error: invalid --gate-profile value '" << val
+                          << "' (expected strict|balanced|lenient)\n";
+                return 1;
+            }
+            continue;
+        }
+        if (key == "--max-total") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            uint64_t parsed = 0;
+            if (!parseUIntOption(val, parsed)) {
+                std::cerr << "Error: invalid --max-total value '" << val << "'\n";
+                return 1;
+            }
+            max_total = static_cast<size_t>(parsed);
+            continue;
+        }
+        if (key == "--max-per-code") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            std::string code;
+            size_t limit = 0;
+            if (!parseMaxPerCodeOption(val, code, limit)) {
+                std::cerr << "Error: invalid --max-per-code value '" << val
+                          << "' (expected CODE:N)\n";
+                return 1;
+            }
+            max_per_code[code] = limit;
+            continue;
+        }
+        if (key == "--max-per-section") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            std::string section;
+            size_t limit = 0;
+            if (!parseMaxPerSectionOption(val, section, limit)) {
+                std::cerr << "Error: invalid --max-per-section value '" << val
+                          << "' (expected SECTION:N where SECTION is "
+                          << ".debug_str_offsets|.debug_loclists|.debug_rnglists|other)\n";
+                return 1;
+            }
+            max_per_section[section] = limit;
+            continue;
+        }
+        if (key == "--fail-on-code") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            if (val.empty()) {
+                std::cerr << "Error: invalid --fail-on-code value (empty)\n";
+                return 1;
+            }
+            fail_on_codes.insert(val);
+            max_per_code[val] = 0;
+            continue;
+        }
+        if (key == "--fail-on-section") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            if (val.empty() || !isValidRelocSectionFilter(val)) {
+                std::cerr << "Error: invalid --fail-on-section value '" << val
+                          << "' (expected .debug_str_offsets|.debug_loclists|.debug_rnglists|other)\n";
+                return 1;
+            }
+            fail_on_sections.insert(val);
+            max_per_section[val] = 0;
+            continue;
+        }
+        if (key == "--top-codes") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            uint64_t parsed = 0;
+            if (!parseUIntOption(val, parsed)) {
+                std::cerr << "Error: invalid --top-codes value '" << val << "'\n";
+                return 1;
+            }
+            top_codes = static_cast<size_t>(parsed);
+            continue;
+        }
+        if (key == "--sort-top-codes") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            if (!parseTopCodeSortMode(val)) {
+                std::cerr << "Error: invalid --sort-top-codes value '" << val
+                          << "' (expected count|code)\n";
+                return 1;
+            }
+            sort_top_codes = val;
+            continue;
+        }
+        if (key == "--min-count") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            uint64_t parsed = 0;
+            if (!parseUIntOption(val, parsed)) {
+                std::cerr << "Error: invalid --min-count value '" << val << "'\n";
+                return 1;
+            }
+            min_count = static_cast<size_t>(parsed);
+            continue;
+        }
+        if (key == "--max-errors") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            uint64_t parsed = 0;
+            if (!parseUIntOption(val, parsed)) {
+                std::cerr << "Error: invalid --max-errors value '" << val << "'\n";
+                return 1;
+            }
+            max_errors = static_cast<size_t>(parsed);
+            continue;
+        }
+        if (key == "--max-warnings") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            uint64_t parsed = 0;
+            if (!parseUIntOption(val, parsed)) {
+                std::cerr << "Error: invalid --max-warnings value '" << val << "'\n";
+                return 1;
+            }
+            max_warnings = static_cast<size_t>(parsed);
+            continue;
+        }
+        if (key == "--strict") {
+            max_errors = 0;
+            max_warnings = 0;
+            continue;
+        }
+        if (key == "--report-only") {
+            report_only = true;
+            continue;
+        }
+
+        std::cerr << "Error: unknown verify-reloc option '" << arg << "'\n";
+        return 1;
+    }
+
+    DwarfParser parser(input_file);
+    if (!parser.load()) {
+        std::cerr << "Error: failed to load ELF '" << input_file << "'\n";
+        return 1;
+    }
+
+    std::vector<RelocIssue> issues;
+    for (const auto& cu : parser.getCompilationUnits()) {
+        uint64_t cu_offset = cu ? cu->getOffset() : 0;
+        scanRelocIssuesInDIE(cu, cu_offset, verify_features, issues);
+    }
+    if (!only_codes.empty()) {
+        std::vector<RelocIssue> filtered;
+        filtered.reserve(issues.size());
+        for (const auto& issue : issues) {
+            if (only_codes.count(issue.code) != 0) filtered.push_back(issue);
+        }
+        issues.swap(filtered);
+    }
+    if (!only_sections.empty()) {
+        std::vector<RelocIssue> filtered;
+        filtered.reserve(issues.size());
+        for (const auto& issue : issues) {
+            if (only_sections.count(issue.section) != 0) filtered.push_back(issue);
+        }
+        issues.swap(filtered);
+    }
+    if (!only_severities.empty()) {
+        std::vector<RelocIssue> filtered;
+        filtered.reserve(issues.size());
+        for (const auto& issue : issues) {
+            if (only_severities.count(issue.severity) != 0) filtered.push_back(issue);
+        }
+        issues.swap(filtered);
+    }
+    auto cmp_by_common = [](const RelocIssue& a, const RelocIssue& b) {
+        if (a.cu_offset != b.cu_offset) return a.cu_offset < b.cu_offset;
+        if (a.die_offset != b.die_offset) return a.die_offset < b.die_offset;
+        if (a.code != b.code) return a.code < b.code;
+        if (a.section != b.section) return a.section < b.section;
+        if (a.attribute != b.attribute) return a.attribute < b.attribute;
+        return a.detail < b.detail;
+    };
+    if (sort_issues == "severity") {
+        std::sort(issues.begin(), issues.end(), [&](const RelocIssue& a, const RelocIssue& b) {
+            int ar = relocSeverityRank(a.severity);
+            int br = relocSeverityRank(b.severity);
+            if (ar != br) return ar < br;
+            return cmp_by_common(a, b);
+        });
+    } else if (sort_issues == "code") {
+        std::sort(issues.begin(), issues.end(), [&](const RelocIssue& a, const RelocIssue& b) {
+            if (a.code != b.code) return a.code < b.code;
+            return cmp_by_common(a, b);
+        });
+    } else if (sort_issues == "section") {
+        std::sort(issues.begin(), issues.end(), [&](const RelocIssue& a, const RelocIssue& b) {
+            if (a.section != b.section) return a.section < b.section;
+            return cmp_by_common(a, b);
+        });
+    } else if (sort_issues == "die") {
+        std::sort(issues.begin(), issues.end(), [&](const RelocIssue& a, const RelocIssue& b) {
+            if (a.die_offset != b.die_offset) return a.die_offset < b.die_offset;
+            return cmp_by_common(a, b);
+        });
+    } else {
+        std::sort(issues.begin(), issues.end(), cmp_by_common); // default: cu
+    }
+
+    size_t error_count = 0;
+    size_t warning_count = 0;
+    RelocSectionCounts section_counts;
+    std::map<std::string, size_t> code_counts;
+    for (const auto& issue : issues) {
+        if (issue.severity == RelocIssueSeverity::ERROR) ++error_count;
+        else ++warning_count;
+        addSectionCount(section_counts, issue.section);
+        ++code_counts[issue.code];
+    }
+    std::map<std::string, size_t> filtered_code_counts = filterCodeCountsByMin(code_counts, min_count);
+    std::vector<std::pair<std::string, size_t>> top_code_counts = topCodeCounts(
+        filtered_code_counts, top_codes, sort_top_codes);
+    bool gate_pass = true;
+    std::string gate_reason = "gate passed";
+    std::string gate_trigger = "none";
+    std::string gate_trigger_detail = "";
+    if (issues.size() > max_total) {
+        gate_pass = false;
+        gate_reason = "total issue count exceeds limit";
+        gate_trigger = "max_total";
+    } else if (error_count > max_errors || warning_count > max_warnings) {
+        gate_pass = false;
+        if (error_count > max_errors) {
+            gate_reason = "error issue count exceeds limit";
+            gate_trigger = "max_errors";
+        } else {
+            gate_reason = "warning issue count exceeds limit";
+            gate_trigger = "max_warnings";
+        }
+    } else {
+        for (const auto& kv : max_per_code) {
+            auto it = code_counts.find(kv.first);
+            size_t observed = (it == code_counts.end()) ? 0 : it->second;
+            if (observed > kv.second) {
+                gate_pass = false;
+                gate_reason = "per-code issue count exceeds limit for " + kv.first;
+                gate_trigger = "max_per_code";
+                gate_trigger_detail = kv.first;
+                break;
+            }
+        }
+        if (gate_pass) {
+            for (const auto& kv : max_per_section) {
+                size_t observed = sectionCountValue(section_counts, kv.first);
+                if (observed > kv.second) {
+                    gate_pass = false;
+                    gate_reason = "per-section issue count exceeds limit for " + kv.first;
+                    gate_trigger = "max_per_section";
+                    gate_trigger_detail = kv.first;
+                    break;
+                }
+            }
+        }
+    }
+
+    auto format_limit = [](size_t v) -> std::string {
+        if (v == std::numeric_limits<size_t>::max()) return "inf";
+        return std::to_string(v);
+    };
+    std::ostringstream gate_expl;
+    gate_expl << "total=" << issues.size() << "/" << format_limit(max_total)
+              << ";errors=" << error_count << "/" << format_limit(max_errors)
+              << ";warnings=" << warning_count << "/" << format_limit(max_warnings);
+    if (!max_per_code.empty()) {
+        gate_expl << ";per_code=";
+        bool first = true;
+        for (const auto& kv : max_per_code) {
+            if (!first) gate_expl << ",";
+            first = false;
+            auto it = code_counts.find(kv.first);
+            size_t observed = (it == code_counts.end()) ? 0 : it->second;
+            gate_expl << kv.first << ":" << observed << "/" << kv.second;
+        }
+    }
+    if (!max_per_section.empty()) {
+        gate_expl << ";per_section=";
+        bool first = true;
+        for (const auto& kv : max_per_section) {
+            if (!first) gate_expl << ",";
+            first = false;
+            size_t observed = sectionCountValue(section_counts, kv.first);
+            gate_expl << kv.first << ":" << observed << "/" << kv.second;
+        }
+    }
+    std::string gate_explanation = gate_expl.str();
+    bool emit_gate_explanation =
+        (explain_gate_mode == "always") ||
+        (explain_gate_mode == "on-fail" && !gate_pass);
+    std::string gate_signature = "pass=" + std::string(gate_pass ? "1" : "0") +
+        ";trigger=" + gate_trigger +
+        ";detail=" + gate_trigger_detail;
+    std::ostringstream out;
+    size_t shown = (max_issues == 0) ? issues.size() : std::min(max_issues, issues.size());
+    bool truncated = shown < issues.size();
+    if (emit_profile_only) {
+        if (format == "json") {
+            out << "{"
+                << "\"profile\":{"
+                << "\"verify_profile\":\"" << jsonEscape(verify_profile) << "\","
+                << "\"gate_profile\":\"" << jsonEscape(gate_profile) << "\","
+                << "\"verify_features\":[";
+            bool first = true;
+            if (verify_features.section_reloc) {
+                if (!first) out << ",";
+                first = false;
+                out << "\"section-reloc\"";
+            }
+            if (verify_features.loc_normalize) {
+                if (!first) out << ",";
+                first = false;
+                out << "\"loc-normalize\"";
+            }
+            if (verify_features.range_aware) {
+                if (!first) out << ",";
+                first = false;
+                out << "\"range-aware\"";
+            }
+            out << "],"
+                << "\"gate\":{"
+                << "\"pass\":" << (gate_pass ? "true" : "false") << ","
+                << "\"trigger\":\"" << jsonEscape(gate_trigger) << "\","
+                << "\"trigger_detail\":\"" << jsonEscape(gate_trigger_detail) << "\","
+                << "\"signature\":\"" << jsonEscape(gate_signature) << "\","
+                << "\"thresholds\":{"
+                << "\"max_total\":" << max_total << ","
+                << "\"max_errors\":" << max_errors << ","
+                << "\"max_warnings\":";
+            if (max_warnings == std::numeric_limits<size_t>::max()) out << "null";
+            else out << max_warnings;
+            out << "},"
+                << "\"observed\":{"
+                << "\"total\":" << issues.size() << ","
+                << "\"errors\":" << error_count << ","
+                << "\"warnings\":" << warning_count
+                << "}"
+                << "},"
+                << "\"gate_signature\":\"" << jsonEscape(gate_signature) << "\""
+                << "}"
+                << "}\n";
+        } else {
+            out << "verify_profile=" << verify_profile
+                << " gate_profile=" << gate_profile
+                << " verify_features=" << renderVerifyFeaturesText(verify_features)
+                << " gate_trigger=" << gate_trigger
+                << " gate_signature=" << gate_signature
+                << "\n";
+        }
+    } else if (emit_gate_signature_only) {
+        if (format == "json") {
+            out << "{"
+                << "\"gate\":{"
+                << "\"signature\":\"" << jsonEscape(gate_signature) << "\""
+                << "}"
+                << "}\n";
+        } else {
+            out << "gate_signature=" << gate_signature << "\n";
+        }
+    } else if (format == "json") {
+        out << "{"
+            << "\"summary\":{"
+            << "\"total\":" << issues.size() << ","
+            << "\"errors\":" << error_count << ","
+            << "\"warnings\":" << warning_count << ","
+            << "\"section_counts\":{"
+            << "\"debug_str_offsets\":" << section_counts.debug_str_offsets << ","
+            << "\"debug_loclists\":" << section_counts.debug_loclists << ","
+            << "\"debug_rnglists\":" << section_counts.debug_rnglists << ","
+            << "\"other\":" << section_counts.other
+            << "},"
+            << "\"code_counts\":{";
+        {
+            bool first = true;
+            for (const auto& kv : filtered_code_counts) {
+                if (!first) out << ",";
+                first = false;
+                out << "\"" << jsonEscape(kv.first) << "\":" << kv.second;
+            }
+        }
+        out
+            << "}"
+            << ",\"top_codes\":[";
+        for (size_t i = 0; i < top_code_counts.size(); ++i) {
+            if (i != 0) out << ",";
+            out << "{"
+                << "\"code\":\"" << jsonEscape(top_code_counts[i].first) << "\","
+                << "\"count\":" << top_code_counts[i].second
+                << "}";
+        }
+        out
+            << "]"
+            << "},"
+            << "\"truncated\":" << (truncated ? "true" : "false") << ","
+            << "\"sort_issues\":\"" << jsonEscape(sort_issues) << "\","
+            << "\"sort_top_codes\":\"" << jsonEscape(sort_top_codes) << "\","
+            << "\"verify_profile\":\"" << jsonEscape(verify_profile) << "\","
+            << "\"gate_profile\":\"" << jsonEscape(gate_profile) << "\","
+            << "\"explain_gate_mode\":\"" << jsonEscape(explain_gate_mode) << "\","
+            << "\"min_count\":" << min_count << ","
+            << "\"max_total\":" << max_total << ","
+            << "\"max_per_code\":{";
+        {
+            bool first = true;
+            for (const auto& kv : max_per_code) {
+                if (!first) out << ",";
+                first = false;
+                out << "\"" << jsonEscape(kv.first) << "\":" << kv.second;
+            }
+        }
+        out
+            << "},"
+            << "\"max_per_section\":{";
+        {
+            bool first = true;
+            for (const auto& kv : max_per_section) {
+                if (!first) out << ",";
+                first = false;
+                out << "\"" << jsonEscape(kv.first) << "\":" << kv.second;
+            }
+        }
+        out
+            << "},"
+            << "\"fail_on_codes\":[";
+        {
+            bool first = true;
+            for (const auto& code : fail_on_codes) {
+                if (!first) out << ",";
+                first = false;
+                out << "\"" << jsonEscape(code) << "\"";
+            }
+        }
+        out
+            << "],"
+            << "\"fail_on_sections\":[";
+        {
+            bool first = true;
+            for (const auto& section : fail_on_sections) {
+                if (!first) out << ",";
+                first = false;
+                out << "\"" << jsonEscape(section) << "\"";
+            }
+        }
+        out
+            << "],"
+            << "\"only_codes\":[";
+        {
+            bool first = true;
+            for (const auto& code : only_codes) {
+                if (!first) out << ",";
+                first = false;
+                out << "\"" << jsonEscape(code) << "\"";
+            }
+        }
+        out << "],"
+            << "\"only_sections\":[";
+        {
+            bool first = true;
+            for (const auto& section : only_sections) {
+                if (!first) out << ",";
+                first = false;
+                out << "\"" << jsonEscape(section) << "\"";
+            }
+        }
+        out << "],"
+            << "\"only_severities\":[";
+        {
+            bool first = true;
+            for (RelocIssueSeverity sev : only_severities) {
+                if (!first) out << ",";
+                first = false;
+                out << "\"" << relocSeverityToString(sev) << "\"";
+            }
+        }
+        out << "],"
+            << "\"verify_features\":[";
+        {
+            bool first = true;
+            if (verify_features.section_reloc) {
+                if (!first) out << ",";
+                first = false;
+                out << "\"section-reloc\"";
+            }
+            if (verify_features.loc_normalize) {
+                if (!first) out << ",";
+                first = false;
+                out << "\"loc-normalize\"";
+            }
+            if (verify_features.range_aware) {
+                if (!first) out << ",";
+                first = false;
+                out << "\"range-aware\"";
+            }
+        }
+        out << "],"
+            << "\"gate\":{"
+            << "\"pass\":" << (gate_pass ? "true" : "false") << ","
+            << "\"reason\":\"" << jsonEscape(gate_reason) << "\","
+            << "\"trigger\":\"" << jsonEscape(gate_trigger) << "\","
+            << "\"trigger_detail\":\"" << jsonEscape(gate_trigger_detail) << "\","
+            << "\"signature\":\"" << jsonEscape(gate_signature) << "\","
+            << "\"observed\":{"
+            << "\"total\":" << issues.size() << ","
+            << "\"errors\":" << error_count << ","
+            << "\"warnings\":" << warning_count << ","
+            << "\"per_code\":{";
+        {
+            bool first = true;
+            for (const auto& kv : code_counts) {
+                if (!first) out << ",";
+                first = false;
+                out << "\"" << jsonEscape(kv.first) << "\":" << kv.second;
+            }
+        }
+        out
+            << "},"
+            << "\"per_section\":{"
+            << "\"debug_str_offsets\":" << section_counts.debug_str_offsets << ","
+            << "\"debug_loclists\":" << section_counts.debug_loclists << ","
+            << "\"debug_rnglists\":" << section_counts.debug_rnglists << ","
+            << "\"other\":" << section_counts.other
+            << "}"
+            << "},"
+            << "\"thresholds\":{"
+            << "\"profile\":\"" << jsonEscape(gate_profile) << "\","
+            << "\"max_total\":" << max_total << ","
+            << "\"max_errors\":" << max_errors << ","
+            << "\"max_warnings\":";
+        if (max_warnings == std::numeric_limits<size_t>::max()) out << "null";
+        else out << max_warnings;
+        out
+            << ",\"max_per_code\":{";
+        {
+            bool first = true;
+            for (const auto& kv : max_per_code) {
+                if (!first) out << ",";
+                first = false;
+                out << "\"" << jsonEscape(kv.first) << "\":" << kv.second;
+            }
+        }
+        out
+            << "},"
+            << "\"max_per_section\":{";
+        {
+            bool first = true;
+            for (const auto& kv : max_per_section) {
+                if (!first) out << ",";
+                first = false;
+                out << "\"" << jsonEscape(kv.first) << "\":" << kv.second;
+            }
+        }
+        out
+            << "}"
+            << "}";
+        if (emit_gate_explanation) {
+            out << ",\"explanation\":\"" << jsonEscape(gate_explanation) << "\"";
+        }
+        out
+            << "}";
+        if (!summary_only) {
+            out << ",\"issues\":[";
+            for (size_t i = 0; i < shown; ++i) {
+                if (i != 0) out << ",";
+                const auto& issue = issues[i];
+                out << "{"
+                    << "\"severity\":\"" << relocSeverityToString(issue.severity) << "\","
+                    << "\"code\":\"" << jsonEscape(issue.code) << "\","
+                    << "\"section\":\"" << jsonEscape(issue.section) << "\","
+                    << "\"cu_offset\":" << issue.cu_offset << ","
+                    << "\"die_offset\":" << issue.die_offset << ","
+                    << "\"attribute\":\"" << jsonEscape(issue.attribute) << "\","
+                    << "\"detail\":\"" << jsonEscape(issue.detail) << "\""
+                    << "}";
+            }
+            out << "]";
+        }
+        out << "}\n";
+    } else {
+        out << "summary total=" << issues.size()
+            << " errors=" << error_count
+            << " warnings=" << warning_count
+            << " section_debug_str_offsets=" << section_counts.debug_str_offsets
+            << " section_debug_loclists=" << section_counts.debug_loclists
+            << " section_debug_rnglists=" << section_counts.debug_rnglists
+            << " section_other=" << section_counts.other
+            << " code_counts=" << renderCodeCountsText(filtered_code_counts)
+            << " top_codes=" << renderTopCodesText(top_code_counts)
+            << " sort_issues=" << sort_issues
+            << " sort_top_codes=" << sort_top_codes
+            << " verify_profile=" << verify_profile
+            << " gate_profile=" << gate_profile
+            << " explain_gate_mode=" << explain_gate_mode
+            << " min_count=" << min_count
+            << " max_total=" << max_total
+            << " max_per_code=" << renderMaxPerCodeText(max_per_code)
+            << " max_per_section=" << renderMaxPerSectionText(max_per_section)
+            << " fail_on_codes=";
+        if (fail_on_codes.empty()) {
+            out << "none";
+        } else {
+            bool first = true;
+            for (const auto& code : fail_on_codes) {
+                if (!first) out << ",";
+                first = false;
+                out << code;
+            }
+        }
+        out
+            << " fail_on_sections=";
+        if (fail_on_sections.empty()) {
+            out << "none";
+        } else {
+            bool first = true;
+            for (const auto& section : fail_on_sections) {
+                if (!first) out << ",";
+                first = false;
+                out << section;
+            }
+        }
+        out
+            << " only_codes=";
+        if (only_codes.empty()) {
+            out << "none";
+        } else {
+            bool first = true;
+            for (const auto& code : only_codes) {
+                if (!first) out << ",";
+                first = false;
+                out << code;
+            }
+        }
+        out
+            << " only_sections=";
+        if (only_sections.empty()) {
+            out << "none";
+        } else {
+            bool first = true;
+            for (const auto& section : only_sections) {
+                if (!first) out << ",";
+                first = false;
+                out << section;
+            }
+        }
+        out
+            << " only_severities=" << renderSeveritySetText(only_severities)
+            << " verify_features=" << renderVerifyFeaturesText(verify_features)
+            << " gate_pass=" << (gate_pass ? "1" : "0")
+            << "\n";
+        out << "gate_trigger=" << gate_trigger << "\n";
+        out << "gate_trigger_detail=" << gate_trigger_detail << "\n";
+        out << "gate_signature=" << gate_signature << "\n";
+        out << "gate_observed="
+            << "total:" << issues.size()
+            << ",errors:" << error_count
+            << ",warnings:" << warning_count
+            << ",per_code:" << renderCodeCountsText(code_counts)
+            << ",per_section:"
+            << ".debug_str_offsets:" << section_counts.debug_str_offsets << ";"
+            << ".debug_loclists:" << section_counts.debug_loclists << ";"
+            << ".debug_rnglists:" << section_counts.debug_rnglists << ";"
+            << "other:" << section_counts.other
+            << "\n";
+        if (emit_gate_explanation) {
+            out << "gate_explanation=" << gate_explanation << "\n";
+        }
+        if (!summary_only) {
+            out << "severity|code|section|cu_offset|die_offset|attribute|detail\n";
+            for (size_t i = 0; i < shown; ++i) {
+                const auto& issue = issues[i];
+                out << relocSeverityToString(issue.severity) << "|"
+                    << issue.code << "|"
+                    << issue.section << "|"
+                    << issue.cu_offset << "|"
+                    << issue.die_offset << "|"
+                    << issue.attribute << "|"
+                    << issue.detail << "\n";
+            }
+            if (truncated) {
+                out << "... truncated " << (issues.size() - shown) << " rows\n";
+            }
+        }
+        if (!gate_pass) out << "gate_reason=" << gate_reason << "\n";
+    }
+
+    if (!output_path.empty()) {
+        std::ofstream f(output_path);
+        if (!f) {
+            std::cerr << "Error: cannot open output file '" << output_path << "'\n";
+            return 1;
+        }
+        f << out.str();
+    } else {
+        std::cout << out.str();
+    }
+
+    if (!report_only && !gate_pass) {
+        std::cerr << "verify-reloc gate FAILED: " << gate_reason << "\n";
+        return 2;
+    }
+    return 0;
 }
 
 static bool resolveFunctionPC(const DwarfParser& parser,
@@ -691,9 +2418,13 @@ static int runCompareExpr(int argc, char* argv[]) {
     std::set<ExpressionVerificationResult::Verdict> verdict_filters;
     std::string sort_mode = "name";
     bool summary_only = false;
+    bool emit_profile_only = false;
+    bool emit_solver_summary_only = false;
     size_t max_rows = 0;
     CrossBinaryGateOptions gate_opts;
     bool report_only = false;
+    std::string verify_profile = "custom";
+    std::string gate_profile = "custom";
 
     for (int i = 4; i < argc; ++i) {
         std::string arg = argv[i];
@@ -771,6 +2502,35 @@ static int runCompareExpr(int argc, char* argv[]) {
             cmp_opts.require_attribute_on_both = true;
             continue;
         }
+        if (key == "--reloc-check") {
+            cmp_opts.enable_relocation_checks = true;
+            continue;
+        }
+        if (key == "--normalize-loc") {
+            cmp_opts.enable_location_semantic_normalization = true;
+            continue;
+        }
+        if (key == "--range-aware") {
+            cmp_opts.enable_range_aware_location_compare = true;
+            continue;
+        }
+        if (key == "--verify-features") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            VerifyRelocFeatures features;
+            features.section_reloc = cmp_opts.enable_relocation_checks;
+            features.loc_normalize = cmp_opts.enable_location_semantic_normalization;
+            features.range_aware = cmp_opts.enable_range_aware_location_compare;
+            if (!parseVerifyFeaturesOption(val, features)) {
+                std::cerr << "Error: invalid --verify-features value '" << val
+                          << "' (expected comma-separated section-reloc|loc-normalize|range-aware|all|none)\n";
+                return 1;
+            }
+            cmp_opts.enable_relocation_checks = features.section_reloc;
+            cmp_opts.enable_location_semantic_normalization = features.loc_normalize;
+            cmp_opts.enable_range_aware_location_compare = features.range_aware;
+            verify_profile = "custom";
+            continue;
+        }
         if (key == "--format") {
             if (val.empty() && i + 1 < argc) val = argv[++i];
             if (val != "text" && val != "json") {
@@ -801,6 +2561,39 @@ static int runCompareExpr(int argc, char* argv[]) {
         }
         if (key == "--summary-only") {
             summary_only = true;
+            continue;
+        }
+        if (key == "--emit-profile-only") {
+            emit_profile_only = true;
+            continue;
+        }
+        if (key == "--emit-solver-summary-only") {
+            emit_solver_summary_only = true;
+            continue;
+        }
+        if (key == "--verify-profile") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            VerifyRelocFeatures features;
+            features.section_reloc = cmp_opts.enable_relocation_checks;
+            features.loc_normalize = cmp_opts.enable_location_semantic_normalization;
+            features.range_aware = cmp_opts.enable_range_aware_location_compare;
+            bool is_feature_profile = parseVerifyFeatureProfile(val, features);
+            bool is_gate_profile = applyCompareExprGateProfile(val, gate_opts);
+            if (!is_feature_profile && !is_gate_profile) {
+                std::cerr << "Error: invalid --verify-profile value '" << val
+                          << "' (expected off|minimal|default|full|strict|balanced|lenient)\n";
+                return 1;
+            }
+            if (is_gate_profile && !is_feature_profile) {
+                features.section_reloc = true;
+                features.loc_normalize = true;
+                features.range_aware = true;
+            }
+            if (is_gate_profile) gate_profile = val;
+            cmp_opts.enable_relocation_checks = features.section_reloc;
+            cmp_opts.enable_location_semantic_normalization = features.loc_normalize;
+            cmp_opts.enable_range_aware_location_compare = features.range_aware;
+            verify_profile = val;
             continue;
         }
         if (key == "--only-verdict") {
@@ -983,6 +2776,17 @@ static int runCompareExpr(int argc, char* argv[]) {
             cmp_opts.verification_options.run_differential = false;
             continue;
         }
+        if (key == "--solver-timeout-ms") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            uint64_t parsed = 0;
+            if (!parseUIntOption(val, parsed) || parsed > std::numeric_limits<uint32_t>::max()) {
+                std::cerr << "Error: invalid --solver-timeout-ms value '" << val
+                          << "' (expected integer in [0,4294967295])\n";
+                return 1;
+            }
+            cmp_opts.verification_options.solver_timeout_ms = static_cast<uint32_t>(parsed);
+            continue;
+        }
         if (key == "--max-different") {
             if (val.empty() && i + 1 < argc) val = argv[++i];
             uint64_t parsed = 0;
@@ -991,6 +2795,7 @@ static int runCompareExpr(int argc, char* argv[]) {
                 return 1;
             }
             gate_opts.max_different = static_cast<size_t>(parsed);
+            gate_profile = "custom";
             continue;
         }
         if (key == "--max-unknown") {
@@ -1001,6 +2806,7 @@ static int runCompareExpr(int argc, char* argv[]) {
                 return 1;
             }
             gate_opts.max_unknown = static_cast<size_t>(parsed);
+            gate_profile = "custom";
             continue;
         }
         if (key == "--max-missing-lhs") {
@@ -1011,6 +2817,7 @@ static int runCompareExpr(int argc, char* argv[]) {
                 return 1;
             }
             gate_opts.max_missing_lhs = static_cast<size_t>(parsed);
+            gate_profile = "custom";
             continue;
         }
         if (key == "--max-missing-rhs") {
@@ -1021,38 +2828,98 @@ static int runCompareExpr(int argc, char* argv[]) {
                 return 1;
             }
             gate_opts.max_missing_rhs = static_cast<size_t>(parsed);
+            gate_profile = "custom";
             continue;
         }
         if (key == "--fail-on-unknown") {
             gate_opts.fail_on_unknown = true;
+            gate_profile = "custom";
             continue;
         }
         if (key == "--fail-on-missing") {
             gate_opts.fail_on_missing = true;
+            gate_profile = "custom";
+            continue;
+        }
+        if (key == "--fail-on-solver-result") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            if (val.empty()) {
+                std::cerr << "Error: invalid --fail-on-solver-result value (empty)\n";
+                return 1;
+            }
+            gate_opts.fail_on_solver_results.insert(val);
+            gate_profile = "custom";
+            continue;
+        }
+        if (key == "--fail-on-verifier-backend") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            if (val.empty()) {
+                std::cerr << "Error: invalid --fail-on-verifier-backend value (empty)\n";
+                return 1;
+            }
+            gate_opts.fail_on_verifier_backends.insert(val);
+            gate_profile = "custom";
+            continue;
+        }
+        if (key == "--min-equivalent-coverage") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            double parsed = 0.0;
+            if (!parseRatioOption(val, parsed)) {
+                std::cerr << "Error: invalid --min-equivalent-coverage value '" << val
+                          << "' (expected ratio in [0,1])\n";
+                return 1;
+            }
+            gate_opts.min_equivalent_coverage = parsed;
+            gate_profile = "custom";
+            continue;
+        }
+        if (key == "--max-different-coverage") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            double parsed = 0.0;
+            if (!parseRatioOption(val, parsed)) {
+                std::cerr << "Error: invalid --max-different-coverage value '" << val
+                          << "' (expected ratio in [0,1])\n";
+                return 1;
+            }
+            gate_opts.max_different_coverage = parsed;
+            gate_profile = "custom";
+            continue;
+        }
+        if (key == "--fail-on-uncovered") {
+            gate_opts.fail_on_uncovered = true;
+            gate_profile = "custom";
             continue;
         }
         if (key == "--report-only") {
             report_only = true;
             continue;
         }
+        if (key == "--gate-profile") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            if (!applyCompareExprGateProfile(val, gate_opts)) {
+                std::cerr << "Error: invalid --gate-profile value '" << val
+                          << "' (expected strict|balanced|lenient)\n";
+                return 1;
+            }
+            gate_profile = val;
+            continue;
+        }
         if (key == "--strict") {
-            gate_opts.max_different = 0;
-            gate_opts.max_unknown = 0;
-            gate_opts.max_missing_lhs = 0;
-            gate_opts.max_missing_rhs = 0;
-            gate_opts.fail_on_unknown = true;
-            gate_opts.fail_on_missing = true;
+            applyCompareExprGateProfile("strict", gate_opts);
+            gate_profile = "strict";
             continue;
         }
         if (key == "--allow-unknown") {
             gate_opts.fail_on_unknown = false;
             gate_opts.max_unknown = std::numeric_limits<size_t>::max();
+            gate_profile = "custom";
             continue;
         }
         if (key == "--allow-missing") {
             gate_opts.fail_on_missing = false;
             gate_opts.max_missing_lhs = std::numeric_limits<size_t>::max();
             gate_opts.max_missing_rhs = std::numeric_limits<size_t>::max();
+            gate_profile = "custom";
             continue;
         }
         std::cerr << "Error: unknown compare-expr option '" << arg << "'\n";
@@ -1070,163 +2937,37 @@ static int runCompareExpr(int argc, char* argv[]) {
         return 1;
     }
 
-    CrossBinaryExpressionComparator cmp;
-    std::vector<NamedExpressionComparison> comparisons;
-    if (!selected_names.empty()) {
-        std::set<std::string> seen;
-        for (const auto& name : selected_names) {
-            if (!seen.insert(name).second) continue;
-            comparisons.push_back(cmp.compareNamedInParsers(lhs, rhs, name, cmp_opts));
-        }
-    } else {
-        comparisons = cmp.compareParsersByName(lhs, rhs, cmp_opts);
-    }
-
-    if (!verdict_filters.empty()) {
-        std::vector<NamedExpressionComparison> filtered;
-        filtered.reserve(comparisons.size());
-        for (const auto& row : comparisons) {
-            if (verdict_filters.count(row.verification.verdict) != 0) {
-                filtered.push_back(row);
-            }
-        }
-        comparisons.swap(filtered);
-    }
-
-    if (!name_prefix_filter.empty() || !name_contains_filter.empty()) {
-        std::vector<NamedExpressionComparison> filtered;
-        filtered.reserve(comparisons.size());
-        for (const auto& row : comparisons) {
-            bool ok = true;
-            if (!name_prefix_filter.empty()) {
-                ok = row.name.rfind(name_prefix_filter, 0) == 0;
-            }
-            if (ok && !name_contains_filter.empty()) {
-                ok = row.name.find(name_contains_filter) != std::string::npos;
-            }
-            if (ok) filtered.push_back(row);
-        }
-        comparisons.swap(filtered);
-    }
-
-    if (sort_mode == "verdict") {
-        auto rank = [](ExpressionVerificationResult::Verdict v) {
-            switch (v) {
-                case ExpressionVerificationResult::Verdict::DIFFERENT: return 0;
-                case ExpressionVerificationResult::Verdict::UNKNOWN: return 1;
-                case ExpressionVerificationResult::Verdict::EQUIVALENT: return 2;
-            }
-            return 3;
-        };
-        std::sort(comparisons.begin(), comparisons.end(),
-                  [&](const NamedExpressionComparison& a, const NamedExpressionComparison& b) {
-                      int ar = rank(a.verification.verdict);
-                      int br = rank(b.verification.verdict);
-                      if (ar != br) return ar < br;
-                      return a.name < b.name;
-                  });
-    } else {
-        std::sort(comparisons.begin(), comparisons.end(),
-                  [](const NamedExpressionComparison& a, const NamedExpressionComparison& b) {
-                      return a.name < b.name;
-                  });
-    }
-
     if (format == "json" && schema_version != 0 && schema_version != 1) {
         std::cerr << "Error: unsupported --schema-version " << schema_version
                   << " (supported: 0,1)\n";
         return 1;
     }
-
-    auto gate = cmp.evaluateGate(comparisons, gate_opts);
-
-    std::string report;
-    if (summary_only) {
-        auto s = cmp.summarize(comparisons);
-        if (format == "json") {
-            if (schema_version == 1) {
-                std::ostringstream oss;
-                oss << "{"
-                    << "\"schema_version\":1,"
-                    << "\"options\":{"
-                    << "\"tag\":\"" << (cmp_opts.tag == DwarfTag::DW_TAG_subprogram ? "subprogram" : "variable") << "\","
-                    << "\"attr\":\"" << (cmp_opts.attribute == DwarfAttribute::DW_AT_frame_base ? "frame_base" : "location") << "\","
-                    << "\"key_mode\":\"" << (cmp_opts.key_mode == CompareKeyMode::LINKAGE_OR_NAME ? "linkage" : "name") << "\","
-                    << "\"include_missing\":" << (cmp_opts.include_missing ? "true" : "false") << ","
-                    << "\"strict_attr_present\":" << (cmp_opts.require_attribute_on_both ? "true" : "false") << ","
-                    << "\"summary_only\":true,"
-                    << "\"max_rows\":" << max_rows << ","
-                    << "\"report_only\":" << (report_only ? "true" : "false")
-                    << "},"
-                    << "\"report\":{"
-                    << "\"summary\":{"
-                    << "\"total\":" << s.total << ","
-                    << "\"equivalent\":" << s.equivalent << ","
-                    << "\"different\":" << s.different << ","
-                    << "\"unknown\":" << s.unknown << ","
-                    << "\"missing_lhs\":" << s.missing_lhs << ","
-                    << "\"missing_rhs\":" << s.missing_rhs
-                    << "}"
-                    << "},"
-                    << "\"gate\":{"
-                    << "\"pass\":" << (gate.pass ? "true" : "false") << ","
-                    << "\"reason\":\"" << jsonEscape(gate.reason) << "\""
-                    << "}"
-                    << "}\n";
-                report = oss.str();
-            } else {
-                std::ostringstream oss;
-                oss << "{"
-                    << "\"summary\":{"
-                    << "\"total\":" << s.total << ","
-                    << "\"equivalent\":" << s.equivalent << ","
-                    << "\"different\":" << s.different << ","
-                    << "\"unknown\":" << s.unknown << ","
-                    << "\"missing_lhs\":" << s.missing_lhs << ","
-                    << "\"missing_rhs\":" << s.missing_rhs
-                    << "}"
-                    << "}\n";
-                report = oss.str();
-            }
-        } else {
-            std::ostringstream oss;
-            oss << "summary total=" << s.total
-                << " equivalent=" << s.equivalent
-                << " different=" << s.different
-                << " unknown=" << s.unknown
-                << " missing_lhs=" << s.missing_lhs
-                << " missing_rhs=" << s.missing_rhs
-                << "\n";
-            report = oss.str();
-        }
-    } else if (format == "json") {
-        if (schema_version == 0) {
-            report = cmp.renderJsonReport(comparisons, max_rows) + "\n";
-        } else {
-            std::ostringstream oss;
-            oss << "{"
-                << "\"schema_version\":1,"
-                << "\"options\":{"
-                << "\"tag\":\"" << (cmp_opts.tag == DwarfTag::DW_TAG_subprogram ? "subprogram" : "variable") << "\","
-                << "\"attr\":\"" << (cmp_opts.attribute == DwarfAttribute::DW_AT_frame_base ? "frame_base" : "location") << "\","
-                << "\"key_mode\":\"" << (cmp_opts.key_mode == CompareKeyMode::LINKAGE_OR_NAME ? "linkage" : "name") << "\","
-                << "\"include_missing\":" << (cmp_opts.include_missing ? "true" : "false") << ","
-                << "\"strict_attr_present\":" << (cmp_opts.require_attribute_on_both ? "true" : "false") << ","
-                << "\"summary_only\":" << (summary_only ? "true" : "false") << ","
-                << "\"max_rows\":" << max_rows << ","
-                << "\"report_only\":" << (report_only ? "true" : "false")
-                << "},"
-                << "\"report\":" << cmp.renderJsonReport(comparisons, max_rows) << ","
-                << "\"gate\":{"
-                << "\"pass\":" << (gate.pass ? "true" : "false") << ","
-                << "\"reason\":\"" << jsonEscape(gate.reason) << "\""
-                << "}"
-                << "}\n";
-            report = oss.str();
-        }
-    } else {
-        report = cmp.renderTextReport(comparisons, max_rows);
+    if ((emit_profile_only ? 1 : 0) + (emit_solver_summary_only ? 1 : 0) > 1) {
+        std::cerr << "Error: cannot combine --emit-profile-only with --emit-solver-summary-only\n";
+        return 1;
     }
+
+    CompareExprReportOptions report_opts;
+    report_opts.compare_options = cmp_opts;
+    report_opts.gate_options = gate_opts;
+    report_opts.selected_names = std::move(selected_names);
+    report_opts.name_prefix_filter = name_prefix_filter;
+    report_opts.name_contains_filter = name_contains_filter;
+    report_opts.verdict_filters = verdict_filters;
+    report_opts.sort_mode = sort_mode;
+    report_opts.verify_profile = verify_profile;
+    report_opts.gate_profile = gate_profile;
+    report_opts.max_rows = max_rows;
+    report_opts.schema_version = schema_version;
+    report_opts.summary_only = summary_only;
+    report_opts.emit_profile_only = emit_profile_only;
+    report_opts.emit_solver_summary_only = emit_solver_summary_only;
+    report_opts.report_only = report_only;
+
+    auto exec = executeCompareExpr(lhs,
+                                   rhs,
+                                   format == "json" ? CompareOutputFormat::JSON : CompareOutputFormat::TEXT,
+                                   report_opts);
 
     if (!output_path.empty()) {
         std::ofstream out(output_path);
@@ -1234,13 +2975,13 @@ static int runCompareExpr(int argc, char* argv[]) {
             std::cerr << "Error: cannot open output file '" << output_path << "'\n";
             return 1;
         }
-        out << report;
+        out << exec.report;
     } else {
-        std::cout << report;
+        std::cout << exec.report;
     }
 
-    if (!report_only && !gate.pass) {
-        std::cerr << "compare-expr gate FAILED: " << gate.reason << "\n";
+    if (!report_only && !exec.gate.pass) {
+        std::cerr << "compare-expr gate FAILED: " << exec.gate.reason << "\n";
         return 2;
     }
     return 0;
@@ -1282,13 +3023,19 @@ static int runCompareCFI(int argc, char* argv[]) {
     bool equivalent_filter_explicit = false;
     bool only_different_rows = false;
     bool only_unknown_rows = false;
+    bool emit_profile_only = false;
+    bool emit_solver_summary_only = false;
+    bool emit_gate_signature_only = false;
     bool report_only = false;
+    std::string gate_profile = "custom";
     size_t max_different = 0;
     size_t max_unknown = std::numeric_limits<size_t>::max();
     size_t max_missing_lhs = std::numeric_limits<size_t>::max();
     size_t max_missing_rhs = std::numeric_limits<size_t>::max();
     bool fail_on_unknown = false;
     bool fail_on_missing = false;
+    std::set<std::string> fail_on_solver_results;
+    std::set<std::string> fail_on_verifier_backends;
     SymbolicCFICompareOptions cmp_opts;
 
     for (int i = 4; i < argc; ++i) {
@@ -1463,6 +3210,17 @@ static int runCompareCFI(int argc, char* argv[]) {
             cmp_opts.expression_options.run_differential = false;
             continue;
         }
+        if (key == "--solver-timeout-ms") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            uint64_t parsed = 0;
+            if (!parseUIntOption(val, parsed) || parsed > std::numeric_limits<uint32_t>::max()) {
+                std::cerr << "Error: invalid --solver-timeout-ms value '" << val
+                          << "' (expected integer in [0,4294967295])\n";
+                return 1;
+            }
+            cmp_opts.expression_options.solver_timeout_ms = static_cast<uint32_t>(parsed);
+            continue;
+        }
         if (key == "--format") {
             if (val.empty() && i + 1 < argc) val = argv[++i];
             if (val != "text" && val != "json") {
@@ -1534,8 +3292,37 @@ static int runCompareCFI(int argc, char* argv[]) {
             only_unknown_rows = true;
             continue;
         }
+        if (key == "--emit-profile-only") {
+            emit_profile_only = true;
+            continue;
+        }
+        if (key == "--emit-solver-summary-only") {
+            emit_solver_summary_only = true;
+            continue;
+        }
+        if (key == "--emit-gate-signature-only") {
+            emit_gate_signature_only = true;
+            continue;
+        }
         if (key == "--report-only") {
             report_only = true;
+            continue;
+        }
+        if (key == "--gate-profile") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            if (!applyCompareCfiGateProfile(
+                    val,
+                    max_different,
+                    max_unknown,
+                    max_missing_lhs,
+                    max_missing_rhs,
+                    fail_on_unknown,
+                    fail_on_missing)) {
+                std::cerr << "Error: invalid --gate-profile value '" << val
+                          << "' (expected strict|balanced|lenient)\n";
+                return 1;
+            }
+            gate_profile = val;
             continue;
         }
         if (key == "--max-different") {
@@ -1546,6 +3333,7 @@ static int runCompareCFI(int argc, char* argv[]) {
                 return 1;
             }
             max_different = static_cast<size_t>(parsed);
+            gate_profile = "custom";
             continue;
         }
         if (key == "--max-unknown") {
@@ -1556,6 +3344,7 @@ static int runCompareCFI(int argc, char* argv[]) {
                 return 1;
             }
             max_unknown = static_cast<size_t>(parsed);
+            gate_profile = "custom";
             continue;
         }
         if (key == "--max-missing-lhs") {
@@ -1566,6 +3355,7 @@ static int runCompareCFI(int argc, char* argv[]) {
                 return 1;
             }
             max_missing_lhs = static_cast<size_t>(parsed);
+            gate_profile = "custom";
             continue;
         }
         if (key == "--max-missing-rhs") {
@@ -1576,34 +3366,62 @@ static int runCompareCFI(int argc, char* argv[]) {
                 return 1;
             }
             max_missing_rhs = static_cast<size_t>(parsed);
+            gate_profile = "custom";
             continue;
         }
         if (key == "--fail-on-unknown") {
             fail_on_unknown = true;
+            gate_profile = "custom";
             continue;
         }
         if (key == "--fail-on-missing") {
             fail_on_missing = true;
+            gate_profile = "custom";
+            continue;
+        }
+        if (key == "--fail-on-solver-result") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            if (val.empty()) {
+                std::cerr << "Error: invalid --fail-on-solver-result value (empty)\n";
+                return 1;
+            }
+            fail_on_solver_results.insert(val);
+            gate_profile = "custom";
+            continue;
+        }
+        if (key == "--fail-on-verifier-backend") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            if (val.empty()) {
+                std::cerr << "Error: invalid --fail-on-verifier-backend value (empty)\n";
+                return 1;
+            }
+            fail_on_verifier_backends.insert(val);
+            gate_profile = "custom";
             continue;
         }
         if (key == "--strict") {
-            max_different = 0;
-            max_unknown = 0;
-            max_missing_lhs = 0;
-            max_missing_rhs = 0;
-            fail_on_unknown = true;
-            fail_on_missing = true;
+            applyCompareCfiGateProfile(
+                "strict",
+                max_different,
+                max_unknown,
+                max_missing_lhs,
+                max_missing_rhs,
+                fail_on_unknown,
+                fail_on_missing);
+            gate_profile = "strict";
             continue;
         }
         if (key == "--allow-unknown") {
             fail_on_unknown = false;
             max_unknown = std::numeric_limits<size_t>::max();
+            gate_profile = "custom";
             continue;
         }
         if (key == "--allow-missing") {
             fail_on_missing = false;
             max_missing_lhs = std::numeric_limits<size_t>::max();
             max_missing_rhs = std::numeric_limits<size_t>::max();
+            gate_profile = "custom";
             continue;
         }
         std::cerr << "Error: unknown compare-cfi option '" << arg << "'\n";
@@ -1613,6 +3431,15 @@ static int runCompareCFI(int argc, char* argv[]) {
     if ((!lhs_func.empty() || !rhs_func.empty()) && (lhs_pc_set || rhs_pc_set)) {
         std::cerr << "Error: do not mix --*-pc with --*-func in compare-cfi\n";
         return 1;
+    }
+    {
+        int emit_modes = (emit_profile_only ? 1 : 0) +
+                         (emit_solver_summary_only ? 1 : 0) +
+                         (emit_gate_signature_only ? 1 : 0);
+        if (emit_modes > 1) {
+            std::cerr << "Error: emit-only modes are mutually exclusive\n";
+            return 1;
+        }
     }
     if (all_fdes && (lhs_pc_set || rhs_pc_set || !lhs_func.empty() || !rhs_func.empty())) {
         std::cerr << "Error: --all-fdes cannot be combined with PC/function selector mode\n";
@@ -1636,6 +3463,11 @@ static int runCompareCFI(int argc, char* argv[]) {
         std::cerr << "Error: --only-different and --only-unknown are mutually exclusive\n";
         return 1;
     }
+    if (format == "json" && schema_version != 1) {
+        std::cerr << "Error: unsupported --schema-version " << schema_version
+                  << " (supported: 1)\n";
+        return 1;
+    }
 
     DwarfParser lhs(lhs_file);
     DwarfParser rhs(rhs_file);
@@ -1653,11 +3485,11 @@ static int runCompareCFI(int argc, char* argv[]) {
     }
     if (func_mode) {
         std::string err;
-        if (!resolveFunctionPC(lhs, lhs_func, lhs_pc, err)) {
+        if (!::resolveFunctionPC(lhs, lhs_func, lhs_pc, err)) {
             std::cerr << "Error: lhs " << err << "\n";
             return 1;
         }
-        if (!resolveFunctionPC(rhs, rhs_func, rhs_pc, err)) {
+        if (!::resolveFunctionPC(rhs, rhs_func, rhs_pc, err)) {
             std::cerr << "Error: rhs " << err << "\n";
             return 1;
         }
@@ -1665,401 +3497,44 @@ static int runCompareCFI(int argc, char* argv[]) {
         pc_mode = true;
     }
 
-    SymbolicCFIVerifier verifier;
-    struct CFICompareRow {
-        size_t lhs_index = 0;
-        size_t rhs_index = 0;
-        ExpressionVerificationResult::Verdict verdict = ExpressionVerificationResult::Verdict::UNKNOWN;
-        std::string reason;
-        size_t points_checked = 0;
-        bool has_mismatch_pc = false;
-        uint64_t mismatch_pc = 0;
-        bool has_lhs_fde = false;
-        bool has_rhs_fde = false;
-        uint64_t lhs_initial_location = 0;
-        uint64_t lhs_address_range = 0;
-        uint64_t rhs_initial_location = 0;
-        uint64_t rhs_address_range = 0;
-        std::string lhs_function_name;
-        std::string rhs_function_name;
-        std::string lhs_summary;
-        std::string rhs_summary;
-    };
-    std::vector<CFICompareRow> rows;
-    size_t missing_lhs = 0;
-    size_t missing_rhs = 0;
+    CompareCFIReportOptions report_opts;
+    report_opts.all_fdes = all_fdes;
+    report_opts.pc_mode = pc_mode;
+    report_opts.func_mode = func_mode;
+    report_opts.lhs_fde_index = lhs_fde_index;
+    report_opts.rhs_fde_index = rhs_fde_index;
+    report_opts.lhs_pc = lhs_pc;
+    report_opts.rhs_pc = rhs_pc;
+    report_opts.lhs_func = lhs_func;
+    report_opts.rhs_func = rhs_func;
+    report_opts.pair_by = pair_by;
+    report_opts.sort_mode = sort_mode;
+    report_opts.gate_profile = gate_profile;
+    report_opts.max_rows = max_rows;
+    report_opts.schema_version = schema_version;
+    report_opts.show_equivalent_rows = show_equivalent_rows;
+    report_opts.equivalent_filter_explicit = equivalent_filter_explicit;
+    report_opts.only_different_rows = only_different_rows;
+    report_opts.only_unknown_rows = only_unknown_rows;
+    report_opts.summary_only = summary_only;
+    report_opts.emit_profile_only = emit_profile_only;
+    report_opts.emit_solver_summary_only = emit_solver_summary_only;
+    report_opts.emit_gate_signature_only = emit_gate_signature_only;
+    report_opts.report_only = report_only;
+    report_opts.max_different = max_different;
+    report_opts.max_unknown = max_unknown;
+    report_opts.max_missing_lhs = max_missing_lhs;
+    report_opts.max_missing_rhs = max_missing_rhs;
+    report_opts.fail_on_unknown = fail_on_unknown;
+    report_opts.fail_on_missing = fail_on_missing;
+    report_opts.fail_on_solver_results = fail_on_solver_results;
+    report_opts.fail_on_verifier_backends = fail_on_verifier_backends;
+    report_opts.compare_options = cmp_opts;
 
-    auto resolveFuncName = [](const DwarfParser& p, uint64_t pc) -> std::string {
-        auto die = p.getFunctionAt(pc);
-        if (!die) return "";
-        std::string n = die->getName();
-        if (!n.empty()) return n;
-        auto ln_attr = die->getAttribute(DwarfAttribute::DW_AT_linkage_name);
-        auto ln = std::dynamic_pointer_cast<StringAttributeValue>(ln_attr);
-        return ln ? ln->getValue() : "";
-    };
-
-    if (all_fdes) {
-        const auto& lf = lhs.getCFIParser().getFDEs();
-        const auto& rf = rhs.getCFIParser().getFDEs();
-        std::vector<std::pair<size_t, size_t>> pairs;
-
-        if (pair_by == "index") {
-            size_t n = std::min(lf.size(), rf.size());
-            if (lf.size() > rf.size()) {
-                missing_rhs = lf.size() - rf.size();
-            } else if (rf.size() > lf.size()) {
-                missing_lhs = rf.size() - lf.size();
-            }
-            for (size_t i = 0; i < n; ++i) {
-                pairs.emplace_back(i, i);
-            }
-        } else if (pair_by == "start-pc") {
-            std::map<uint64_t, std::deque<size_t>> lhs_by_pc;
-            std::map<uint64_t, std::deque<size_t>> rhs_by_pc;
-            for (size_t i = 0; i < lf.size(); ++i) lhs_by_pc[lf[i]->initial_location].push_back(i);
-            for (size_t i = 0; i < rf.size(); ++i) rhs_by_pc[rf[i]->initial_location].push_back(i);
-
-            std::set<uint64_t> keys;
-            for (const auto& kv : lhs_by_pc) keys.insert(kv.first);
-            for (const auto& kv : rhs_by_pc) keys.insert(kv.first);
-
-            for (uint64_t k : keys) {
-                auto& lq = lhs_by_pc[k];
-                auto& rq = rhs_by_pc[k];
-                size_t n = std::min(lq.size(), rq.size());
-                for (size_t i = 0; i < n; ++i) {
-                    pairs.emplace_back(lq.front(), rq.front());
-                    lq.pop_front();
-                    rq.pop_front();
-                }
-                missing_rhs += lq.size();
-                missing_lhs += rq.size();
-            }
-        } else { // pair_by == "range"
-            using Key = std::pair<uint64_t, uint64_t>;
-            std::map<Key, std::deque<size_t>> lhs_by_range;
-            std::map<Key, std::deque<size_t>> rhs_by_range;
-            for (size_t i = 0; i < lf.size(); ++i) {
-                lhs_by_range[{lf[i]->initial_location, lf[i]->address_range}].push_back(i);
-            }
-            for (size_t i = 0; i < rf.size(); ++i) {
-                rhs_by_range[{rf[i]->initial_location, rf[i]->address_range}].push_back(i);
-            }
-
-            std::set<Key> keys;
-            for (const auto& kv : lhs_by_range) keys.insert(kv.first);
-            for (const auto& kv : rhs_by_range) keys.insert(kv.first);
-
-            for (const auto& k : keys) {
-                auto& lq = lhs_by_range[k];
-                auto& rq = rhs_by_range[k];
-                size_t n = std::min(lq.size(), rq.size());
-                for (size_t i = 0; i < n; ++i) {
-                    pairs.emplace_back(lq.front(), rq.front());
-                    lq.pop_front();
-                    rq.pop_front();
-                }
-                missing_rhs += lq.size();
-                missing_lhs += rq.size();
-            }
-        }
-
-        for (const auto& p : pairs) {
-            auto r = verifier.compareFDEByIndex(lhs.getCFIParser(), p.first, rhs.getCFIParser(), p.second, cmp_opts);
-            CFICompareRow row;
-            row.lhs_index = p.first;
-            row.rhs_index = p.second;
-            row.verdict = r.verdict;
-            row.reason = r.reason;
-            row.points_checked = r.points_checked;
-            row.has_mismatch_pc = r.has_mismatch_relative_pc;
-            row.mismatch_pc = r.mismatch_relative_pc;
-            if (p.first < lf.size()) {
-                row.has_lhs_fde = true;
-                row.lhs_initial_location = lf[p.first]->initial_location;
-                row.lhs_address_range = lf[p.first]->address_range;
-                row.lhs_function_name = resolveFuncName(lhs, row.lhs_initial_location);
-            }
-            if (p.second < rf.size()) {
-                row.has_rhs_fde = true;
-                row.rhs_initial_location = rf[p.second]->initial_location;
-                row.rhs_address_range = rf[p.second]->address_range;
-                row.rhs_function_name = resolveFuncName(rhs, row.rhs_initial_location);
-            }
-            rows.push_back(std::move(row));
-        }
-    } else if (pc_mode) {
-        auto r = verifier.compareParsersAtPC(lhs.getCFIParser(), rhs.getCFIParser(), lhs_pc, rhs_pc, cmp_opts);
-        CFICompareRow row;
-        row.verdict = r.verdict;
-        row.reason = r.reason;
-        row.points_checked = 1;
-        row.lhs_summary = r.lhs_summary;
-        row.rhs_summary = r.rhs_summary;
-        auto lf = lhs.getCFIParser().findFDE(lhs_pc);
-        auto rf = rhs.getCFIParser().findFDE(rhs_pc);
-        if (lf) {
-            row.has_lhs_fde = true;
-            row.lhs_initial_location = lf->initial_location;
-            row.lhs_address_range = lf->address_range;
-            row.lhs_function_name = resolveFuncName(lhs, row.lhs_initial_location);
-        }
-        if (rf) {
-            row.has_rhs_fde = true;
-            row.rhs_initial_location = rf->initial_location;
-            row.rhs_address_range = rf->address_range;
-            row.rhs_function_name = resolveFuncName(rhs, row.rhs_initial_location);
-        }
-        rows.push_back(std::move(row));
-    } else {
-        auto r = verifier.compareFDEByIndex(
-            lhs.getCFIParser(), lhs_fde_index,
-            rhs.getCFIParser(), rhs_fde_index,
-            cmp_opts);
-        CFICompareRow row;
-        row.lhs_index = lhs_fde_index;
-        row.rhs_index = rhs_fde_index;
-        row.verdict = r.verdict;
-        row.reason = r.reason;
-        row.points_checked = r.points_checked;
-        row.has_mismatch_pc = r.has_mismatch_relative_pc;
-        row.mismatch_pc = r.mismatch_relative_pc;
-        const auto& lf = lhs.getCFIParser().getFDEs();
-        const auto& rf = rhs.getCFIParser().getFDEs();
-        if (lhs_fde_index < lf.size()) {
-            row.has_lhs_fde = true;
-            row.lhs_initial_location = lf[lhs_fde_index]->initial_location;
-            row.lhs_address_range = lf[lhs_fde_index]->address_range;
-            row.lhs_function_name = resolveFuncName(lhs, row.lhs_initial_location);
-        }
-        if (rhs_fde_index < rf.size()) {
-            row.has_rhs_fde = true;
-            row.rhs_initial_location = rf[rhs_fde_index]->initial_location;
-            row.rhs_address_range = rf[rhs_fde_index]->address_range;
-            row.rhs_function_name = resolveFuncName(rhs, row.rhs_initial_location);
-        }
-        rows.push_back(std::move(row));
-    }
-
-    size_t equivalent = 0;
-    size_t different = 0;
-    size_t unknown = 0;
-    for (const auto& row : rows) {
-        if (row.verdict == ExpressionVerificationResult::Verdict::EQUIVALENT) ++equivalent;
-        if (row.verdict == ExpressionVerificationResult::Verdict::DIFFERENT) ++different;
-        if (row.verdict == ExpressionVerificationResult::Verdict::UNKNOWN) ++unknown;
-    }
-    if (all_fdes && !equivalent_filter_explicit) {
-        // In bulk mode, default to actionable rows unless user overrides with --show-equivalent.
-        show_equivalent_rows = false;
-    }
-
-    std::vector<size_t> visible_rows;
-    visible_rows.reserve(rows.size());
-    for (size_t i = 0; i < rows.size(); ++i) {
-        if (only_different_rows &&
-            rows[i].verdict != ExpressionVerificationResult::Verdict::DIFFERENT) {
-            continue;
-        }
-        if (only_unknown_rows &&
-            rows[i].verdict != ExpressionVerificationResult::Verdict::UNKNOWN) {
-            continue;
-        }
-        if (!show_equivalent_rows &&
-            rows[i].verdict == ExpressionVerificationResult::Verdict::EQUIVALENT) {
-            continue;
-        }
-        visible_rows.push_back(i);
-    }
-    {
-        auto verdictRank = [](ExpressionVerificationResult::Verdict v) {
-            switch (v) {
-                case ExpressionVerificationResult::Verdict::DIFFERENT: return 0;
-                case ExpressionVerificationResult::Verdict::UNKNOWN: return 1;
-                case ExpressionVerificationResult::Verdict::EQUIVALENT: return 2;
-            }
-            return 3;
-        };
-        auto lhsPcKey = [&](size_t i) {
-            return rows[i].has_lhs_fde ? rows[i].lhs_initial_location : std::numeric_limits<uint64_t>::max();
-        };
-        auto rhsPcKey = [&](size_t i) {
-            return rows[i].has_rhs_fde ? rows[i].rhs_initial_location : std::numeric_limits<uint64_t>::max();
-        };
-        auto tieBreak = [&](size_t a, size_t b) {
-            if (rows[a].lhs_index != rows[b].lhs_index) return rows[a].lhs_index < rows[b].lhs_index;
-            return rows[a].rhs_index < rows[b].rhs_index;
-        };
-        std::sort(visible_rows.begin(), visible_rows.end(), [&](size_t a, size_t b) {
-            if (sort_mode == "verdict") {
-                int ar = verdictRank(rows[a].verdict);
-                int br = verdictRank(rows[b].verdict);
-                if (ar != br) return ar < br;
-                return tieBreak(a, b);
-            }
-            if (sort_mode == "rhs-index") {
-                if (rows[a].rhs_index != rows[b].rhs_index) return rows[a].rhs_index < rows[b].rhs_index;
-                return rows[a].lhs_index < rows[b].lhs_index;
-            }
-            if (sort_mode == "lhs-pc") {
-                uint64_t ap = lhsPcKey(a);
-                uint64_t bp = lhsPcKey(b);
-                if (ap != bp) return ap < bp;
-                return tieBreak(a, b);
-            }
-            if (sort_mode == "rhs-pc") {
-                uint64_t ap = rhsPcKey(a);
-                uint64_t bp = rhsPcKey(b);
-                if (ap != bp) return ap < bp;
-                return tieBreak(a, b);
-            }
-            // default: lhs-index
-            return tieBreak(a, b);
-        });
-    }
-
-    bool gate_pass = true;
-    std::string gate_reason;
-    if (different > max_different) {
-        gate_pass = false;
-        gate_reason = "different=" + std::to_string(different) + " exceeds max_different=" +
-                      std::to_string(max_different);
-    } else if (unknown > max_unknown) {
-        gate_pass = false;
-        gate_reason = "unknown=" + std::to_string(unknown) + " exceeds max_unknown=" +
-                      std::to_string(max_unknown);
-    } else if (missing_lhs > max_missing_lhs) {
-        gate_pass = false;
-        gate_reason = "missing_lhs=" + std::to_string(missing_lhs) +
-                      " exceeds max_missing_lhs=" + std::to_string(max_missing_lhs);
-    } else if (missing_rhs > max_missing_rhs) {
-        gate_pass = false;
-        gate_reason = "missing_rhs=" + std::to_string(missing_rhs) +
-                      " exceeds max_missing_rhs=" + std::to_string(max_missing_rhs);
-    } else if (fail_on_unknown && unknown > 0) {
-        gate_pass = false;
-        gate_reason = "unknown result not allowed by fail-on-unknown";
-    } else if (fail_on_missing && (missing_lhs > 0 || missing_rhs > 0)) {
-        gate_pass = false;
-        gate_reason = "missing FDE pairs not allowed by fail-on-missing";
-    }
-
-    std::ostringstream out;
-    size_t shown = (max_rows == 0) ? visible_rows.size() : std::min(max_rows, visible_rows.size());
-    if (format == "json") {
-        if (schema_version != 1) {
-            std::cerr << "Error: unsupported --schema-version " << schema_version
-                      << " (supported: 1)\n";
-            return 1;
-        }
-        out << "{"
-            << "\"schema_version\":" << schema_version << ","
-            << "\"mode\":\"" << (all_fdes ? "all-fdes" : (pc_mode ? (func_mode ? "func" : "pc") : "fde")) << "\","
-            << "\"pair_by\":\"" << pair_by << "\","
-            << "\"options\":{"
-            << "\"all_fdes\":" << (all_fdes ? "true" : "false") << ","
-            << "\"pc_mode\":" << (pc_mode ? "true" : "false") << ","
-            << "\"func_mode\":" << (func_mode ? "true" : "false") << ","
-            << "\"lhs_fde_index\":" << lhs_fde_index << ","
-            << "\"rhs_fde_index\":" << rhs_fde_index << ","
-            << "\"lhs_pc\":" << lhs_pc << ","
-            << "\"rhs_pc\":" << rhs_pc << ","
-            << "\"max_rows\":" << max_rows << ","
-            << "\"sort\":\"" << sort_mode << "\","
-            << "\"show_equivalent\":" << (show_equivalent_rows ? "true" : "false") << ","
-            << "\"only_different\":" << (only_different_rows ? "true" : "false") << ","
-            << "\"only_unknown\":" << (only_unknown_rows ? "true" : "false") << ","
-            << "\"summary_only\":" << (summary_only ? "true" : "false") << ","
-            << "\"report_only\":" << (report_only ? "true" : "false") << ","
-            << "\"max_different\":" << max_different << ","
-            << "\"max_unknown\":" << max_unknown << ","
-            << "\"max_missing_lhs\":" << max_missing_lhs << ","
-            << "\"max_missing_rhs\":" << max_missing_rhs << ","
-            << "\"fail_on_unknown\":" << (fail_on_unknown ? "true" : "false") << ","
-            << "\"fail_on_missing\":" << (fail_on_missing ? "true" : "false")
-            << "},"
-            << "\"summary\":{"
-            << "\"total\":" << rows.size() << ","
-            << "\"equivalent\":" << equivalent << ","
-            << "\"different\":" << different << ","
-            << "\"unknown\":" << unknown << ","
-            << "\"missing_lhs\":" << missing_lhs << ","
-            << "\"missing_rhs\":" << missing_rhs
-            << "},";
-        if (!summary_only) {
-            out << "\"rows\":[";
-            for (size_t i = 0; i < shown; ++i) {
-                if (i != 0) out << ",";
-                const auto& row = rows[visible_rows[i]];
-                out << "{"
-                    << "\"lhs_index\":" << row.lhs_index << ","
-                    << "\"rhs_index\":" << row.rhs_index << ","
-                    << "\"verdict\":\"" << verdictToString(row.verdict) << "\","
-                    << "\"reason\":\"" << jsonEscape(row.reason) << "\","
-                    << "\"points_checked\":" << row.points_checked << ","
-                    << "\"has_mismatch_relative_pc\":" << (row.has_mismatch_pc ? "true" : "false") << ","
-                    << "\"mismatch_relative_pc\":" << row.mismatch_pc << ","
-                    << "\"has_lhs_fde\":" << (row.has_lhs_fde ? "true" : "false") << ","
-                    << "\"has_rhs_fde\":" << (row.has_rhs_fde ? "true" : "false") << ","
-                    << "\"lhs_initial_location\":" << row.lhs_initial_location << ","
-                    << "\"lhs_address_range\":" << row.lhs_address_range << ","
-                    << "\"rhs_initial_location\":" << row.rhs_initial_location << ","
-                    << "\"rhs_address_range\":" << row.rhs_address_range << ","
-                    << "\"lhs_function_name\":\"" << jsonEscape(row.lhs_function_name) << "\","
-                    << "\"rhs_function_name\":\"" << jsonEscape(row.rhs_function_name) << "\""
-                    << "}";
-            }
-            out << "],";
-        }
-        out
-            << "\"gate\":{"
-            << "\"pass\":" << (gate_pass ? "true" : "false") << ","
-            << "\"reason\":\"" << jsonEscape(gate_reason) << "\""
-            << "}"
-            << "}\n";
-    } else {
-        out << "mode=" << (all_fdes ? "all-fdes" : (pc_mode ? (func_mode ? "func" : "pc") : "fde"))
-            << " pair_by=" << pair_by
-            << " sort=" << sort_mode
-            << " total=" << rows.size()
-            << " equivalent=" << equivalent
-            << " different=" << different
-            << " unknown=" << unknown
-            << " missing_lhs=" << missing_lhs
-            << " missing_rhs=" << missing_rhs
-            << " gate_pass=" << (gate_pass ? "1" : "0")
-            << "\n";
-        if (func_mode) {
-            out << "lhs_func=" << lhs_func << " lhs_pc=0x" << std::hex << lhs_pc << std::dec << "\n";
-            out << "rhs_func=" << rhs_func << " rhs_pc=0x" << std::hex << rhs_pc << std::dec << "\n";
-        }
-        if (!summary_only) {
-            out << "lhs_index|rhs_index|lhs_initial_location|lhs_address_range|lhs_function_name|rhs_initial_location|rhs_address_range|rhs_function_name|verdict|points_checked|mismatch_relative_pc|reason\n";
-            for (size_t i = 0; i < shown; ++i) {
-                const auto& row = rows[visible_rows[i]];
-                out << row.lhs_index << "|"
-                    << row.rhs_index << "|"
-                    << "0x" << std::hex << row.lhs_initial_location << "|"
-                    << "0x" << std::hex << row.lhs_address_range << "|"
-                    << row.lhs_function_name << "|"
-                    << "0x" << std::hex << row.rhs_initial_location << "|"
-                    << "0x" << std::hex << row.rhs_address_range << "|"
-                    << row.rhs_function_name << "|"
-                    << std::dec
-                    << verdictToString(row.verdict) << "|"
-                    << row.points_checked << "|";
-                if (row.has_mismatch_pc) out << row.mismatch_pc;
-                out << "|" << row.reason << "\n";
-                if (!row.lhs_summary.empty()) out << "lhs=" << row.lhs_summary << "\n";
-                if (!row.rhs_summary.empty()) out << "rhs=" << row.rhs_summary << "\n";
-            }
-            if (shown < visible_rows.size()) {
-                out << "... truncated " << (visible_rows.size() - shown) << " rows\n";
-            }
-        }
-        if (!gate_pass) out << "gate_reason=" << gate_reason << "\n";
-    }
+    auto exec = executeCompareCFI(lhs,
+                                  rhs,
+                                  format == "json" ? CompareOutputFormat::JSON : CompareOutputFormat::TEXT,
+                                  report_opts);
 
     if (!output_path.empty()) {
         std::ofstream file(output_path);
@@ -2067,13 +3542,13 @@ static int runCompareCFI(int argc, char* argv[]) {
             std::cerr << "Error: cannot open output file '" << output_path << "'\n";
             return 1;
         }
-        file << out.str();
+        file << exec.report;
     } else {
-        std::cout << out.str();
+        std::cout << exec.report;
     }
 
-    if (!report_only && !gate_pass) {
-        std::cerr << "compare-cfi gate FAILED: " << gate_reason << "\n";
+    if (!report_only && !exec.gate_pass) {
+        std::cerr << "compare-cfi gate FAILED: " << exec.gate_reason << "\n";
         return 2;
     }
     return 0;
@@ -2085,6 +3560,9 @@ int main(int argc, char* argv[]) {
     }
     if (argc >= 2 && std::string(argv[1]) == "compare-cfi") {
         return runCompareCFI(argc, argv);
+    }
+    if (argc >= 2 && std::string(argv[1]) == "verify-reloc") {
+        return runVerifyReloc(argc, argv);
     }
 
     Options opts;
@@ -2106,6 +3584,10 @@ int main(int argc, char* argv[]) {
         {"die-offset", required_argument, nullptr, 1003},
         {"find", required_argument, nullptr, 1004},
         {"summary", no_argument, nullptr, 1005},
+        {"show-support", no_argument, nullptr, 1006},
+        {"format", required_argument, nullptr, 1007},
+        {"dwp", required_argument, nullptr, 1008},
+        {"schema-version", required_argument, nullptr, 1009},
         {"help", no_argument, nullptr, 'h'},
         {nullptr, 0, nullptr, 0}
     };
@@ -2137,6 +3619,32 @@ int main(int argc, char* argv[]) {
             }
             case 1004: opts.find_name = optarg; break;
             case 1005: opts.summary = true; break;
+            case 1006: opts.show_support = true; break;
+            case 1007:
+                opts.output_format = optarg ? std::string(optarg) : std::string();
+                if (opts.output_format != "text" && opts.output_format != "json") {
+                    std::cerr << "Error: invalid --format '" << opts.output_format
+                              << "' (expected text|json)\n";
+                    return 1;
+                }
+                break;
+            case 1008:
+                opts.dwp_file = optarg ? std::string(optarg) : std::string();
+                if (opts.dwp_file.empty()) {
+                    std::cerr << "Error: --dwp requires a path\n";
+                    return 1;
+                }
+                break;
+            case 1009: {
+                uint64_t parsed = 0;
+                if (!parseUIntOption(optarg ? std::string(optarg) : std::string(), parsed)) {
+                    std::cerr << "Error: invalid --schema-version value '" << (optarg ? optarg : "") << "'\n";
+                    return 1;
+                }
+                opts.support_schema_version = static_cast<int>(parsed);
+                opts.support_schema_version_set = true;
+                break;
+            }
             case 'h':
             default:
                 printUsage(argv[0]);
@@ -2144,7 +3652,32 @@ int main(int argc, char* argv[]) {
         }
     }
 
+    if (opts.output_format != "text" && !opts.show_support) {
+        std::cerr << "Error: --format is only supported with --show-support in main mode\n";
+        return 1;
+    }
+    if (opts.support_schema_version_set && !opts.show_support) {
+        std::cerr << "Error: --schema-version is only supported with --show-support in main mode\n";
+        return 1;
+    }
+    if (opts.support_schema_version_set && opts.output_format != "json") {
+        std::cerr << "Error: --schema-version requires --format=json with --show-support\n";
+        return 1;
+    }
+    if (opts.output_format == "json" &&
+        opts.show_support &&
+        opts.support_schema_version != 1 &&
+        opts.support_schema_version != 2) {
+        std::cerr << "Error: unsupported --schema-version " << opts.support_schema_version
+                  << " for --show-support (supported: 1,2)\n";
+        return 1;
+    }
+
     if (optind >= argc) {
+        if (opts.show_support) {
+            printSupportMatrix(nullptr, opts.output_format, opts.support_schema_version);
+            return 0;
+        }
         std::cerr << "Error: No input file specified\n";
         printUsage(argv[0]);
         return 1;
@@ -2156,15 +3689,25 @@ int main(int argc, char* argv[]) {
     if (!opts.dump_info && !opts.dump_abbrev && !opts.dump_line &&
         !opts.dump_frames && !opts.dump_ranges && !opts.dump_str &&
         !opts.dump_loc && !opts.dump_names && !opts.dump_macro &&
-        !opts.dump_all && opts.find_name.empty() && opts.die_offset == 0) {
+        !opts.dump_all && !opts.show_support &&
+        opts.find_name.empty() && opts.die_offset == 0) {
         opts.summary = true;
     }
 
     // Load DWARF info
     DwarfParser parser(opts.input_file);
+    parser.setVerbose(opts.verbose);
     if (!opts.verbose) {
         // Suppress debug output
         std::cerr.setstate(std::ios_base::failbit);
+    }
+
+    if (!opts.dwp_file.empty()) {
+        if (!parser.loadDWPFile(opts.dwp_file)) {
+            std::cerr.clear();
+            std::cerr << "Error: Failed to load DWP file " << opts.dwp_file << "\n";
+            return 1;
+        }
     }
 
     if (!parser.load()) {
@@ -2178,6 +3721,12 @@ int main(int argc, char* argv[]) {
     // Process options
     if (opts.summary || opts.dump_all) {
         printSummary(parser);
+    }
+    if (opts.show_support) {
+        if (opts.summary || opts.dump_all) {
+            std::cout << "\n";
+        }
+        printSupportMatrix(&parser, opts.output_format, opts.support_schema_version);
     }
 
     if (!opts.find_name.empty()) {
@@ -2204,6 +3753,10 @@ int main(int argc, char* argv[]) {
 
     if (opts.dump_frames || opts.dump_all) {
         dumpDebugFrame(parser, opts);
+    }
+
+    if (opts.dump_names || opts.dump_all) {
+        dumpDebugNames(parser, opts);
     }
 
     // Other sections would be implemented similarly...

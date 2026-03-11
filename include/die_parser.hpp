@@ -5,6 +5,7 @@
 #include <memory>
 #include <vector>
 #include <map>
+#include <utility>
 
 namespace dwarf {
 
@@ -59,6 +60,16 @@ private:
 
 class DIEParser {
 public:
+    struct VendorFormSkipDetail {
+        uint16_t form = 0;
+        uint64_t payload_offset = 0;
+        uint64_t cu_offset = 0;
+        uint64_t die_offset = 0;
+        DwarfAttribute attr = static_cast<DwarfAttribute>(0);
+        bool is_unit_die = false;
+        std::string severity;
+    };
+
     DIEParser(const ELFIO::elfio& elf, const std::vector<uint8_t>& debug_info,
               const std::vector<uint8_t>& debug_abbrev, const std::vector<uint8_t>& debug_str,
               const std::vector<uint8_t>& debug_line = {},
@@ -76,6 +87,13 @@ public:
     
     // Main parsing methods
     std::vector<std::shared_ptr<DIE>> parseCompilationUnits();
+    uint64_t getUnsupportedVendorFormSkipCount() const;
+    std::vector<std::pair<uint16_t, uint64_t>> getUnsupportedVendorFormSkipSamples() const;
+    std::vector<std::pair<uint16_t, uint64_t>> getUnsupportedVendorFormSkipHistogram() const;
+    std::vector<std::pair<std::string, uint64_t>> getUnsupportedVendorFormSkipSeverityBuckets() const;
+    const std::vector<VendorFormSkipDetail>& getUnsupportedVendorFormSkipDetails() const {
+        return vendor_form_skip_details_;
+    }
     std::shared_ptr<DIE> parseDIE(uint64_t& offset,
                                   const std::vector<uint8_t>& abbrev_data,
                                   uint64_t abbrev_offset = 0,
@@ -130,6 +148,7 @@ private:
     bool hasDecodeError() const;
 
     mutable bool decode_error_ = false;
+    std::vector<VendorFormSkipDetail> vendor_form_skip_details_;
 };
 
 } // namespace dwarf

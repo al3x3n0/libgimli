@@ -5,6 +5,7 @@
 #include "symbolic_verifier.hpp"
 #include <limits>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -32,6 +33,19 @@ struct CrossBinaryCompareOptions {
     std::vector<uint64_t> lhs_registers;
     std::vector<uint64_t> rhs_registers;
     ExpressionVerificationOptions verification_options;
+    // Optional extension checks (disabled by default to preserve existing behavior).
+    bool enable_relocation_checks = false;
+    bool enable_location_semantic_normalization = false;
+    bool enable_range_aware_location_compare = false;
+};
+
+struct LocationRangeSegmentVerdict {
+    uint64_t start = 0;
+    uint64_t end = 0;
+    ExpressionVerificationResult::Verdict verdict = ExpressionVerificationResult::Verdict::UNKNOWN;
+    bool lhs_present = false;
+    bool rhs_present = false;
+    std::string reason;
 };
 
 struct NamedExpressionComparison {
@@ -42,6 +56,14 @@ struct NamedExpressionComparison {
     uint64_t lhs_offset = 0;
     uint64_t rhs_offset = 0;
     ExpressionVerificationResult verification;
+    bool range_aware = false;
+    uint64_t coverage_total = 0;
+    uint64_t coverage_equivalent = 0;
+    uint64_t coverage_different = 0;
+    uint64_t coverage_unknown = 0;
+    uint64_t coverage_uncovered = 0;
+    std::vector<std::string> relocation_issues;
+    std::vector<LocationRangeSegmentVerdict> range_segments;
 };
 
 struct CrossBinaryComparisonSummary {
@@ -51,6 +73,11 @@ struct CrossBinaryComparisonSummary {
     size_t unknown = 0;
     size_t missing_lhs = 0;
     size_t missing_rhs = 0;
+    uint64_t coverage_total = 0;
+    uint64_t coverage_equivalent = 0;
+    uint64_t coverage_different = 0;
+    uint64_t coverage_unknown = 0;
+    uint64_t coverage_uncovered = 0;
 };
 
 struct CrossBinaryGateOptions {
@@ -63,11 +90,23 @@ struct CrossBinaryGateOptions {
     // Optional stricter toggles for common CI policies.
     bool fail_on_unknown = false;
     bool fail_on_missing = false;
+    // Disallow specific solver result buckets (e.g. "unknown", "encoding_error", "unsat", "sat").
+    std::set<std::string> fail_on_solver_results;
+    // Disallow specific verifier backends (e.g. "z3", "structural", "structural+z3").
+    std::set<std::string> fail_on_verifier_backends;
+    // Optional range-aware coverage gates.
+    // Enabled when corresponding threshold differs from default permissive values.
+    double min_equivalent_coverage = 0.0;
+    double max_different_coverage = 1.0;
+    bool fail_on_uncovered = false;
 };
 
 struct CrossBinaryGateResult {
     bool pass = true;
     std::string reason;
+    std::string trigger = "none";
+    std::string trigger_detail;
+    std::string signature;
     CrossBinaryComparisonSummary summary;
 };
 

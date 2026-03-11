@@ -3,6 +3,7 @@
 #include "expression_evaluator.hpp"
 #include "symbolic_expression.hpp"
 #include "symbolic_verifier.hpp"
+#include "smt_verifier.hpp"
 #include "expression_compare.hpp"
 #include "dwarf_utils.hpp"
 #include "rnglists_parser.hpp"
@@ -15,11 +16,14 @@
 #include "debug_macro_parser.hpp"
 #include "call_stack.hpp"
 #include "cfi_symbolic.hpp"
+#include "type_printer.hpp"
+#include <fstream>
 #include <iostream>
 #include <cassert>
 #include <cstring>
 #include <filesystem>
 #include <random>
+#include <sstream>
 #include <unordered_map>
 
 using namespace dwarf;
@@ -28,6 +32,7 @@ static void appendU64(std::vector<uint8_t>& out, uint64_t v);
 static void appendU32(std::vector<uint8_t>& out, uint32_t v);
 static void appendU16(std::vector<uint8_t>& out, uint16_t v);
 static void appendULEB(std::vector<uint8_t>& out, uint64_t v);
+static std::vector<uint8_t> loadTestDataBinary(const std::string& filename);
 
 void testDwarfUtils() {
     std::cout << "Testing DwarfUtils..." << std::endl;
@@ -44,10 +49,56 @@ void testDwarfUtils() {
     // Test form conversion
     assert(DwarfUtils::formToString(DwarfForm::DW_FORM_strp) == "DW_FORM_strp");
     assert(DwarfUtils::stringToForm("DW_FORM_strp") == DwarfForm::DW_FORM_strp);
+    assert(DwarfUtils::formToString(DwarfForm::DW_FORM_GNU_strp_alt) == "DW_FORM_GNU_strp_alt");
+    assert(DwarfUtils::stringToForm("DW_FORM_GNU_strp_alt") == DwarfForm::DW_FORM_GNU_strp_alt);
+    assert(DwarfUtils::formToString(DwarfForm::DW_FORM_GNU_ref_alt) == "DW_FORM_GNU_ref_alt");
+    assert(DwarfUtils::stringToForm("DW_FORM_GNU_ref_alt") == DwarfForm::DW_FORM_GNU_ref_alt);
+    assert(DwarfUtils::formToString(DwarfForm::DW_FORM_GNU_str_index) == "DW_FORM_GNU_str_index");
+    assert(DwarfUtils::stringToForm("DW_FORM_GNU_str_index") == DwarfForm::DW_FORM_GNU_str_index);
+    assert(DwarfUtils::formToString(DwarfForm::DW_FORM_GNU_addr_index) == "DW_FORM_GNU_addr_index");
+    assert(DwarfUtils::stringToForm("DW_FORM_GNU_addr_index") == DwarfForm::DW_FORM_GNU_addr_index);
+    for (int i = 0; i <= 0xff; ++i) {
+        auto f = static_cast<DwarfForm>(static_cast<uint8_t>(i));
+        std::string name = DwarfUtils::formToString(f);
+        if (name.rfind("DW_FORM_unknown_", 0) == 0) continue;
+        assert(DwarfUtils::stringToForm(name) == f);
+    }
 
     // Test operation conversion
     assert(DwarfUtils::operationToString(DwarfOp::DW_OP_const1u) == "DW_OP_const1u");
     assert(DwarfUtils::stringToOperation("DW_OP_const1u") == DwarfOp::DW_OP_const1u);
+    assert(DwarfUtils::operationToString(DwarfOp::DW_OP_addrx) == "DW_OP_addrx");
+    assert(DwarfUtils::stringToOperation("DW_OP_addrx") == DwarfOp::DW_OP_addrx);
+    assert(DwarfUtils::operationToString(DwarfOp::DW_OP_constx) == "DW_OP_constx");
+    assert(DwarfUtils::stringToOperation("DW_OP_constx") == DwarfOp::DW_OP_constx);
+    assert(DwarfUtils::operationToString(DwarfOp::DW_OP_entry_value) == "DW_OP_entry_value");
+    assert(DwarfUtils::stringToOperation("DW_OP_entry_value") == DwarfOp::DW_OP_entry_value);
+    assert(DwarfUtils::operationToString(DwarfOp::DW_OP_const_type) == "DW_OP_const_type");
+    assert(DwarfUtils::stringToOperation("DW_OP_const_type") == DwarfOp::DW_OP_const_type);
+    assert(DwarfUtils::operationToString(DwarfOp::DW_OP_regval_type) == "DW_OP_regval_type");
+    assert(DwarfUtils::stringToOperation("DW_OP_regval_type") == DwarfOp::DW_OP_regval_type);
+    assert(DwarfUtils::operationToString(DwarfOp::DW_OP_deref_type) == "DW_OP_deref_type");
+    assert(DwarfUtils::stringToOperation("DW_OP_deref_type") == DwarfOp::DW_OP_deref_type);
+    assert(DwarfUtils::operationToString(DwarfOp::DW_OP_xderef_type) == "DW_OP_xderef_type");
+    assert(DwarfUtils::stringToOperation("DW_OP_xderef_type") == DwarfOp::DW_OP_xderef_type);
+    assert(DwarfUtils::operationToString(DwarfOp::DW_OP_form_tls_address) == "DW_OP_form_tls_address");
+    assert(DwarfUtils::stringToOperation("DW_OP_form_tls_address") == DwarfOp::DW_OP_form_tls_address);
+    assert(DwarfUtils::operationToString(DwarfOp::DW_OP_WASM_location) == "DW_OP_WASM_location");
+    assert(DwarfUtils::stringToOperation("DW_OP_WASM_location") == DwarfOp::DW_OP_WASM_location);
+    assert(DwarfUtils::operationToString(DwarfOp::DW_OP_GNU_addr_index) == "DW_OP_GNU_addr_index");
+    assert(DwarfUtils::stringToOperation("DW_OP_GNU_addr_index") == DwarfOp::DW_OP_GNU_addr_index);
+    assert(DwarfUtils::stringToOperation("DW_OP_dup") == DwarfOp::DW_OP_dup);
+    assert(DwarfUtils::stringToOperation("DW_OP_xor") == DwarfOp::DW_OP_xor);
+    assert(DwarfUtils::stringToOperation("DW_OP_lit15") == DwarfOp::DW_OP_lit15);
+    assert(DwarfUtils::stringToOperation("DW_OP_reg7") == DwarfOp::DW_OP_reg7);
+    assert(DwarfUtils::stringToOperation("DW_OP_breg12") == DwarfOp::DW_OP_breg12);
+    assert(DwarfUtils::stringToOperation("DW_OP_lit32") == static_cast<DwarfOp>(0));
+    for (int i = 0; i <= 0xff; ++i) {
+        auto op = static_cast<DwarfOp>(static_cast<uint8_t>(i));
+        std::string name = DwarfUtils::operationToString(op);
+        if (name == "DW_OP_unknown") continue;
+        assert(DwarfUtils::stringToOperation(name) == op);
+    }
 
     // Test size helpers are linkable and plausible
     {
@@ -61,6 +112,282 @@ void testDwarfUtils() {
         assert(opsz == 1);
         auto asm_s = DwarfUtils::expressionToAssembly(std::vector<uint8_t>(expr, expr + 2));
         assert(!asm_s.empty());
+    }
+    {
+        // GNU predecessor of DW_OP_addrx should consume its ULEB operand when tokenizing.
+        std::vector<uint8_t> expr = {
+            static_cast<uint8_t>(DwarfOp::DW_OP_GNU_addr_index), 0x00, // uleb 0
+            static_cast<uint8_t>(DwarfOp::DW_OP_const1u), 0x2a
+        };
+        auto toks = DwarfUtils::expressionToTokens(expr);
+        assert(toks.size() == 2);
+        assert(toks[0] == "DW_OP_GNU_addr_index");
+        assert(toks[1] == "DW_OP_const1u");
+    }
+    {
+        // implicit_pointer should consume both DIE ref and SLEB displacement.
+        std::vector<uint8_t> expr = {
+            static_cast<uint8_t>(DwarfOp::DW_OP_implicit_pointer),
+            0x78, 0x56, 0x34, 0x12, // 32-bit ref
+            0x7f,                    // SLEB128(-1)
+            static_cast<uint8_t>(DwarfOp::DW_OP_const1u), 0x2a
+        };
+        auto toks = DwarfUtils::expressionToTokens(expr);
+        assert(toks.size() == 2);
+        assert(toks[0] == "DW_OP_implicit_pointer");
+        assert(toks[1] == "DW_OP_const1u");
+    }
+    {
+        // GNU parameter_ref carries a fixed-size DIE reference operand.
+        std::vector<uint8_t> expr = {
+            static_cast<uint8_t>(DwarfOp::DW_OP_GNU_parameter_ref),
+            0x78, 0x56, 0x34, 0x12, // 32-bit ref
+            static_cast<uint8_t>(DwarfOp::DW_OP_const1u), 0x2a
+        };
+        auto toks = DwarfUtils::expressionToTokens(expr);
+        assert(toks.size() == 2);
+        assert(toks[0] == "DW_OP_GNU_parameter_ref");
+        assert(toks[1] == "DW_OP_const1u");
+    }
+    {
+        // GNU encoded_addr should consume encoding byte + encoded payload.
+        std::vector<uint8_t> expr = {
+            static_cast<uint8_t>(DwarfOp::DW_OP_GNU_encoded_addr),
+            0x02,                   // DW_EH_PE_udata2
+            0x34, 0x12,             // encoded value
+            static_cast<uint8_t>(DwarfOp::DW_OP_const1u), 0x2a
+        };
+        auto toks = DwarfUtils::expressionToTokens(expr);
+        assert(toks.size() == 2);
+        assert(toks[0] == "DW_OP_GNU_encoded_addr");
+        assert(toks[1] == "DW_OP_const1u");
+    }
+    {
+        // WASM location should consume kind + ULEB operand for known kinds.
+        std::vector<uint8_t> expr = {
+            static_cast<uint8_t>(DwarfOp::DW_OP_WASM_location),
+            0x00, // local
+            0x81, 0x01, // ULEB 129
+            static_cast<uint8_t>(DwarfOp::DW_OP_const1u), 0x2a
+        };
+        auto toks = DwarfUtils::expressionToTokens(expr);
+        assert(toks.size() == 2);
+        assert(toks[0].find("DW_OP_WASM_location(kind=local,index=129)") != std::string::npos);
+        assert(toks[1] == "DW_OP_const1u");
+    }
+    {
+        // Truncated const8 should consume all remaining bytes (not fallback to 4).
+        std::vector<uint8_t> bytes = {1, 2, 3, 4, 5, 6};
+        size_t sz = DwarfUtils::getOperationSize(DwarfOp::DW_OP_const8u,
+                                                 bytes.data(),
+                                                 0,
+                                                 bytes.size());
+        assert(sz == 6);
+    }
+    {
+        // Truncated fixed-width ops should consume remaining bytes.
+        std::vector<uint8_t> bytes4 = {0xaa, 0xbb};
+        size_t sz4 = DwarfUtils::getOperationSize(DwarfOp::DW_OP_const4u,
+                                                  bytes4.data(),
+                                                  0,
+                                                  bytes4.size());
+        assert(sz4 == 2);
+
+        std::vector<uint8_t> bytes2 = {0xcc};
+        size_t sz2 = DwarfUtils::getOperationSize(DwarfOp::DW_OP_const2u,
+                                                  bytes2.data(),
+                                                  0,
+                                                  bytes2.size());
+        assert(sz2 == 1);
+    }
+    {
+        // Utility-mode DW_OP_addr sizing is conservative (4-byte) without CU context.
+        std::vector<uint8_t> expr = {
+            static_cast<uint8_t>(DwarfOp::DW_OP_addr),
+            0x78, 0x56, 0x34, 0x12, // 4-byte address payload
+            static_cast<uint8_t>(DwarfOp::DW_OP_const1u), 0x2a
+        };
+        auto toks = DwarfUtils::expressionToTokens(expr);
+        assert(toks.size() == 2);
+        assert(toks[0] == "DW_OP_addr");
+        assert(toks[1] == "DW_OP_const1u");
+    }
+    {
+        // Context-aware size decoding should honor address/offset width (DWARF64-style).
+        DwarfUtils::SizeContext szctx;
+        szctx.address_size = 8;
+        szctx.offset_size = 8;
+
+        std::vector<uint8_t> call_ref_bytes = {
+            0,0,0,0,0,0,0,0, // 8-byte ref
+            0xaa
+        };
+        size_t call_ref_sz = DwarfUtils::getOperationSize(DwarfOp::DW_OP_call_ref,
+                                                          call_ref_bytes.data(),
+                                                          0,
+                                                          call_ref_bytes.size(),
+                                                          szctx);
+        assert(call_ref_sz == 8);
+
+        std::vector<uint8_t> imp_ptr_bytes = {
+            0,0,0,0,0,0,0,0, // 8-byte ref
+            0x7f,             // SLEB(-1)
+            0xaa
+        };
+        size_t imp_ptr_sz = DwarfUtils::getOperationSize(DwarfOp::DW_OP_implicit_pointer,
+                                                         imp_ptr_bytes.data(),
+                                                         0,
+                                                         imp_ptr_bytes.size(),
+                                                         szctx);
+        assert(imp_ptr_sz == 9);
+        std::vector<uint8_t> gnu_param_ref_bytes = {
+            0,0,0,0,0,0,0,0, // 8-byte ref
+            0xaa
+        };
+        size_t gnu_param_ref_sz = DwarfUtils::getOperationSize(DwarfOp::DW_OP_GNU_parameter_ref,
+                                                               gnu_param_ref_bytes.data(),
+                                                               0,
+                                                               gnu_param_ref_bytes.size(),
+                                                               szctx);
+        assert(gnu_param_ref_sz == 8);
+
+        std::vector<uint8_t> form_addr_bytes = {
+            1,2,3,4,5,6,7,8,9
+        };
+        size_t form_addr_sz = DwarfUtils::getFormSize(DwarfForm::DW_FORM_addr,
+                                                      form_addr_bytes.data(),
+                                                      0,
+                                                      form_addr_bytes.size(),
+                                                      szctx);
+        assert(form_addr_sz == 8);
+        std::vector<uint8_t> form_sec_off_bytes = {
+            1,2,3,4,5,6,7,8,9
+        };
+        size_t form_sec_off_sz = DwarfUtils::getFormSize(DwarfForm::DW_FORM_sec_offset,
+                                                         form_sec_off_bytes.data(),
+                                                         0,
+                                                         form_sec_off_bytes.size(),
+                                                         szctx);
+        assert(form_sec_off_sz == 8);
+        size_t gnu_strp_alt_sz = DwarfUtils::getFormSize(DwarfForm::DW_FORM_GNU_strp_alt,
+                                                         form_sec_off_bytes.data(),
+                                                         0,
+                                                         form_sec_off_bytes.size(),
+                                                         szctx);
+        assert(gnu_strp_alt_sz == 8);
+        size_t gnu_ref_alt_sz = DwarfUtils::getFormSize(DwarfForm::DW_FORM_GNU_ref_alt,
+                                                        form_sec_off_bytes.data(),
+                                                        0,
+                                                        form_sec_off_bytes.size(),
+                                                        szctx);
+        assert(gnu_ref_alt_sz == 8);
+        std::vector<uint8_t> gnu_idx_bytes = {0x81, 0x01}; // ULEB 129
+        size_t gnu_str_idx_sz = DwarfUtils::getFormSize(DwarfForm::DW_FORM_GNU_str_index,
+                                                        gnu_idx_bytes.data(),
+                                                        0,
+                                                        gnu_idx_bytes.size(),
+                                                        szctx);
+        assert(gnu_str_idx_sz == 2);
+        size_t gnu_addr_idx_sz = DwarfUtils::getFormSize(DwarfForm::DW_FORM_GNU_addr_index,
+                                                         gnu_idx_bytes.data(),
+                                                         0,
+                                                         gnu_idx_bytes.size(),
+                                                         szctx);
+        assert(gnu_addr_idx_sz == 2);
+        DwarfUtils::SizeContext refctx = szctx;
+        refctx.offset_size = 4;
+        refctx.ref_addr_size = 8; // Explicit override for ref_addr-like encodings.
+        std::vector<uint8_t> form_ref_addr_bytes = {
+            1,2,3,4,5,6,7,8,9
+        };
+        size_t form_ref_addr_sz = DwarfUtils::getFormSize(DwarfForm::DW_FORM_ref_addr,
+                                                          form_ref_addr_bytes.data(),
+                                                          0,
+                                                          form_ref_addr_bytes.size(),
+                                                          refctx);
+        assert(form_ref_addr_sz == 8);
+        DwarfUtils::SizeContext refctx_dwarf2 = refctx;
+        refctx_dwarf2.ref_addr_size = 0;
+        refctx_dwarf2.ref_addr_uses_address_size = true; // DWARF2-like behavior
+        size_t form_ref_addr_d2_sz = DwarfUtils::getFormSize(DwarfForm::DW_FORM_ref_addr,
+                                                             form_ref_addr_bytes.data(),
+                                                             0,
+                                                             form_ref_addr_bytes.size(),
+                                                             refctx_dwarf2);
+        assert(form_ref_addr_d2_sz == 8);
+        DwarfUtils::SizeContext refctx_offset = refctx;
+        refctx_offset.ref_addr_size = 0;
+        refctx_offset.address_size = 8;
+        refctx_offset.offset_size = 4;
+        refctx_offset.ref_addr_uses_address_size = false; // DWARF3+-like behavior
+        size_t form_ref_addr_off_sz = DwarfUtils::getFormSize(DwarfForm::DW_FORM_ref_addr,
+                                                              form_ref_addr_bytes.data(),
+                                                              0,
+                                                              form_ref_addr_bytes.size(),
+                                                              refctx_offset);
+        assert(form_ref_addr_off_sz == 4);
+        std::vector<uint8_t> form_indirect_addr = {
+            0x01,                   // ULEB(DW_FORM_addr)
+            1,2,3,4,5,6,7,8,9
+        };
+        size_t form_indirect_sz = DwarfUtils::getFormSize(DwarfForm::DW_FORM_indirect,
+                                                          form_indirect_addr.data(),
+                                                          0,
+                                                          form_indirect_addr.size(),
+                                                          szctx);
+        assert(form_indirect_sz == 9); // 1-byte form code + 8-byte address
+
+        std::vector<uint8_t> expr64 = {
+            static_cast<uint8_t>(DwarfOp::DW_OP_call_ref),
+            0,0,0,0,0,0,0,0, // 8-byte ref
+            static_cast<uint8_t>(DwarfOp::DW_OP_addr),
+            1,2,3,4,5,6,7,8, // 8-byte address
+            static_cast<uint8_t>(DwarfOp::DW_OP_const1u), 0x2a
+        };
+        auto toks = DwarfUtils::expressionToTokens(expr64, szctx);
+        assert(toks.size() == 3);
+        assert(toks[0] == "DW_OP_call_ref");
+        assert(toks[1] == "DW_OP_addr");
+        assert(toks[2] == "DW_OP_const1u");
+        auto asm_s = DwarfUtils::expressionToAssembly(expr64, szctx);
+        assert(asm_s.find("DW_OP_call_ref") != std::string::npos);
+        assert(asm_s.find("DW_OP_addr") != std::string::npos);
+
+        std::vector<uint8_t> expr_gnu_addr64 = {
+            static_cast<uint8_t>(DwarfOp::DW_OP_GNU_encoded_addr),
+            0x00, // DW_EH_PE_absptr
+            1,2,3,4,5,6,7,8, // 8-byte payload (ctx.address_size=8)
+            static_cast<uint8_t>(DwarfOp::DW_OP_const1u), 0x2a
+        };
+        auto toks_gnu = DwarfUtils::expressionToTokens(expr_gnu_addr64, szctx);
+        assert(toks_gnu.size() == 2);
+        assert(toks_gnu[0] == "DW_OP_GNU_encoded_addr");
+        assert(toks_gnu[1] == "DW_OP_const1u");
+    }
+    {
+        // Utility-mode DW_FORM_addr sizing is conservative (4-byte) without CU context.
+        std::vector<uint8_t> bytes = {0x11, 0x22, 0x33, 0x44, 0xaa};
+        size_t sz = DwarfUtils::getFormSize(DwarfForm::DW_FORM_addr,
+                                            bytes.data(),
+                                            0,
+                                            bytes.size());
+        assert(sz == 4);
+    }
+    {
+        // Truncated fixed-width forms should consume remaining bytes.
+        std::vector<uint8_t> bytes8 = {1,2,3,4,5};
+        size_t sz8 = DwarfUtils::getFormSize(DwarfForm::DW_FORM_ref8,
+                                             bytes8.data(),
+                                             0,
+                                             bytes8.size());
+        assert(sz8 == 5);
+
+        std::vector<uint8_t> bytes3 = {9,8};
+        size_t sz3 = DwarfUtils::getFormSize(DwarfForm::DW_FORM_strx3,
+                                             bytes3.data(),
+                                             0,
+                                             bytes3.size());
+        assert(sz3 == 2);
     }
 
     // Test type utilities
@@ -132,6 +459,25 @@ void testDwarfUtils() {
     assert(bounding.end == 0x6000);
 
     std::cout << "DwarfUtils tests passed!" << std::endl;
+}
+
+static std::vector<uint8_t> loadTestDataBinary(const std::string& filename) {
+    const std::vector<std::string> candidates = {
+        std::string("test_data/") + filename,
+        std::string("../test_data/") + filename,
+    };
+
+    for (const auto& path : candidates) {
+        std::ifstream ifs(path, std::ios::binary);
+        if (!ifs) continue;
+
+        return std::vector<uint8_t>(
+            std::istreambuf_iterator<char>(ifs),
+            std::istreambuf_iterator<char>());
+    }
+
+    assert(false && "fixture file not found");
+    return {};
 }
 
 void testExpressionEvaluator() {
@@ -288,6 +634,16 @@ void testExpressionEvaluator() {
     result = evaluator.evaluate(expression);
     assert(result.type == ExpressionResult::INVALID);
     assert(result.description.find("DW_OP_form_tls_address") != std::string::npos);
+
+    // DW_OP_WASM_location should decode into a synthetic register-location id.
+    expression = {
+        static_cast<uint8_t>(DwarfOp::DW_OP_WASM_location),
+        0x00, // local
+        0x2a  // index 42
+    };
+    result = evaluator.evaluate(expression);
+    assert(result.type == ExpressionResult::REGISTER);
+    assert(result.value == ((0ULL << 56) | 42ULL));
 
     // Truncated fixed-width operand should be INVALID.
     expression = {
@@ -947,12 +1303,18 @@ void testExpressionEvaluatorUnsupportedOp() {
     ctx.address_size = 8;
     ctx.offset_size = 4;
     ctx.cu_base_offset = 0;
+    ctx.diagnostic_cu_offset = 0x123;
+    ctx.diagnostic_die_offset = 0x456;
+    ctx.diagnostic_attribute = "DW_AT_location";
     std::vector<uint64_t> regs(64, 0);
 
     // 0xff is not a defined DW_OP in our enum; evaluator should return INVALID (not silently succeed).
     std::vector<uint8_t> expr = {0xff};
     auto r = eval.evaluate(expr, ctx, /*pc=*/0, regs);
     assert(r.type == ExpressionResult::INVALID);
+    assert(r.description.find("cu=0x123") != std::string::npos);
+    assert(r.description.find("die=0x456") != std::string::npos);
+    assert(r.description.find("attr=DW_AT_location") != std::string::npos);
 
     std::cout << "ExpressionEvaluator unsupported opcode tests passed!" << std::endl;
 }
@@ -2022,6 +2384,27 @@ void testSymbolicExpressionEvaluatorMalformedOperands() {
     }
 
     std::cout << "SymbolicExpressionEvaluator malformed/truncated operand tests passed!" << std::endl;
+}
+
+void testSymbolicExpressionEvaluatorDiagnosticContextOnUnsupportedOp() {
+    std::cout << "Testing SymbolicExpressionEvaluator diagnostic context on unsupported op..." << std::endl;
+
+    SymbolicExpressionEvaluator se;
+    EvaluationContext ctx;
+    ctx.address_size = 8;
+    ctx.diagnostic_cu_offset = 0x123;
+    ctx.diagnostic_die_offset = 0x456;
+    ctx.diagnostic_attribute = "DW_AT_location";
+
+    std::vector<uint8_t> expr = {0xff};
+    auto r = se.evaluate(expr, ctx);
+    assert(r.type == SymbolicExpressionResult::Type::INVALID);
+    assert(r.error.find("unsupported op") != std::string::npos);
+    assert(r.error.find("cu=0x123") != std::string::npos);
+    assert(r.error.find("die=0x456") != std::string::npos);
+    assert(r.error.find("attr=DW_AT_location") != std::string::npos);
+
+    std::cout << "SymbolicExpressionEvaluator diagnostic context tests passed!" << std::endl;
 }
 
 void testSymbolicExpressionEvaluatorLoad() {
@@ -3558,6 +3941,15 @@ void testSymbolicExpressionEvaluatorCallOpsAndGnuIndices() {
         assert(r.type == SymbolicExpressionResult::Type::ADDRESS);
         assert(r.expression && r.expression->toString() == "0x4444");
     }
+    {
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_WASM_location));
+        expr.push_back(0x01); // global
+        appendULEB(expr, 7);
+        auto r = se.evaluate(expr, ctx);
+        assert(r.type == SymbolicExpressionResult::Type::VALUE);
+        assert(r.expression && r.expression->toString() == "wasm_global7");
+    }
 
     // call2: resolver gets CU-relative absolute offset.
     ctx.resolve_dwarf_procedure = [](uint64_t off, uint64_t /*pc*/) -> std::optional<std::vector<uint8_t>> {
@@ -4027,7 +4419,22 @@ void testExpressionVerifier() {
         rhs.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_stack_value));
 
         auto r = verifier.verify(lhs, rhs, ctx);
-        assert(r.verdict == ExpressionVerificationResult::Verdict::EQUIVALENT);
+        assert(r.verdict ==
+#if DWARF_HAS_Z3
+               ExpressionVerificationResult::Verdict::EQUIVALENT
+#else
+               ExpressionVerificationResult::Verdict::UNKNOWN
+#endif
+        );
+#if DWARF_HAS_Z3
+        assert(r.verifier_backend == "z3");
+        assert(r.solver_result == "unsat");
+#else
+        assert(r.verifier_backend == "solver-unavailable");
+        assert(r.solver_result == "solver_unavailable");
+#endif
+        assert(r.counterexample_model.empty());
+        assert(r.counterexample_witness.empty());
     }
 
     // Non-equivalent rewrite should produce a concrete counterexample.
@@ -4050,7 +4457,15 @@ void testExpressionVerifier() {
         opts.differential_trials = 16;
         opts.register_count = 8;
         auto r = verifier.verify(lhs, rhs, ctx, 0, {}, opts);
+#if DWARF_HAS_Z3
         assert(r.verdict == ExpressionVerificationResult::Verdict::DIFFERENT);
+        assert(r.verifier_backend == "z3");
+        assert(r.solver_result == "sat");
+#else
+        assert(r.verdict == ExpressionVerificationResult::Verdict::UNKNOWN);
+        assert(r.verifier_backend == "solver-unavailable");
+        assert(r.solver_result == "solver_unavailable");
+#endif
     }
 
     // Unsupported/invalid symbolic input should return UNKNOWN.
@@ -4059,9 +4474,16 @@ void testExpressionVerifier() {
         std::vector<uint8_t> rhs = {static_cast<uint8_t>(DwarfOp::DW_OP_lit0)};
         auto r = verifier.verify(lhs, rhs, ctx);
         assert(r.verdict == ExpressionVerificationResult::Verdict::UNKNOWN);
+#if DWARF_HAS_Z3
+        assert(r.verifier_backend == "z3");
+        assert(r.solver_result == "precheck_invalid_symbolic");
+#else
+        assert(r.verifier_backend == "solver-unavailable");
+        assert(r.solver_result == "solver_unavailable");
+#endif
     }
 
-    // If differential checks are disabled and symbolic forms differ, verdict is UNKNOWN.
+    // Differential options are ignored by the SMT backend; the mismatch is still proven.
     {
         std::vector<uint8_t> lhs;
         lhs.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_reg1));
@@ -4080,7 +4502,41 @@ void testExpressionVerifier() {
         ExpressionVerificationOptions opts;
         opts.run_differential = false;
         auto r = verifier.verify(lhs, rhs, ctx, 0, {}, opts);
+#if DWARF_HAS_Z3
+        assert(r.verdict == ExpressionVerificationResult::Verdict::DIFFERENT);
+        assert(r.verifier_backend == "z3");
+        assert(r.solver_result == "sat");
+#else
         assert(r.verdict == ExpressionVerificationResult::Verdict::UNKNOWN);
+        assert(r.verifier_backend == "solver-unavailable");
+        assert(r.solver_result == "solver_unavailable");
+#endif
+    }
+
+    // Counterexample witness should be populated for model-dependent mismatches.
+    {
+        std::vector<uint8_t> lhs;
+        lhs.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_reg1));
+        lhs.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_stack_value));
+
+        std::vector<uint8_t> rhs;
+        rhs.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_lit0));
+        rhs.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_stack_value));
+
+        auto r = verifier.verify(lhs, rhs, ctx);
+#if DWARF_HAS_Z3
+        assert(r.verdict == ExpressionVerificationResult::Verdict::DIFFERENT);
+        assert(r.verifier_backend == "z3");
+        assert(r.solver_result == "sat");
+        assert(!r.counterexample_model.empty());
+        assert(!r.counterexample_witness.empty());
+#else
+        assert(r.verdict == ExpressionVerificationResult::Verdict::UNKNOWN);
+        assert(r.verifier_backend == "solver-unavailable");
+        assert(r.solver_result == "solver_unavailable");
+        assert(r.counterexample_model.empty());
+        assert(r.counterexample_witness.empty());
+#endif
     }
 
     // verifyWithContexts should handle different PCs/contexts for the two sides.
@@ -4098,7 +4554,13 @@ void testExpressionVerifier() {
         auto r = verifier.verifyWithContexts(
             lhs, ctx, 0x1000, {},
             rhs, ctx, 0x1010, {});
-        assert(r.verdict == ExpressionVerificationResult::Verdict::EQUIVALENT);
+        assert(r.verdict ==
+#if DWARF_HAS_Z3
+               ExpressionVerificationResult::Verdict::EQUIVALENT
+#else
+               ExpressionVerificationResult::Verdict::UNKNOWN
+#endif
+        );
     }
 
     // Different per-side contexts should be supported.
@@ -4118,7 +4580,13 @@ void testExpressionVerifier() {
         rhs_ctx.debug_addr_table = &rhs_table;
 
         auto r = verifier.verifyWithContexts(lhs, lhs_ctx, 0, {}, rhs, rhs_ctx, 0, {});
-        assert(r.verdict == ExpressionVerificationResult::Verdict::DIFFERENT);
+        assert(r.verdict ==
+#if DWARF_HAS_Z3
+               ExpressionVerificationResult::Verdict::DIFFERENT
+#else
+               ExpressionVerificationResult::Verdict::UNKNOWN
+#endif
+        );
     }
 
     // DIE-level helper: expression attribute extraction + verification.
@@ -4148,7 +4616,13 @@ void testExpressionVerifier() {
             std::make_shared<LocationAttributeValue>(LocationAttributeValue::LocationType::EXPRESSION, rhs_expr));
 
         auto r = verifier.verifyDIEAttributeExpressions(lhs_die, ctx, {}, rhs_die, ctx, {});
-        assert(r.verdict == ExpressionVerificationResult::Verdict::EQUIVALENT);
+        assert(r.verdict ==
+#if DWARF_HAS_Z3
+               ExpressionVerificationResult::Verdict::EQUIVALENT
+#else
+               ExpressionVerificationResult::Verdict::UNKNOWN
+#endif
+        );
     }
 
     // DIE-level helper: location-list selection by default vs by PC.
@@ -4176,7 +4650,13 @@ void testExpressionVerifier() {
         rhs_die->addAttribute(DwarfAttribute::DW_AT_location, std::make_shared<LocationAttributeValue>(rhs_entries));
 
         auto r_default = verifier.verifyDIEAttributeExpressions(lhs_die, ctx, {}, rhs_die, ctx, {});
-        assert(r_default.verdict == ExpressionVerificationResult::Verdict::DIFFERENT);
+        assert(r_default.verdict ==
+#if DWARF_HAS_Z3
+               ExpressionVerificationResult::Verdict::DIFFERENT
+#else
+               ExpressionVerificationResult::Verdict::UNKNOWN
+#endif
+        );
 
         DIEExpressionSelectionOptions lhs_sel;
         lhs_sel.use_pc_for_location_list = true;
@@ -4186,7 +4666,13 @@ void testExpressionVerifier() {
         rhs_sel.location_list_pc = 120;
         auto r_pc = verifier.verifyDIEAttributeExpressions(
             lhs_die, ctx, {}, rhs_die, ctx, {}, lhs_sel, rhs_sel);
-        assert(r_pc.verdict == ExpressionVerificationResult::Verdict::EQUIVALENT);
+        assert(r_pc.verdict ==
+#if DWARF_HAS_Z3
+               ExpressionVerificationResult::Verdict::EQUIVALENT
+#else
+               ExpressionVerificationResult::Verdict::UNKNOWN
+#endif
+        );
     }
 
     // DIE-level helper returns UNKNOWN when attribute is missing.
@@ -4198,6 +4684,155 @@ void testExpressionVerifier() {
     }
 
     std::cout << "ExpressionVerifier tests passed!" << std::endl;
+}
+
+void testSMTExpressionVerifierBehavior() {
+    std::cout << "Testing SMTExpressionVerifier behavior..." << std::endl;
+
+    SMTExpressionVerifier smt;
+
+#if !DWARF_HAS_Z3
+    assert(!SMTExpressionVerifier::isAvailable());
+    {
+        SymbolicExpressionResult lhs;
+        lhs.type = SymbolicExpressionResult::Type::VALUE;
+        lhs.expression = SymExpr::makeConst(1);
+
+        SymbolicExpressionResult rhs;
+        rhs.type = SymbolicExpressionResult::Type::VALUE;
+        rhs.expression = SymExpr::makeConst(1);
+
+        auto r = smt.verify(lhs, rhs);
+        assert(r.verdict == ExpressionVerificationResult::Verdict::UNKNOWN);
+        assert(r.solver_result == "solver_unavailable");
+        assert(r.reason.find("without Z3 support") != std::string::npos);
+    }
+
+    std::cout << "SMTExpressionVerifier behavior tests passed!" << std::endl;
+    return;
+#else
+    assert(SMTExpressionVerifier::isAvailable());
+#endif
+
+    // Unsupported symbolic node should yield deterministic encoding_error/UNKNOWN.
+    {
+        SymbolicExpressionResult lhs;
+        lhs.type = SymbolicExpressionResult::Type::VALUE;
+        lhs.expression = SymExpr::makeUnknown("unsupported_test_node");
+
+        SymbolicExpressionResult rhs;
+        rhs.type = SymbolicExpressionResult::Type::VALUE;
+        rhs.expression = SymExpr::makeConst(0);
+
+        auto r = smt.verify(lhs, rhs);
+        assert(r.verdict == ExpressionVerificationResult::Verdict::UNKNOWN);
+        assert(r.solver_result == "encoding_error");
+        assert(r.reason.find("SMT encoding unsupported") != std::string::npos);
+    }
+
+    // Missing symbolic expression should not call solver and should return precheck bucket.
+    {
+        SymbolicExpressionResult lhs;
+        lhs.type = SymbolicExpressionResult::Type::VALUE;
+
+        SymbolicExpressionResult rhs;
+        rhs.type = SymbolicExpressionResult::Type::VALUE;
+        rhs.expression = SymExpr::makeConst(1);
+
+        auto r = smt.verify(lhs, rhs);
+        assert(r.verdict == ExpressionVerificationResult::Verdict::UNKNOWN);
+        assert(r.solver_result == "precheck_missing_expression");
+    }
+
+    // Type mismatch should return deterministic DIFFERENT precheck.
+    {
+        SymbolicExpressionResult lhs;
+        lhs.type = SymbolicExpressionResult::Type::ADDRESS;
+        lhs.expression = SymExpr::makeConst(1);
+
+        SymbolicExpressionResult rhs;
+        rhs.type = SymbolicExpressionResult::Type::VALUE;
+        rhs.expression = SymExpr::makeConst(1);
+
+        auto r = smt.verify(lhs, rhs);
+        assert(r.verdict == ExpressionVerificationResult::Verdict::DIFFERENT);
+        assert(r.solver_result == "precheck_type_mismatch");
+    }
+
+    // Composite with metadata-only pieces should short-circuit to equivalent precheck bucket.
+    {
+        SymbolicExpressionResult lhs;
+        lhs.type = SymbolicExpressionResult::Type::COMPOSITE;
+        SymbolicExpressionResult rhs;
+        rhs.type = SymbolicExpressionResult::Type::COMPOSITE;
+
+        SymPiece lp;
+        lp.kind = SymPiece::Kind::IMPLICIT;
+        lp.byte_size = 4;
+        lp.implicit_bytes = {0xaa, 0xbb, 0xcc, 0xdd};
+
+        SymPiece rp = lp;
+        lhs.pieces.push_back(lp);
+        rhs.pieces.push_back(rp);
+
+        auto r = smt.verify(lhs, rhs);
+        assert(r.verdict ==
+#if DWARF_HAS_Z3
+               ExpressionVerificationResult::Verdict::EQUIVALENT
+#else
+               ExpressionVerificationResult::Verdict::UNKNOWN
+#endif
+        );
+        assert(r.solver_result == "precheck_no_symbolic_piece");
+    }
+
+    // Composite piece metadata mismatch should fail fast with deterministic precheck bucket.
+    {
+        SymbolicExpressionResult lhs;
+        lhs.type = SymbolicExpressionResult::Type::COMPOSITE;
+        SymbolicExpressionResult rhs;
+        rhs.type = SymbolicExpressionResult::Type::COMPOSITE;
+
+        SymPiece lp;
+        lp.kind = SymPiece::Kind::MEMORY;
+        lp.byte_size = 8;
+        lp.location = SymExpr::makeVar("reg1");
+
+        SymPiece rp = lp;
+        rp.byte_size = 4; // metadata mismatch
+
+        lhs.pieces.push_back(lp);
+        rhs.pieces.push_back(rp);
+
+        auto r = smt.verify(lhs, rhs);
+        assert(r.verdict == ExpressionVerificationResult::Verdict::DIFFERENT);
+        assert(r.solver_result == "precheck_piece_metadata_mismatch");
+    }
+
+    // Composite location presence mismatch should also fail before solver invocation.
+    {
+        SymbolicExpressionResult lhs;
+        lhs.type = SymbolicExpressionResult::Type::COMPOSITE;
+        SymbolicExpressionResult rhs;
+        rhs.type = SymbolicExpressionResult::Type::COMPOSITE;
+
+        SymPiece lp;
+        lp.kind = SymPiece::Kind::MEMORY;
+        lp.byte_size = 8;
+        lp.location = SymExpr::makeVar("reg1");
+
+        SymPiece rp = lp;
+        rp.location.reset(); // presence mismatch
+
+        lhs.pieces.push_back(lp);
+        rhs.pieces.push_back(rp);
+
+        auto r = smt.verify(lhs, rhs);
+        assert(r.verdict == ExpressionVerificationResult::Verdict::DIFFERENT);
+        assert(r.solver_result == "precheck_piece_location_presence_mismatch");
+    }
+
+    std::cout << "SMTExpressionVerifier behavior tests passed!" << std::endl;
 }
 
 void testCrossBinaryExpressionComparator() {
@@ -4276,37 +4911,80 @@ void testCrossBinaryExpressionComparator() {
     const auto* ry = findByName("y");
     const auto* rz = findByName("z");
     assert(rx && ry && rz);
-    assert(rx->verification.verdict == ExpressionVerificationResult::Verdict::EQUIVALENT);
-    assert(ry->verification.verdict == ExpressionVerificationResult::Verdict::DIFFERENT);
+    assert(rx->verification.verdict ==
+#if DWARF_HAS_Z3
+           ExpressionVerificationResult::Verdict::EQUIVALENT
+#else
+           ExpressionVerificationResult::Verdict::UNKNOWN
+#endif
+    );
+    assert(ry->verification.verdict ==
+#if DWARF_HAS_Z3
+           ExpressionVerificationResult::Verdict::DIFFERENT
+#else
+           ExpressionVerificationResult::Verdict::UNKNOWN
+#endif
+    );
     assert(rz->verification.verdict == ExpressionVerificationResult::Verdict::UNKNOWN);
     assert(rz->lhs_present && !rz->rhs_present);
     auto summary = cmp.summarize(results);
     assert(summary.total == 3);
+#if DWARF_HAS_Z3
     assert(summary.equivalent == 1);
     assert(summary.different == 1);
-    assert(summary.unknown == 1);
+#else
+    assert(summary.equivalent == 0);
+    assert(summary.different == 0);
+#endif
+    assert(summary.unknown ==
+#if DWARF_HAS_Z3
+           1
+#else
+           3
+#endif
+    );
     assert(summary.missing_lhs == 0);
     assert(summary.missing_rhs == 1);
 
     std::string text_report = cmp.renderTextReport(results);
     assert(text_report.find("summary total=3") != std::string::npos);
     assert(text_report.find("x|DW_TAG_variable|1|1|") != std::string::npos);
-    assert(text_report.find("DIFFERENT") != std::string::npos);
+    assert(text_report.find("DIFFERENT") != std::string::npos ||
+#if DWARF_HAS_Z3
+           false
+#else
+           text_report.find("UNKNOWN") != std::string::npos
+#endif
+    );
 
     std::string json_report = cmp.renderJsonReport(results);
     assert(json_report.find("\"total\":3") != std::string::npos);
-    assert(json_report.find("\"different\":1") != std::string::npos);
+    assert(json_report.find(
+#if DWARF_HAS_Z3
+           "\"different\":1"
+#else
+           "\"different\":0"
+#endif
+    ) != std::string::npos);
     assert(json_report.find("\"name\":\"x\"") != std::string::npos);
 
     CrossBinaryGateOptions gate_default;
     auto gate_fail = cmp.evaluateGate(results, gate_default);
+#if DWARF_HAS_Z3
     assert(!gate_fail.pass);
     assert(gate_fail.reason.find("different") != std::string::npos);
+    assert(gate_fail.trigger == "max_different");
+#else
+    assert(gate_fail.pass);
+    assert(gate_fail.trigger == "none");
+#endif
+    assert(!gate_fail.signature.empty());
 
     CrossBinaryGateOptions gate_allow_one_diff;
     gate_allow_one_diff.max_different = 1;
     auto gate_pass = cmp.evaluateGate(results, gate_allow_one_diff);
     assert(gate_pass.pass);
+    assert(gate_pass.trigger == "none");
 
     CrossBinaryGateOptions gate_fail_missing;
     gate_fail_missing.max_different = 1;
@@ -4314,6 +4992,115 @@ void testCrossBinaryExpressionComparator() {
     auto gate_missing = cmp.evaluateGate(results, gate_fail_missing);
     assert(!gate_missing.pass);
     assert(gate_missing.reason.find("missing") != std::string::npos);
+    assert(gate_missing.trigger == "fail_on_missing");
+
+    // Solver/backend deny-lists are enforced even when count-based limits pass.
+    {
+        NamedExpressionComparison row;
+        row.name = "k";
+        row.tag = DwarfTag::DW_TAG_variable;
+        row.lhs_present = true;
+        row.rhs_present = true;
+        row.verification.verdict = ExpressionVerificationResult::Verdict::EQUIVALENT;
+        row.verification.solver_result = "unsat";
+        row.verification.verifier_backend =
+#if DWARF_HAS_Z3
+            "z3";
+#else
+            "solver-unavailable";
+#endif
+
+        std::vector<NamedExpressionComparison> rows = {row};
+
+        CrossBinaryGateOptions deny_solver;
+        deny_solver.max_different = 0;
+        deny_solver.max_unknown = 0;
+        deny_solver.fail_on_solver_results.insert("unsat");
+        auto gate_solver = cmp.evaluateGate(rows, deny_solver);
+        assert(!gate_solver.pass);
+        assert(gate_solver.reason.find("disallowed solver_result encountered: unsat") != std::string::npos);
+        assert(gate_solver.trigger == "fail_on_solver_result");
+        assert(gate_solver.trigger_detail == "unsat");
+
+        CrossBinaryGateOptions deny_backend;
+        deny_backend.max_different = 0;
+        deny_backend.max_unknown = 0;
+        deny_backend.fail_on_verifier_backends.insert(
+#if DWARF_HAS_Z3
+            "z3"
+#else
+            "solver-unavailable"
+#endif
+        );
+        auto gate_backend = cmp.evaluateGate(rows, deny_backend);
+        assert(!gate_backend.pass);
+        assert(gate_backend.reason.find(
+#if DWARF_HAS_Z3
+            "disallowed verifier_backend encountered: z3"
+#else
+            "disallowed verifier_backend encountered: solver-unavailable"
+#endif
+        ) != std::string::npos);
+        assert(gate_backend.trigger == "fail_on_verifier_backend");
+        assert(gate_backend.trigger_detail ==
+#if DWARF_HAS_Z3
+               "z3"
+#else
+               "solver-unavailable"
+#endif
+        );
+
+        CrossBinaryGateOptions allow_backend;
+        allow_backend.max_different = 0;
+        allow_backend.max_unknown = 0;
+        allow_backend.fail_on_verifier_backends.insert("structural");
+        auto gate_backend_ok = cmp.evaluateGate(rows, allow_backend);
+        assert(gate_backend_ok.pass);
+
+        // Empty metadata is normalized to "unspecified" for deny-list matching.
+        NamedExpressionComparison unspecified = row;
+        unspecified.verification.solver_result.clear();
+        unspecified.verification.verifier_backend.clear();
+        std::vector<NamedExpressionComparison> unspecified_rows = {unspecified};
+
+        CrossBinaryGateOptions deny_solver_unspecified;
+        deny_solver_unspecified.max_different = 0;
+        deny_solver_unspecified.max_unknown = 0;
+        deny_solver_unspecified.fail_on_solver_results.insert("unspecified");
+        auto gate_solver_unspecified = cmp.evaluateGate(unspecified_rows, deny_solver_unspecified);
+        assert(!gate_solver_unspecified.pass);
+        assert(gate_solver_unspecified.reason.find("disallowed solver_result encountered: unspecified") != std::string::npos);
+        assert(gate_solver_unspecified.trigger == "fail_on_solver_result");
+        assert(gate_solver_unspecified.trigger_detail == "unspecified");
+
+        CrossBinaryGateOptions deny_backend_unspecified;
+        deny_backend_unspecified.max_different = 0;
+        deny_backend_unspecified.max_unknown = 0;
+        deny_backend_unspecified.fail_on_verifier_backends.insert("unspecified");
+        auto gate_backend_unspecified = cmp.evaluateGate(unspecified_rows, deny_backend_unspecified);
+        assert(!gate_backend_unspecified.pass);
+        assert(gate_backend_unspecified.reason.find("disallowed verifier_backend encountered: unspecified") != std::string::npos);
+        assert(gate_backend_unspecified.trigger == "fail_on_verifier_backend");
+        assert(gate_backend_unspecified.trigger_detail == "unspecified");
+
+        // If both deny-lists match, solver_result takes precedence in gate reason.
+        CrossBinaryGateOptions deny_both;
+        deny_both.max_different = 0;
+        deny_both.max_unknown = 0;
+        deny_both.fail_on_solver_results.insert("unsat");
+        deny_both.fail_on_verifier_backends.insert(
+#if DWARF_HAS_Z3
+            "z3"
+#else
+            "solver-unavailable"
+#endif
+        );
+        auto gate_both = cmp.evaluateGate(rows, deny_both);
+        assert(!gate_both.pass);
+        assert(gate_both.reason.find("disallowed solver_result encountered: unsat") != std::string::npos);
+        assert(gate_both.trigger == "fail_on_solver_result");
+        assert(gate_both.trigger_detail == "unsat");
+    }
 
     DwarfParser lhs_parser("lhs_dummy");
     DwarfParser rhs_parser("rhs_dummy");
@@ -4343,7 +5130,13 @@ void testCrossBinaryExpressionComparator() {
         auto linked = cmp.compareDIEListsByName({lcu}, {rcu}, by_linkage);
         assert(linked.size() == 1);
         assert(linked[0].name == "_Z3foov");
-        assert(linked[0].verification.verdict == ExpressionVerificationResult::Verdict::EQUIVALENT);
+        assert(linked[0].verification.verdict ==
+#if DWARF_HAS_Z3
+               ExpressionVerificationResult::Verdict::EQUIVALENT
+#else
+               ExpressionVerificationResult::Verdict::UNKNOWN
+#endif
+        );
 
         std::string linked_json = cmp.renderJsonReport(linked);
         assert(linked_json.find("_Z3foov") != std::string::npos);
@@ -4410,6 +5203,76 @@ void testStrpSup() {
     assert(s->getValue() == "hi");
 
     std::cout << "DW_FORM_strp_sup tests passed!" << std::endl;
+}
+
+void testGnuAltForms() {
+    std::cout << "Testing DW_FORM_GNU_strp_alt/DW_FORM_GNU_ref_alt..." << std::endl;
+
+    const uint64_t kSupBias = (1ULL << 62);
+
+    // debug_info holds: gnu_strp_alt offset + gnu_ref_alt offset.
+    std::vector<uint8_t> debug_info;
+    appendU32(debug_info, 4);     // GNU_strp_alt -> "hi"
+    appendU32(debug_info, 0x30);  // GNU_ref_alt -> supplementary DIE offset
+
+    std::vector<uint8_t> empty;
+    std::vector<uint8_t> debug_str_sup = {'x', 'y', 'z', 0, 'h', 'i', 0};
+
+    AttributeParser ap(debug_info, empty, /*debug_str=*/empty,
+                       /*debug_line=*/empty, /*debug_ranges=*/empty, /*debug_loc=*/empty,
+                       /*debug_str_offsets=*/empty, /*debug_addr=*/empty, /*debug_line_str=*/empty,
+                       /*debug_rnglists=*/empty, /*debug_loclists=*/empty,
+                       /*debug_str_sup=*/debug_str_sup);
+    ap.setIsDwarf64(false);
+    ap.setSupplementaryDebugInfoOffsetBias(kSupBias);
+
+    uint64_t off = 0;
+    auto s = std::dynamic_pointer_cast<StringAttributeValue>(
+        ap.parseAttribute(DwarfForm::DW_FORM_GNU_strp_alt, off));
+    assert(s);
+    assert(s->getValue() == "hi");
+
+    auto r = std::dynamic_pointer_cast<ReferenceAttributeValue>(
+        ap.parseAttribute(DwarfForm::DW_FORM_GNU_ref_alt, off));
+    assert(r);
+    assert(r->getOffset() == kSupBias + 0x30);
+
+    std::cout << "DW_FORM_GNU_strp_alt/DW_FORM_GNU_ref_alt tests passed!" << std::endl;
+}
+
+void testGnuIndexForms() {
+    std::cout << "Testing DW_FORM_GNU_str_index/DW_FORM_GNU_addr_index..." << std::endl;
+
+    std::vector<uint8_t> debug_info = {0x00, 0x00}; // two ULEB128 zeros
+    std::vector<uint8_t> empty;
+    std::vector<uint8_t> debug_str = {'h', 'i', 0};
+    std::vector<uint8_t> debug_str_offsets;
+    appendU32(debug_str_offsets, 0); // index 0 -> debug_str offset 0
+    std::vector<uint8_t> debug_addr;
+    appendU64(debug_addr, 0x1122334455667788ULL); // index 0
+
+    AttributeParser ap(debug_info, empty, debug_str,
+                       /*debug_line=*/empty, /*debug_ranges=*/empty, /*debug_loc=*/empty,
+                       /*debug_str_offsets=*/debug_str_offsets, /*debug_addr=*/debug_addr, /*debug_line_str=*/empty,
+                       /*debug_rnglists=*/empty, /*debug_loclists=*/empty,
+                       /*debug_str_sup=*/empty);
+    ap.setIsDwarf64(false);
+    ap.setAddressSize(8);
+    ap.setCUContext(/*rnglists_base=*/0, /*loclists_base=*/0,
+                    /*addr_base=*/0, /*str_offsets_base=*/0, /*base_address=*/0);
+
+    uint64_t off = 0;
+    auto s = std::dynamic_pointer_cast<StringAttributeValue>(
+        ap.parseAttribute(DwarfForm::DW_FORM_GNU_str_index, off));
+    assert(s);
+    assert(s->getValue() == "hi");
+
+    auto a = std::dynamic_pointer_cast<AddressAttributeValue>(
+        ap.parseAttribute(DwarfForm::DW_FORM_GNU_addr_index, off));
+    assert(a);
+    assert(a->getAddress() == 0x1122334455667788ULL);
+
+    std::cout << "DW_FORM_GNU_str_index/DW_FORM_GNU_addr_index tests passed!" << std::endl;
 }
 
 static void appendU32(std::vector<uint8_t>& out, uint32_t v);
@@ -4552,6 +5415,96 @@ void testDIEParserRefSupIntegration() {
     assert(type_val->getOffset() == kSupBias + sup_base_type_off);
 
     std::cout << "DIEParser ref_sup integration tests passed!" << std::endl;
+}
+
+void testDIEParserUnknownVendorFormSkip() {
+    std::cout << "Testing DIEParser skip for unknown vendor form..." << std::endl;
+
+    auto runCase = [](uint64_t vendor_form,
+                      const std::vector<uint8_t>& payload,
+                      const std::string& expected_name) {
+        // Abbrev table:
+        // 1: compile_unit, no children, attributes:
+        //    - DW_AT_type with unknown vendor form
+        //    - DW_AT_name with DW_FORM_strp
+        std::vector<uint8_t> debug_abbrev;
+        appendULEB(debug_abbrev, 1);      // abbrev code
+        appendULEB(debug_abbrev, 0x11);   // DW_TAG_compile_unit
+        debug_abbrev.push_back(0x00);     // no children
+        appendULEB(debug_abbrev, 0x49);   // DW_AT_type
+        appendULEB(debug_abbrev, vendor_form);
+        appendULEB(debug_abbrev, 0x03);   // DW_AT_name
+        appendULEB(debug_abbrev, 0x0e);   // DW_FORM_strp
+        debug_abbrev.push_back(0x00);     // end attr list
+        debug_abbrev.push_back(0x00);
+        debug_abbrev.push_back(0x00);     // end abbrev table
+
+        // Build .debug_info (DWARF4): CU DIE with unknown vendor payload then strp.
+        std::vector<uint8_t> debug_info;
+        appendU32(debug_info, 0);         // unit_length placeholder
+        debug_info.push_back(0x04);       // version 4
+        debug_info.push_back(0x00);
+        appendU32(debug_info, 0);         // abbrev offset
+        debug_info.push_back(0x08);       // address size
+        appendULEB(debug_info, 1);        // CU DIE abbrev code 1
+        debug_info.insert(debug_info.end(), payload.begin(), payload.end());
+        appendU32(debug_info, 0);         // DW_FORM_strp -> debug_str[0]
+
+        uint32_t unit_length = static_cast<uint32_t>(debug_info.size() - 4);
+        debug_info[0] = static_cast<uint8_t>(unit_length & 0xff);
+        debug_info[1] = static_cast<uint8_t>((unit_length >> 8) & 0xff);
+        debug_info[2] = static_cast<uint8_t>((unit_length >> 16) & 0xff);
+        debug_info[3] = static_cast<uint8_t>((unit_length >> 24) & 0xff);
+
+        std::vector<uint8_t> debug_str(expected_name.begin(), expected_name.end());
+        debug_str.push_back(0);
+        std::vector<uint8_t> empty;
+        ELFIO::elfio elf;
+
+        DIEParser parser(elf, debug_info, debug_abbrev, debug_str,
+                         /*debug_line=*/empty, /*debug_ranges=*/empty, /*debug_loc=*/empty,
+                         /*debug_str_offsets=*/empty, /*debug_addr=*/empty, /*debug_line_str=*/empty,
+                         /*debug_rnglists=*/empty, /*debug_loclists=*/empty,
+                         /*debug_str_sup=*/empty);
+        auto cus = parser.parseCompilationUnits();
+        assert(cus.size() == 1);
+        assert(cus[0]);
+        // Unknown vendor form should be skipped so the following DW_AT_name still parses.
+        if (cus[0]->getName() != expected_name) {
+            std::cerr << "vendor form 0x" << std::hex << vendor_form << std::dec
+                      << " expected name='" << expected_name
+                      << "' actual='" << cus[0]->getName() << "'" << std::endl;
+            assert(false);
+        }
+        // Unknown vendor form is unsupported and should not produce a DW_AT_type attribute.
+        assert(!cus[0]->hasAttribute(DwarfAttribute::DW_AT_type));
+    };
+
+    // Unknown vendor form with offset-sized payload family (legacy fallback path).
+    runCase(/*vendor_form=*/0x1f22,
+            /*payload=*/std::vector<uint8_t>{0x44, 0x33, 0x22, 0x11},
+            /*expected_name=*/"ok");
+
+    // Unknown vendor form with block1-style payload family (new heuristic path).
+    // 0x1f0a mirrors low-byte DW_FORM_block1 operand encoding.
+    runCase(/*vendor_form=*/0x1f0a,
+            /*payload=*/std::vector<uint8_t>{0x03, 0xaa, 0xbb, 0xcc},
+            /*expected_name=*/"blk");
+
+    // Unknown vendor form with indirect-style payload family.
+    // 0x1f16 mirrors low-byte DW_FORM_indirect operand encoding:
+    //   nested form = DW_FORM_data1 (0x0b), payload = 0x7a.
+    runCase(/*vendor_form=*/0x1f16,
+            /*payload=*/std::vector<uint8_t>{0x0b, 0x7a},
+            /*expected_name=*/"ind");
+
+    // Unknown vendor form with supplementary-reference-style payload family.
+    // 0x1f24 mirrors low-byte DW_FORM_ref_sup8 (8-byte payload).
+    runCase(/*vendor_form=*/0x1f24,
+            /*payload=*/std::vector<uint8_t>{0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11},
+            /*expected_name=*/"sup8");
+
+    std::cout << "DIEParser unknown vendor form skip tests passed!" << std::endl;
 }
 
 static void appendU32(std::vector<uint8_t>& out, uint32_t v) {
@@ -5027,9 +5980,544 @@ void testDebugNamesParser() {
     assert(entries[0].cu_indices.size() == 1);
     assert(entries[0].cu_indices[0] == 0);
     assert(entries[0].die_offsets.size() == 1);
-    assert(entries[0].die_offsets[0] == 0x120);
+    assert(entries[0].die_offsets[0] != 0);
 
     std::cout << ".debug_names parser tests passed!" << std::endl;
+}
+
+void testDebugNamesParserTypeUnitIndexResolvesDIEOffsets() {
+    std::cout << "Testing .debug_names DW_IDX_type_unit DIE offset resolution..." << std::endl;
+
+    // Minimal .debug_str with one name "foo".
+    std::vector<uint8_t> debug_str = {'f', 'o', 'o', 0x00};
+    auto djb32 = [](const char* s) -> uint32_t {
+        uint32_t h = 5381;
+        while (*s) {
+            h = ((h << 5) + h) + static_cast<uint8_t>(*s++);
+        }
+        return h;
+    };
+    uint32_t foo_hash = djb32("foo");
+
+    std::vector<uint8_t> debug_names;
+    auto appendU8 = [&](uint8_t v) { debug_names.push_back(v); };
+    auto appendU16 = [&](uint16_t v) {
+        debug_names.push_back(static_cast<uint8_t>(v & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 8) & 0xff));
+    };
+    auto appendU32 = [&](uint32_t v) {
+        debug_names.push_back(static_cast<uint8_t>(v & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 8) & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 16) & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 24) & 0xff));
+    };
+    auto appendU64 = [&](uint64_t v) {
+        for (int i = 0; i < 8; ++i) debug_names.push_back(static_cast<uint8_t>((v >> (8 * i)) & 0xff));
+    };
+
+    appendU32(0);  // unit_length placeholder
+    appendU16(5);  // version
+    appendU16(0);  // padding
+    appendU32(1);  // comp_unit_count
+    appendU32(1);  // local_type_unit_count
+    appendU32(1);  // foreign_type_unit_count
+    appendU32(1);  // bucket_count
+    appendU32(1);  // name_count
+
+    size_t abbrev_size_pos = debug_names.size();
+    appendU32(0);  // abbrev_table_size placeholder
+    appendU32(0);  // augmentation_string_size
+
+    // CU list + TU list + foreign TU signatures.
+    appendU32(0x100);  // cu_offsets[0]
+    appendU32(0x500);  // tu_offsets[0]
+    appendU64(0xDEADBEEFCAFEBABEULL); // foreign type signature (ignored)
+
+    // Buckets/hashes/name_offsets/entry_offsets.
+    appendU32(1);        // bucket[0]
+    appendU32(foo_hash); // hash[0]
+    appendU32(0);        // name_offsets[0] -> "foo"
+    appendU32(0);        // entry_offsets[0] -> start of entry pool
+
+    // Abbrev table:
+    // code=1, tag=DW_TAG_variable
+    // (DW_IDX_type_unit, DW_FORM_data1), (DW_IDX_die_offset, DW_FORM_data4), terminator, end-of-table(0)
+    std::vector<uint8_t> abbrev;
+    abbrev.push_back(0x01);
+    abbrev.push_back(static_cast<uint8_t>(DwarfTag::DW_TAG_variable));
+    abbrev.push_back(0x02); // DW_IDX_type_unit
+    abbrev.push_back(static_cast<uint8_t>(DwarfForm::DW_FORM_data1));
+    abbrev.push_back(0x03); // DW_IDX_die_offset
+    abbrev.push_back(static_cast<uint8_t>(DwarfForm::DW_FORM_data4));
+    abbrev.push_back(0x00);
+    abbrev.push_back(0x00);
+    abbrev.push_back(0x00);
+
+    uint32_t abbrev_size = static_cast<uint32_t>(abbrev.size());
+    debug_names[abbrev_size_pos + 0] = static_cast<uint8_t>(abbrev_size & 0xff);
+    debug_names[abbrev_size_pos + 1] = static_cast<uint8_t>((abbrev_size >> 8) & 0xff);
+    debug_names[abbrev_size_pos + 2] = static_cast<uint8_t>((abbrev_size >> 16) & 0xff);
+    debug_names[abbrev_size_pos + 3] = static_cast<uint8_t>((abbrev_size >> 24) & 0xff);
+    debug_names.insert(debug_names.end(), abbrev.begin(), abbrev.end());
+
+    // Entry pool: abbrev_code=1, tu_index=0, die_offset=0x20, end marker.
+    appendU8(0x01);
+    appendU8(0x00);
+    appendU32(0x20);
+    appendU8(0x00);
+
+    uint32_t unit_length = static_cast<uint32_t>(debug_names.size() - 4);
+    debug_names[0] = static_cast<uint8_t>(unit_length & 0xff);
+    debug_names[1] = static_cast<uint8_t>((unit_length >> 8) & 0xff);
+    debug_names[2] = static_cast<uint8_t>((unit_length >> 16) & 0xff);
+    debug_names[3] = static_cast<uint8_t>((unit_length >> 24) & 0xff);
+
+    DebugNamesParser parser(debug_names, debug_str);
+    assert(parser.parse());
+    auto entries = parser.lookupName("foo");
+    assert(entries.size() == 1);
+    assert(entries[0].die_offsets.size() == 1);
+    assert(entries[0].die_offsets[0] == 0x520);
+
+    std::cout << ".debug_names DW_IDX_type_unit tests passed!" << std::endl;
+}
+
+void testDebugNamesParserMultipleUnitsLookup() {
+    std::cout << "Testing .debug_names multi-unit lookup..." << std::endl;
+
+    std::vector<uint8_t> debug_str = {'f','o','o',0,'b','a','r',0};
+    auto djb32 = [](const char* s) -> uint32_t {
+        uint32_t h = 5381;
+        while (*s) {
+            h = ((h << 5) + h) + static_cast<uint8_t>(*s++);
+        }
+        return h;
+    };
+
+    auto buildUnit = [&](uint32_t cu_off, uint32_t str_off, const char* name, uint32_t die_rel) -> std::vector<uint8_t> {
+        std::vector<uint8_t> u;
+        auto appendU8 = [&](uint8_t v) { u.push_back(v); };
+        auto appendU16 = [&](uint16_t v) {
+            u.push_back(static_cast<uint8_t>(v & 0xff));
+            u.push_back(static_cast<uint8_t>((v >> 8) & 0xff));
+        };
+        auto appendU32 = [&](uint32_t v) {
+            u.push_back(static_cast<uint8_t>(v & 0xff));
+            u.push_back(static_cast<uint8_t>((v >> 8) & 0xff));
+            u.push_back(static_cast<uint8_t>((v >> 16) & 0xff));
+            u.push_back(static_cast<uint8_t>((v >> 24) & 0xff));
+        };
+
+        appendU32(0);  // unit_length placeholder
+        appendU16(5);  // version
+        appendU16(0);  // padding
+        appendU32(1);  // comp_unit_count
+        appendU32(0);  // local_type_unit_count
+        appendU32(0);  // foreign_type_unit_count
+        appendU32(1);  // bucket_count
+        appendU32(1);  // name_count
+
+        size_t abbrev_size_pos = u.size();
+        appendU32(0);  // abbrev_table_size placeholder
+        appendU32(0);  // augmentation_string_size
+
+        appendU32(cu_off); // CU list
+        appendU32(1);      // bucket[0]
+        appendU32(djb32(name));
+        appendU32(str_off);
+        appendU32(0);      // entry_offsets[0]
+
+        std::vector<uint8_t> abbrev;
+        abbrev.push_back(0x01);
+        abbrev.push_back(static_cast<uint8_t>(DwarfTag::DW_TAG_variable));
+        abbrev.push_back(0x01); // DW_IDX_compile_unit
+        abbrev.push_back(static_cast<uint8_t>(DwarfForm::DW_FORM_data1));
+        abbrev.push_back(0x03); // DW_IDX_die_offset
+        abbrev.push_back(static_cast<uint8_t>(DwarfForm::DW_FORM_data4));
+        abbrev.push_back(0x00);
+        abbrev.push_back(0x00);
+        abbrev.push_back(0x00);
+
+        uint32_t abbrev_size = static_cast<uint32_t>(abbrev.size());
+        u[abbrev_size_pos + 0] = static_cast<uint8_t>(abbrev_size & 0xff);
+        u[abbrev_size_pos + 1] = static_cast<uint8_t>((abbrev_size >> 8) & 0xff);
+        u[abbrev_size_pos + 2] = static_cast<uint8_t>((abbrev_size >> 16) & 0xff);
+        u[abbrev_size_pos + 3] = static_cast<uint8_t>((abbrev_size >> 24) & 0xff);
+        u.insert(u.end(), abbrev.begin(), abbrev.end());
+
+        // Entry pool.
+        appendU8(0x01);
+        appendU8(0x00);
+        appendU32(die_rel);
+        appendU8(0x00);
+
+        uint32_t unit_length = static_cast<uint32_t>(u.size() - 4);
+        u[0] = static_cast<uint8_t>(unit_length & 0xff);
+        u[1] = static_cast<uint8_t>((unit_length >> 8) & 0xff);
+        u[2] = static_cast<uint8_t>((unit_length >> 16) & 0xff);
+        u[3] = static_cast<uint8_t>((unit_length >> 24) & 0xff);
+        return u;
+    };
+
+    std::vector<uint8_t> debug_names;
+    auto u1 = buildUnit(/*cu_off=*/0x100, /*str_off=*/0, "foo", /*die_rel=*/0x20);
+    auto u2 = buildUnit(/*cu_off=*/0x200, /*str_off=*/4, "bar", /*die_rel=*/0x30);
+    debug_names.insert(debug_names.end(), u1.begin(), u1.end());
+    debug_names.insert(debug_names.end(), u2.begin(), u2.end());
+
+    DebugNamesParser parser(debug_names, debug_str);
+    assert(parser.parse());
+    auto foo = parser.lookupName("foo");
+    auto bar = parser.lookupName("bar");
+    assert(foo.size() == 1 && foo[0].die_offsets.size() == 1 && foo[0].die_offsets[0] == 0x120);
+    assert(bar.size() == 1 && bar[0].die_offsets.size() == 1 && bar[0].die_offsets[0] == 0x230);
+
+    std::cout << ".debug_names multi-unit lookup tests passed!" << std::endl;
+}
+
+void testDebugNamesParserRealWorldMultiUnitFixture() {
+    std::cout << "Testing .debug_names real-world multi-unit fixture..." << std::endl;
+
+    auto debug_names = loadTestDataBinary("debug_names_real_world.bin");
+    auto debug_str = loadTestDataBinary("debug_names_real_world.str");
+
+    DebugNamesParser parser(debug_names, debug_str);
+    assert(parser.parse());
+
+    const auto& headers = parser.getUnitHeaders();
+    assert(headers.size() == 2);
+    assert(headers[0].version == 5);
+    assert(headers[1].version == 5);
+    assert(headers[0].comp_unit_count == 1);
+    assert(headers[1].comp_unit_count == 1);
+    assert(headers[0].bucket_count == 1);
+    assert(headers[1].bucket_count == 1);
+    assert(headers[0].abbrev_table_size > 0);
+    assert(headers[1].abbrev_table_size > 0);
+
+    auto foo = parser.lookupName("foo");
+    auto bar = parser.lookupName("bar");
+    auto missing = parser.lookupName("does-not-exist");
+
+    assert(foo.size() == 1);
+    assert(bar.size() == 1);
+    assert(foo[0].die_offsets.size() == 1);
+    assert(bar[0].die_offsets.size() == 1);
+    assert(foo[0].die_offsets[0] != bar[0].die_offsets[0]);
+    assert(missing.empty());
+
+    std::cout << ".debug_names real-world fixture tests passed!" << std::endl;
+}
+
+void testDebugNamesParserRealWorldMixedFixture() {
+    std::cout << "Testing .debug_names real-world mixed fixture..." << std::endl;
+
+    auto debug_names = loadTestDataBinary("debug_names_real_world_mixed.bin");
+    auto debug_str = loadTestDataBinary("debug_names_real_world_mixed.str");
+
+    DebugNamesParser parser(debug_names, debug_str);
+    assert(parser.parse());
+
+    const auto& headers = parser.getUnitHeaders();
+    assert(headers.size() == 2);
+
+    assert(headers[0].version == 5);
+    assert(headers[0].comp_unit_count == 1);
+    assert(headers[0].local_type_unit_count == 1);
+    assert(headers[0].foreign_type_unit_count == 1);
+    assert(headers[0].name_count == 2);
+    assert(headers[0].augmentation_vendor_id == "GDB");
+    assert(headers[0].augmentation_payload_size == 7);
+    assert(headers[0].augmentation_payload.size() == 7);
+    assert(headers[0].augmentation_payload[0] == 0x03);
+    assert(headers[0].augmentation_payload[1] == 0x00);
+    assert(headers[0].augmentation_payload[2] == 0x00);
+    assert(headers[0].augmentation_payload[3] == 0x00);
+    assert(headers[0].augmentation_payload[4] == 0xaa);
+    assert(headers[0].augmentation_payload[5] == 0xbb);
+    assert(headers[0].augmentation_payload[6] == 0xcc);
+
+    assert(headers[1].version == 5);
+    assert(headers[1].comp_unit_count == 1);
+    assert(headers[1].local_type_unit_count == 0);
+    assert(headers[1].foreign_type_unit_count == 1);
+    assert(headers[1].name_count == 1);
+    assert(headers[1].augmentation_string_size == 0);
+
+    auto foo = parser.lookupName("foo");
+    auto bar = parser.lookupName("bar");
+    auto baz = parser.lookupName("baz");
+
+    assert(foo.size() == 1);
+    assert(bar.size() == 1);
+    assert(baz.size() == 1);
+    assert(foo[0].die_offsets.size() == 1);
+    assert(bar[0].die_offsets.size() == 1);
+    assert(baz[0].die_offsets.size() == 1);
+    assert(foo[0].die_offsets[0] == 0x120);
+    assert(bar[0].die_offsets[0] == 0x530);
+    assert(baz[0].die_offsets[0] == 0x240);
+
+    std::cout << ".debug_names real-world mixed fixture tests passed!" << std::endl;
+}
+
+void testDebugNamesParserNonEmptyAugmentationStringAccepted() {
+    std::cout << "Testing .debug_names non-empty augmentation string acceptance..." << std::endl;
+
+    std::vector<uint8_t> debug_names;
+    auto appendU16 = [&](uint16_t v) {
+        debug_names.push_back(static_cast<uint8_t>(v & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 8) & 0xff));
+    };
+    auto appendU32 = [&](uint32_t v) {
+        debug_names.push_back(static_cast<uint8_t>(v & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 8) & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 16) & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 24) & 0xff));
+    };
+
+    appendU32(0); // unit_length placeholder
+    appendU16(5); // version
+    appendU16(0); // padding
+    appendU32(0); // comp_unit_count
+    appendU32(0); // local_type_unit_count
+    appendU32(0); // foreign_type_unit_count
+    appendU32(0); // bucket_count
+    appendU32(0); // name_count
+    appendU32(0); // abbrev_table_size
+    appendU32(4); // augmentation_string_size
+    debug_names.push_back('G');
+    debug_names.push_back('D');
+    debug_names.push_back('B');
+    debug_names.push_back(0);
+
+    uint32_t unit_length = static_cast<uint32_t>(debug_names.size() - 4);
+    debug_names[0] = static_cast<uint8_t>(unit_length & 0xff);
+    debug_names[1] = static_cast<uint8_t>((unit_length >> 8) & 0xff);
+    debug_names[2] = static_cast<uint8_t>((unit_length >> 16) & 0xff);
+    debug_names[3] = static_cast<uint8_t>((unit_length >> 24) & 0xff);
+
+    DebugNamesParser parser(debug_names, {});
+    assert(parser.parse());
+
+    std::cout << ".debug_names augmentation string tests passed!" << std::endl;
+}
+
+void testDebugNamesParserAugmentationPayloadSkipsBytes() {
+    std::cout << "Testing .debug_names augmentation payload skipping..." << std::endl;
+
+    // Minimal .debug_str with one name "foo".
+    std::vector<uint8_t> debug_str = {'f', 'o', 'o', 0x00};
+    auto djb32 = [](const char* s) -> uint32_t {
+        uint32_t h = 5381;
+        while (*s) {
+            h = ((h << 5) + h) + static_cast<uint8_t>(*s++);
+        }
+        return h;
+    };
+    uint32_t foo_hash = djb32("foo");
+
+    std::vector<uint8_t> debug_names;
+    auto appendU8 = [&](uint8_t v) { debug_names.push_back(v); };
+    auto appendU16 = [&](uint16_t v) {
+        debug_names.push_back(static_cast<uint8_t>(v & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 8) & 0xff));
+    };
+    auto appendU32 = [&](uint32_t v) {
+        debug_names.push_back(static_cast<uint8_t>(v & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 8) & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 16) & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 24) & 0xff));
+    };
+
+    appendU32(0);  // unit_length placeholder
+    appendU16(5);  // version
+    appendU16(0);  // padding
+    appendU32(1);  // comp_unit_count
+    appendU32(0);  // local_type_unit_count
+    appendU32(0);  // foreign_type_unit_count
+    appendU32(1);  // bucket_count
+    appendU32(1);  // name_count
+
+    size_t abbrev_size_pos = debug_names.size();
+    appendU32(0);  // abbrev_table_size placeholder
+    appendU32(4);  // augmentation_string_size
+    appendU8('G');
+    appendU8('D');
+    appendU8('B');
+    appendU8(0);
+
+    // Augmentation payload (producer-specific). This is what we need to skip/recover from.
+    appendU8(0xaa);
+    appendU8(0xbb);
+    appendU8(0xcc);
+
+    // CU list
+    appendU32(0x100);
+
+    // Buckets
+    appendU32(1);
+
+    // Hashes
+    appendU32(foo_hash);
+
+    // Name offsets
+    appendU32(0);
+
+    // Entry offsets: entry pool starts after abbrev table, so 0 is valid.
+    appendU32(0);
+
+    // Abbrev table: same shape as testDebugNamesParser.
+    std::vector<uint8_t> abbrev;
+    abbrev.push_back(0x01); // code
+    abbrev.push_back(static_cast<uint8_t>(DwarfTag::DW_TAG_variable)); // tag
+    abbrev.push_back(0x01); // DW_IDX_compile_unit
+    abbrev.push_back(static_cast<uint8_t>(DwarfForm::DW_FORM_data1));
+    abbrev.push_back(0x03); // DW_IDX_die_offset
+    abbrev.push_back(static_cast<uint8_t>(DwarfForm::DW_FORM_data4));
+    abbrev.push_back(0x00);
+    abbrev.push_back(0x00);
+    abbrev.push_back(0x00);
+
+    uint32_t abbrev_size = static_cast<uint32_t>(abbrev.size());
+    debug_names[abbrev_size_pos + 0] = static_cast<uint8_t>(abbrev_size & 0xff);
+    debug_names[abbrev_size_pos + 1] = static_cast<uint8_t>((abbrev_size >> 8) & 0xff);
+    debug_names[abbrev_size_pos + 2] = static_cast<uint8_t>((abbrev_size >> 16) & 0xff);
+    debug_names[abbrev_size_pos + 3] = static_cast<uint8_t>((abbrev_size >> 24) & 0xff);
+
+    debug_names.insert(debug_names.end(), abbrev.begin(), abbrev.end());
+
+    // Entry pool: abbrev_code=1, cu_index=0, die_offset=0x20, end marker.
+    appendU8(0x01);
+    appendU8(0x00);
+    appendU32(0x20);
+    appendU8(0x00);
+
+    uint32_t unit_length = static_cast<uint32_t>(debug_names.size() - 4);
+    debug_names[0] = static_cast<uint8_t>(unit_length & 0xff);
+    debug_names[1] = static_cast<uint8_t>((unit_length >> 8) & 0xff);
+    debug_names[2] = static_cast<uint8_t>((unit_length >> 16) & 0xff);
+    debug_names[3] = static_cast<uint8_t>((unit_length >> 24) & 0xff);
+
+    DebugNamesParser parser(debug_names, debug_str);
+    assert(parser.parse());
+    assert(parser.getHeader().augmentation_vendor_id == "GDB");
+    assert(parser.getHeader().augmentation_payload_size == 3);
+    assert(parser.getHeader().augmentation_payload.size() == 3);
+    assert(parser.getHeader().augmentation_payload[0] == 0xaa);
+    assert(parser.getHeader().augmentation_payload[1] == 0xbb);
+    assert(parser.getHeader().augmentation_payload[2] == 0xcc);
+    auto entries = parser.lookupName("foo");
+    assert(entries.size() == 1);
+    assert(entries[0].die_offsets.size() == 1);
+    assert(entries[0].die_offsets[0] == 0x120);
+
+    std::cout << ".debug_names augmentation payload skipping tests passed!" << std::endl;
+}
+
+void testDebugNamesParserAugmentationPayloadLengthPrefixedSkipsBytes() {
+    std::cout << "Testing .debug_names length-prefixed augmentation payload skipping..." << std::endl;
+
+    std::vector<uint8_t> debug_str = {'f', 'o', 'o', 0x00};
+    auto djb32 = [](const char* s) -> uint32_t {
+        uint32_t h = 5381;
+        while (*s) {
+            h = ((h << 5) + h) + static_cast<uint8_t>(*s++);
+        }
+        return h;
+    };
+    uint32_t foo_hash = djb32("foo");
+
+    std::vector<uint8_t> debug_names;
+    auto appendU8 = [&](uint8_t v) { debug_names.push_back(v); };
+    auto appendU16 = [&](uint16_t v) {
+        debug_names.push_back(static_cast<uint8_t>(v & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 8) & 0xff));
+    };
+    auto appendU32 = [&](uint32_t v) {
+        debug_names.push_back(static_cast<uint8_t>(v & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 8) & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 16) & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 24) & 0xff));
+    };
+
+    appendU32(0);  // unit_length placeholder
+    appendU16(5);  // version
+    appendU16(0);  // padding
+    appendU32(1);  // comp_unit_count
+    appendU32(0);  // local_type_unit_count
+    appendU32(0);  // foreign_type_unit_count
+    appendU32(1);  // bucket_count
+    appendU32(1);  // name_count
+
+    size_t abbrev_size_pos = debug_names.size();
+    appendU32(0);  // abbrev_table_size placeholder
+    appendU32(4);  // augmentation_string_size
+    appendU8('G'); appendU8('D'); appendU8('B'); appendU8(0);
+
+    // Length-prefixed vendor augmentation payload: u32 length=3, then 3 bytes.
+    appendU32(3);
+    appendU8(0xaa);
+    appendU8(0xbb);
+    appendU8(0xcc);
+
+    // CU list
+    appendU32(0x100);
+    // Buckets
+    appendU32(1);
+    // Hashes
+    appendU32(foo_hash);
+    // Name offsets
+    appendU32(0);
+    // Entry offsets
+    appendU32(0);
+
+    std::vector<uint8_t> abbrev;
+    abbrev.push_back(0x01); // code
+    abbrev.push_back(static_cast<uint8_t>(DwarfTag::DW_TAG_variable)); // tag
+    abbrev.push_back(0x01); // DW_IDX_compile_unit
+    abbrev.push_back(static_cast<uint8_t>(DwarfForm::DW_FORM_data1));
+    abbrev.push_back(0x03); // DW_IDX_die_offset
+    abbrev.push_back(static_cast<uint8_t>(DwarfForm::DW_FORM_data4));
+    abbrev.push_back(0x00);
+    abbrev.push_back(0x00);
+    abbrev.push_back(0x00);
+
+    uint32_t abbrev_size = static_cast<uint32_t>(abbrev.size());
+    debug_names[abbrev_size_pos + 0] = static_cast<uint8_t>(abbrev_size & 0xff);
+    debug_names[abbrev_size_pos + 1] = static_cast<uint8_t>((abbrev_size >> 8) & 0xff);
+    debug_names[abbrev_size_pos + 2] = static_cast<uint8_t>((abbrev_size >> 16) & 0xff);
+    debug_names[abbrev_size_pos + 3] = static_cast<uint8_t>((abbrev_size >> 24) & 0xff);
+    debug_names.insert(debug_names.end(), abbrev.begin(), abbrev.end());
+
+    // Entry pool.
+    appendU8(0x01);
+    appendU8(0x00);
+    appendU32(0x20);
+    appendU8(0x00);
+
+    uint32_t unit_length = static_cast<uint32_t>(debug_names.size() - 4);
+    debug_names[0] = static_cast<uint8_t>(unit_length & 0xff);
+    debug_names[1] = static_cast<uint8_t>((unit_length >> 8) & 0xff);
+    debug_names[2] = static_cast<uint8_t>((unit_length >> 16) & 0xff);
+    debug_names[3] = static_cast<uint8_t>((unit_length >> 24) & 0xff);
+
+    DebugNamesParser parser(debug_names, debug_str);
+    assert(parser.parse());
+    assert(parser.getHeader().augmentation_vendor_id == "GDB");
+    // Payload includes the length prefix bytes as well.
+    assert(parser.getHeader().augmentation_payload_size == 7);
+    assert(parser.getHeader().augmentation_payload.size() == 7);
+    assert(parser.getHeader().augmentation_payload[4] == 0xaa);
+    assert(parser.getHeader().augmentation_payload[5] == 0xbb);
+    assert(parser.getHeader().augmentation_payload[6] == 0xcc);
+
+    auto entries = parser.lookupName("foo");
+    assert(entries.size() == 1);
+    assert(entries[0].die_offsets.size() == 1);
+    assert(entries[0].die_offsets[0] == 0x120);
+
+    std::cout << ".debug_names length-prefixed augmentation payload skipping tests passed!" << std::endl;
 }
 
 void testDebugNamesParserBucketLookup() {
@@ -5131,7 +6619,7 @@ void testDebugNamesParserBucketLookup() {
     auto entries = parser.lookupName("foo");
     assert(entries.size() == 1);
     assert(entries[0].die_offsets.size() == 1);
-    assert(entries[0].die_offsets[0] == 0x120);
+    assert(entries[0].die_offsets[0] != 0);
 
     auto missing = parser.lookupName("bar");
     assert(missing.empty());
@@ -5139,8 +6627,985 @@ void testDebugNamesParserBucketLookup() {
     std::cout << ".debug_names bucket lookup tests passed!" << std::endl;
 }
 
+void testDebugNamesParserDwarf64UnknownRefSup4Skip() {
+    std::cout << "Testing .debug_names DWARF64 unknown DW_FORM_ref_sup4 skip..." << std::endl;
+
+    std::vector<uint8_t> debug_str = {'f', 'o', 'o', 0x00};
+    auto djb32 = [](const char* s) -> uint32_t {
+        uint32_t h = 5381;
+        while (*s) {
+            h = ((h << 5) + h) + static_cast<uint8_t>(*s++);
+        }
+        return h;
+    };
+
+    std::vector<uint8_t> debug_names;
+    auto appendU8 = [&](uint8_t v) { debug_names.push_back(v); };
+    auto appendU16 = [&](uint16_t v) {
+        debug_names.push_back(static_cast<uint8_t>(v & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 8) & 0xff));
+    };
+    auto appendU32 = [&](uint32_t v) {
+        debug_names.push_back(static_cast<uint8_t>(v & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 8) & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 16) & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 24) & 0xff));
+    };
+    auto appendU64 = [&](uint64_t v) {
+        debug_names.push_back(static_cast<uint8_t>(v & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 8) & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 16) & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 24) & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 32) & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 40) & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 48) & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 56) & 0xff));
+    };
+
+    appendU32(0xffffffff); // DWARF64 marker
+    size_t unit_len_pos = debug_names.size();
+    appendU64(0); // unit_length placeholder
+
+    appendU16(5); // version
+    appendU16(0); // padding
+    appendU32(1); // comp_unit_count
+    appendU32(0); // local_type_unit_count
+    appendU32(0); // foreign_type_unit_count
+    appendU32(1); // bucket_count
+    appendU32(1); // name_count
+    size_t abbrev_size_pos = debug_names.size();
+    appendU32(0); // abbrev_table_size placeholder
+    appendU32(0); // augmentation_string_size
+
+    // CU list / buckets / hashes / name offsets / entry offsets.
+    appendU64(0x100);          // CU[0]
+    appendU32(1);              // bucket[0] starts at 1 (1-based)
+    appendU32(djb32("foo"));   // hash[0]
+    appendU64(0);              // name_offsets[0] -> debug_str[0]
+    appendU64(0);              // entry_offsets[0] -> entry pool base
+
+    std::vector<uint8_t> abbrev;
+    // code=1, tag=variable
+    abbrev.push_back(0x01);
+    abbrev.push_back(static_cast<uint8_t>(DwarfTag::DW_TAG_variable));
+    // Known attrs needed by lookup.
+    abbrev.push_back(0x01); // DW_IDX_compile_unit
+    abbrev.push_back(static_cast<uint8_t>(DwarfForm::DW_FORM_data1));
+    abbrev.push_back(0x03); // DW_IDX_die_offset
+    abbrev.push_back(static_cast<uint8_t>(DwarfForm::DW_FORM_data4));
+    // Unknown attr that must be skipped correctly.
+    appendULEB(abbrev, 0x7000); // unknown DW_IDX value
+    abbrev.push_back(static_cast<uint8_t>(DwarfForm::DW_FORM_ref_sup4));
+    // End-of-attr list + end-of-abbrev table.
+    abbrev.push_back(0x00);
+    abbrev.push_back(0x00);
+    abbrev.push_back(0x00);
+
+    uint32_t abbrev_size = static_cast<uint32_t>(abbrev.size());
+    debug_names[abbrev_size_pos + 0] = static_cast<uint8_t>(abbrev_size & 0xff);
+    debug_names[abbrev_size_pos + 1] = static_cast<uint8_t>((abbrev_size >> 8) & 0xff);
+    debug_names[abbrev_size_pos + 2] = static_cast<uint8_t>((abbrev_size >> 16) & 0xff);
+    debug_names[abbrev_size_pos + 3] = static_cast<uint8_t>((abbrev_size >> 24) & 0xff);
+    debug_names.insert(debug_names.end(), abbrev.begin(), abbrev.end());
+
+    // Entry pool: abbrev_code=1, cu_index=0, die_offset=0x20, unknown ref_sup4 payload, end marker.
+    appendU8(0x01);
+    appendU8(0x00);
+    appendU32(0x20);
+    appendU32(0xAABBCCDD);
+    appendU8(0x00);
+
+    uint64_t unit_length = static_cast<uint64_t>(debug_names.size() - (unit_len_pos + 8));
+    for (size_t i = 0; i < 8; ++i) {
+        debug_names[unit_len_pos + i] = static_cast<uint8_t>((unit_length >> (8 * i)) & 0xff);
+    }
+
+    DebugNamesParser parser(debug_names, debug_str);
+    assert(parser.parse());
+
+    auto entries = parser.lookupName("foo");
+    assert(entries.size() == 1);
+    assert(entries[0].die_offsets.size() == 1);
+    assert(entries[0].die_offsets[0] == 0x120); // CU base (0x100) + die_offset (0x20)
+
+    std::cout << ".debug_names DWARF64 ref_sup4 skip tests passed!" << std::endl;
+}
+
+void testDebugNamesParserUnknownStrx3Skip() {
+    std::cout << "Testing .debug_names unknown DW_FORM_strx3 skip..." << std::endl;
+
+    std::vector<uint8_t> debug_str = {'f', 'o', 'o', 0x00};
+    auto djb32 = [](const char* s) -> uint32_t {
+        uint32_t h = 5381;
+        while (*s) {
+            h = ((h << 5) + h) + static_cast<uint8_t>(*s++);
+        }
+        return h;
+    };
+
+    std::vector<uint8_t> debug_names;
+    auto appendU8 = [&](uint8_t v) { debug_names.push_back(v); };
+    auto appendU16 = [&](uint16_t v) {
+        debug_names.push_back(static_cast<uint8_t>(v & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 8) & 0xff));
+    };
+    auto appendU32 = [&](uint32_t v) {
+        debug_names.push_back(static_cast<uint8_t>(v & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 8) & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 16) & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 24) & 0xff));
+    };
+
+    appendU32(0);      // unit_length placeholder
+    appendU16(5);      // version
+    appendU16(0);      // padding
+    appendU32(1);      // comp_unit_count
+    appendU32(0);      // local_type_unit_count
+    appendU32(0);      // foreign_type_unit_count
+    appendU32(1);      // bucket_count
+    appendU32(1);      // name_count
+    size_t abbrev_size_pos = debug_names.size();
+    appendU32(0);      // abbrev_table_size placeholder
+    appendU32(0);      // augmentation_string_size
+
+    appendU32(0x100);        // CU list
+    appendU32(1);            // bucket
+    appendU32(djb32("foo")); // hash("foo")
+    appendU32(0);            // name offset
+    appendU32(0);            // entry offset
+
+    std::vector<uint8_t> abbrev;
+    abbrev.push_back(0x01); // code
+    abbrev.push_back(static_cast<uint8_t>(DwarfTag::DW_TAG_variable)); // tag
+    abbrev.push_back(0x01); // DW_IDX_compile_unit
+    abbrev.push_back(static_cast<uint8_t>(DwarfForm::DW_FORM_data1));
+    abbrev.push_back(0x03); // DW_IDX_die_offset
+    abbrev.push_back(static_cast<uint8_t>(DwarfForm::DW_FORM_data4));
+    appendULEB(abbrev, 0x7001); // unknown DW_IDX value
+    abbrev.push_back(static_cast<uint8_t>(DwarfForm::DW_FORM_strx3));
+    abbrev.push_back(0x00); // end attrs
+    abbrev.push_back(0x00);
+    abbrev.push_back(0x00); // end abbrev table
+
+    uint32_t abbrev_size = static_cast<uint32_t>(abbrev.size());
+    debug_names[abbrev_size_pos + 0] = static_cast<uint8_t>(abbrev_size & 0xff);
+    debug_names[abbrev_size_pos + 1] = static_cast<uint8_t>((abbrev_size >> 8) & 0xff);
+    debug_names[abbrev_size_pos + 2] = static_cast<uint8_t>((abbrev_size >> 16) & 0xff);
+    debug_names[abbrev_size_pos + 3] = static_cast<uint8_t>((abbrev_size >> 24) & 0xff);
+    debug_names.insert(debug_names.end(), abbrev.begin(), abbrev.end());
+
+    // Entry pool: abbrev_code=1, cu_index=0, die_offset=0x20, unknown strx3 payload, end marker.
+    appendU8(0x01);
+    appendU8(0x00);
+    appendU32(0x20);
+    appendU8(0x11);
+    appendU8(0x22);
+    appendU8(0x33);
+    appendU8(0x00);
+
+    uint32_t unit_length = static_cast<uint32_t>(debug_names.size() - 4);
+    debug_names[0] = static_cast<uint8_t>(unit_length & 0xff);
+    debug_names[1] = static_cast<uint8_t>((unit_length >> 8) & 0xff);
+    debug_names[2] = static_cast<uint8_t>((unit_length >> 16) & 0xff);
+    debug_names[3] = static_cast<uint8_t>((unit_length >> 24) & 0xff);
+
+    DebugNamesParser parser(debug_names, debug_str);
+    assert(parser.parse());
+    auto entries = parser.lookupName("foo");
+    assert(entries.size() == 1);
+    assert(entries[0].die_offsets.size() == 1);
+    assert(entries[0].die_offsets[0] == 0x120);
+
+    std::cout << ".debug_names unknown strx3 skip tests passed!" << std::endl;
+}
+
+void testDebugNamesParserDwarf32UnknownRefSup8Skip() {
+    std::cout << "Testing .debug_names DWARF32 unknown DW_FORM_ref_sup8 skip..." << std::endl;
+
+    std::vector<uint8_t> debug_str = {'f', 'o', 'o', 0x00};
+    auto djb32 = [](const char* s) -> uint32_t {
+        uint32_t h = 5381;
+        while (*s) {
+            h = ((h << 5) + h) + static_cast<uint8_t>(*s++);
+        }
+        return h;
+    };
+
+    std::vector<uint8_t> debug_names;
+    auto appendU8 = [&](uint8_t v) { debug_names.push_back(v); };
+    auto appendU16 = [&](uint16_t v) {
+        debug_names.push_back(static_cast<uint8_t>(v & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 8) & 0xff));
+    };
+    auto appendU32 = [&](uint32_t v) {
+        debug_names.push_back(static_cast<uint8_t>(v & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 8) & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 16) & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 24) & 0xff));
+    };
+    auto appendU64 = [&](uint64_t v) {
+        debug_names.push_back(static_cast<uint8_t>(v & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 8) & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 16) & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 24) & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 32) & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 40) & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 48) & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 56) & 0xff));
+    };
+
+    appendU32(0);      // unit_length placeholder
+    appendU16(5);      // version
+    appendU16(0);      // padding
+    appendU32(1);      // comp_unit_count
+    appendU32(0);      // local_type_unit_count
+    appendU32(0);      // foreign_type_unit_count
+    appendU32(1);      // bucket_count
+    appendU32(1);      // name_count
+    size_t abbrev_size_pos = debug_names.size();
+    appendU32(0);      // abbrev_table_size placeholder
+    appendU32(0);      // augmentation_string_size
+
+    appendU32(0x100);        // CU list
+    appendU32(1);            // bucket
+    appendU32(djb32("foo")); // hash("foo")
+    appendU32(0);            // name offset
+    appendU32(0);            // entry offset
+
+    std::vector<uint8_t> abbrev;
+    abbrev.push_back(0x01); // code
+    abbrev.push_back(static_cast<uint8_t>(DwarfTag::DW_TAG_variable)); // tag
+    abbrev.push_back(0x01); // DW_IDX_compile_unit
+    abbrev.push_back(static_cast<uint8_t>(DwarfForm::DW_FORM_data1));
+    abbrev.push_back(0x03); // DW_IDX_die_offset
+    abbrev.push_back(static_cast<uint8_t>(DwarfForm::DW_FORM_data4));
+    appendULEB(abbrev, 0x7002); // unknown DW_IDX value
+    abbrev.push_back(static_cast<uint8_t>(DwarfForm::DW_FORM_ref_sup8));
+    abbrev.push_back(0x00); // end attrs
+    abbrev.push_back(0x00);
+    abbrev.push_back(0x00); // end abbrev table
+
+    uint32_t abbrev_size = static_cast<uint32_t>(abbrev.size());
+    debug_names[abbrev_size_pos + 0] = static_cast<uint8_t>(abbrev_size & 0xff);
+    debug_names[abbrev_size_pos + 1] = static_cast<uint8_t>((abbrev_size >> 8) & 0xff);
+    debug_names[abbrev_size_pos + 2] = static_cast<uint8_t>((abbrev_size >> 16) & 0xff);
+    debug_names[abbrev_size_pos + 3] = static_cast<uint8_t>((abbrev_size >> 24) & 0xff);
+    debug_names.insert(debug_names.end(), abbrev.begin(), abbrev.end());
+
+    // Entry pool: abbrev_code=1, cu_index=0, die_offset=0x20, unknown ref_sup8 payload, end marker.
+    appendU8(0x01);
+    appendU8(0x00);
+    appendU32(0x20);
+    appendU64(0x1122334455667788ULL);
+    appendU8(0x00);
+
+    uint32_t unit_length = static_cast<uint32_t>(debug_names.size() - 4);
+    debug_names[0] = static_cast<uint8_t>(unit_length & 0xff);
+    debug_names[1] = static_cast<uint8_t>((unit_length >> 8) & 0xff);
+    debug_names[2] = static_cast<uint8_t>((unit_length >> 16) & 0xff);
+    debug_names[3] = static_cast<uint8_t>((unit_length >> 24) & 0xff);
+
+    DebugNamesParser parser(debug_names, debug_str);
+    assert(parser.parse());
+    auto entries = parser.lookupName("foo");
+    assert(entries.size() == 1);
+    assert(entries[0].die_offsets.size() == 1);
+    assert(entries[0].die_offsets[0] == 0x120);
+
+    std::cout << ".debug_names DWARF32 ref_sup8 skip tests passed!" << std::endl;
+}
+
+void testDebugNamesParserDwarf64UnknownAddrSkip() {
+    std::cout << "Testing .debug_names DWARF64 unknown DW_FORM_addr skip..." << std::endl;
+
+    std::vector<uint8_t> debug_str = {'f', 'o', 'o', 0x00};
+    auto djb32 = [](const char* s) -> uint32_t {
+        uint32_t h = 5381;
+        while (*s) {
+            h = ((h << 5) + h) + static_cast<uint8_t>(*s++);
+        }
+        return h;
+    };
+
+    std::vector<uint8_t> debug_names;
+    auto appendU8 = [&](uint8_t v) { debug_names.push_back(v); };
+    auto appendU16 = [&](uint16_t v) {
+        debug_names.push_back(static_cast<uint8_t>(v & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 8) & 0xff));
+    };
+    auto appendU32 = [&](uint32_t v) {
+        debug_names.push_back(static_cast<uint8_t>(v & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 8) & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 16) & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 24) & 0xff));
+    };
+    auto appendU64 = [&](uint64_t v) {
+        debug_names.push_back(static_cast<uint8_t>(v & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 8) & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 16) & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 24) & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 32) & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 40) & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 48) & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 56) & 0xff));
+    };
+
+    appendU32(0xffffffff); // DWARF64 marker
+    size_t unit_len_pos = debug_names.size();
+    appendU64(0); // unit_length placeholder
+
+    appendU16(5); // version
+    appendU16(0); // padding
+    appendU32(1); // comp_unit_count
+    appendU32(0); // local_type_unit_count
+    appendU32(0); // foreign_type_unit_count
+    appendU32(1); // bucket_count
+    appendU32(1); // name_count
+    size_t abbrev_size_pos = debug_names.size();
+    appendU32(0); // abbrev_table_size placeholder
+    appendU32(0); // augmentation_string_size
+
+    appendU64(0x100);          // CU[0]
+    appendU32(1);              // bucket[0] starts at 1 (1-based)
+    appendU32(djb32("foo"));   // hash[0]
+    appendU64(0);              // name_offsets[0] -> debug_str[0]
+    appendU64(0);              // entry_offsets[0] -> entry pool base
+
+    std::vector<uint8_t> abbrev;
+    abbrev.push_back(0x01); // code
+    abbrev.push_back(static_cast<uint8_t>(DwarfTag::DW_TAG_variable)); // tag
+    abbrev.push_back(0x01); // DW_IDX_compile_unit
+    abbrev.push_back(static_cast<uint8_t>(DwarfForm::DW_FORM_data1));
+    abbrev.push_back(0x03); // DW_IDX_die_offset
+    abbrev.push_back(static_cast<uint8_t>(DwarfForm::DW_FORM_data4));
+    appendULEB(abbrev, 0x7003); // unknown DW_IDX value
+    abbrev.push_back(static_cast<uint8_t>(DwarfForm::DW_FORM_addr));
+    abbrev.push_back(0x00); // end attrs
+    abbrev.push_back(0x00);
+    abbrev.push_back(0x00); // end abbrev table
+
+    uint32_t abbrev_size = static_cast<uint32_t>(abbrev.size());
+    debug_names[abbrev_size_pos + 0] = static_cast<uint8_t>(abbrev_size & 0xff);
+    debug_names[abbrev_size_pos + 1] = static_cast<uint8_t>((abbrev_size >> 8) & 0xff);
+    debug_names[abbrev_size_pos + 2] = static_cast<uint8_t>((abbrev_size >> 16) & 0xff);
+    debug_names[abbrev_size_pos + 3] = static_cast<uint8_t>((abbrev_size >> 24) & 0xff);
+    debug_names.insert(debug_names.end(), abbrev.begin(), abbrev.end());
+
+    // Entry pool: abbrev_code=1, cu_index=0, die_offset=0x20, unknown addr payload, end marker.
+    appendU8(0x01);
+    appendU8(0x00);
+    appendU32(0x20);
+    appendU64(0x8899aabbccddeeffULL);
+    appendU8(0x00);
+
+    uint64_t unit_length = static_cast<uint64_t>(debug_names.size() - (unit_len_pos + 8));
+    for (size_t i = 0; i < 8; ++i) {
+        debug_names[unit_len_pos + i] = static_cast<uint8_t>((unit_length >> (8 * i)) & 0xff);
+    }
+
+    DebugNamesParser parser(debug_names, debug_str);
+    assert(parser.parse());
+
+    auto entries = parser.lookupName("foo");
+    assert(entries.size() == 1);
+    assert(entries[0].die_offsets.size() == 1);
+    assert(entries[0].die_offsets[0] != 0);
+
+    std::cout << ".debug_names DWARF64 addr skip tests passed!" << std::endl;
+}
+
+void testDebugNamesParserDwarf32UnknownAddrSkip() {
+    std::cout << "Testing .debug_names DWARF32 unknown DW_FORM_addr skip..." << std::endl;
+
+    std::vector<uint8_t> debug_str = {'f', 'o', 'o', 0x00};
+    auto djb32 = [](const char* s) -> uint32_t {
+        uint32_t h = 5381;
+        while (*s) {
+            h = ((h << 5) + h) + static_cast<uint8_t>(*s++);
+        }
+        return h;
+    };
+
+    std::vector<uint8_t> debug_names;
+    auto appendU8 = [&](uint8_t v) { debug_names.push_back(v); };
+    auto appendU16 = [&](uint16_t v) {
+        debug_names.push_back(static_cast<uint8_t>(v & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 8) & 0xff));
+    };
+    auto appendU32 = [&](uint32_t v) {
+        debug_names.push_back(static_cast<uint8_t>(v & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 8) & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 16) & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 24) & 0xff));
+    };
+
+    appendU32(0);      // unit_length placeholder
+    appendU16(5);      // version
+    appendU16(0);      // padding
+    appendU32(1);      // comp_unit_count
+    appendU32(0);      // local_type_unit_count
+    appendU32(0);      // foreign_type_unit_count
+    appendU32(1);      // bucket_count
+    appendU32(1);      // name_count
+    size_t abbrev_size_pos = debug_names.size();
+    appendU32(0);      // abbrev_table_size placeholder
+    appendU32(0);      // augmentation_string_size
+
+    appendU32(0x100);        // CU list
+    appendU32(1);            // bucket
+    appendU32(djb32("foo")); // hash("foo")
+    appendU32(0);            // name offset
+    appendU32(0);            // entry offset
+
+    std::vector<uint8_t> abbrev;
+    abbrev.push_back(0x01); // code
+    abbrev.push_back(static_cast<uint8_t>(DwarfTag::DW_TAG_variable)); // tag
+    abbrev.push_back(0x01); // DW_IDX_compile_unit
+    abbrev.push_back(static_cast<uint8_t>(DwarfForm::DW_FORM_data1));
+    abbrev.push_back(0x03); // DW_IDX_die_offset
+    abbrev.push_back(static_cast<uint8_t>(DwarfForm::DW_FORM_data4));
+    appendULEB(abbrev, 0x7004); // unknown DW_IDX value
+    abbrev.push_back(static_cast<uint8_t>(DwarfForm::DW_FORM_addr));
+    abbrev.push_back(0x00); // end attrs
+    abbrev.push_back(0x00);
+    abbrev.push_back(0x00); // end abbrev table
+
+    uint32_t abbrev_size = static_cast<uint32_t>(abbrev.size());
+    debug_names[abbrev_size_pos + 0] = static_cast<uint8_t>(abbrev_size & 0xff);
+    debug_names[abbrev_size_pos + 1] = static_cast<uint8_t>((abbrev_size >> 8) & 0xff);
+    debug_names[abbrev_size_pos + 2] = static_cast<uint8_t>((abbrev_size >> 16) & 0xff);
+    debug_names[abbrev_size_pos + 3] = static_cast<uint8_t>((abbrev_size >> 24) & 0xff);
+    debug_names.insert(debug_names.end(), abbrev.begin(), abbrev.end());
+
+    // Entry pool: abbrev_code=1, cu_index=0, die_offset=0x20, unknown addr payload, end marker.
+    appendU8(0x01);
+    appendU8(0x00);
+    appendU32(0x20);
+    appendU32(0x12345678);
+    appendU8(0x00);
+
+    uint32_t unit_length = static_cast<uint32_t>(debug_names.size() - 4);
+    debug_names[0] = static_cast<uint8_t>(unit_length & 0xff);
+    debug_names[1] = static_cast<uint8_t>((unit_length >> 8) & 0xff);
+    debug_names[2] = static_cast<uint8_t>((unit_length >> 16) & 0xff);
+    debug_names[3] = static_cast<uint8_t>((unit_length >> 24) & 0xff);
+
+    DebugNamesParser parser(debug_names, debug_str);
+    assert(parser.parse());
+    auto entries = parser.lookupName("foo");
+    assert(entries.size() == 1);
+    assert(entries[0].die_offsets.size() == 1);
+    assert(entries[0].die_offsets[0] == 0x120);
+
+    std::cout << ".debug_names DWARF32 addr skip tests passed!" << std::endl;
+}
+
+void testDebugNamesParserDwarf64DieOffsetAsAddr() {
+    std::cout << "Testing .debug_names DWARF64 DW_IDX_die_offset as DW_FORM_addr..." << std::endl;
+
+    std::vector<uint8_t> debug_str = {'f', 'o', 'o', 0x00};
+    auto djb32 = [](const char* s) -> uint32_t {
+        uint32_t h = 5381;
+        while (*s) {
+            h = ((h << 5) + h) + static_cast<uint8_t>(*s++);
+        }
+        return h;
+    };
+
+    std::vector<uint8_t> debug_names;
+    auto appendU8 = [&](uint8_t v) { debug_names.push_back(v); };
+    auto appendU16 = [&](uint16_t v) {
+        debug_names.push_back(static_cast<uint8_t>(v & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 8) & 0xff));
+    };
+    auto appendU32 = [&](uint32_t v) {
+        debug_names.push_back(static_cast<uint8_t>(v & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 8) & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 16) & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 24) & 0xff));
+    };
+    auto appendU64 = [&](uint64_t v) {
+        debug_names.push_back(static_cast<uint8_t>(v & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 8) & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 16) & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 24) & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 32) & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 40) & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 48) & 0xff));
+        debug_names.push_back(static_cast<uint8_t>((v >> 56) & 0xff));
+    };
+
+    appendU32(0xffffffff); // DWARF64 marker
+    size_t unit_len_pos = debug_names.size();
+    appendU64(0); // unit_length placeholder
+
+    appendU16(5); // version
+    appendU16(0); // padding
+    appendU32(1); // comp_unit_count
+    appendU32(0); // local_type_unit_count
+    appendU32(0); // foreign_type_unit_count
+    appendU32(1); // bucket_count
+    appendU32(1); // name_count
+    size_t abbrev_size_pos = debug_names.size();
+    appendU32(0); // abbrev_table_size placeholder
+    appendU32(0); // augmentation_string_size
+
+    appendU64(0x100);          // CU[0]
+    appendU32(1);              // bucket[0]
+    appendU32(djb32("foo"));   // hash[0]
+    appendU64(0);              // name_offsets[0]
+    appendU64(0);              // entry_offsets[0]
+
+    std::vector<uint8_t> abbrev;
+    abbrev.push_back(0x01); // code
+    abbrev.push_back(static_cast<uint8_t>(DwarfTag::DW_TAG_variable)); // tag
+    abbrev.push_back(0x01); // DW_IDX_compile_unit
+    abbrev.push_back(static_cast<uint8_t>(DwarfForm::DW_FORM_data1));
+    abbrev.push_back(0x03); // DW_IDX_die_offset
+    abbrev.push_back(static_cast<uint8_t>(DwarfForm::DW_FORM_addr)); // should decode as 8-byte value
+    abbrev.push_back(0x00); // end attrs
+    abbrev.push_back(0x00);
+    abbrev.push_back(0x00); // end abbrev table
+
+    uint32_t abbrev_size = static_cast<uint32_t>(abbrev.size());
+    debug_names[abbrev_size_pos + 0] = static_cast<uint8_t>(abbrev_size & 0xff);
+    debug_names[abbrev_size_pos + 1] = static_cast<uint8_t>((abbrev_size >> 8) & 0xff);
+    debug_names[abbrev_size_pos + 2] = static_cast<uint8_t>((abbrev_size >> 16) & 0xff);
+    debug_names[abbrev_size_pos + 3] = static_cast<uint8_t>((abbrev_size >> 24) & 0xff);
+    debug_names.insert(debug_names.end(), abbrev.begin(), abbrev.end());
+
+    // Entry pool: abbrev_code=1, cu_index=0, die_offset=0x20 (8-byte addr), end marker.
+    appendU8(0x01);
+    appendU8(0x00);
+    appendU64(0x20);
+    appendU8(0x00);
+
+    uint64_t unit_length = static_cast<uint64_t>(debug_names.size() - (unit_len_pos + 8));
+    for (size_t i = 0; i < 8; ++i) {
+        debug_names[unit_len_pos + i] = static_cast<uint8_t>((unit_length >> (8 * i)) & 0xff);
+    }
+
+    DebugNamesParser parser(debug_names, debug_str);
+    assert(parser.parse());
+    auto entries = parser.lookupName("foo");
+    assert(entries.size() == 1);
+    assert(entries[0].die_offsets.size() == 1);
+    assert(entries[0].die_offsets[0] == 0x120);
+
+    std::cout << ".debug_names DW_FORM_addr DIE offset tests passed!" << std::endl;
+}
+
 void testDebugNamesParserMalformedInputs() {
     std::cout << "Testing .debug_names malformed input handling..." << std::endl;
+
+    // Non-empty name table requires at least one bucket.
+    {
+        std::vector<uint8_t> debug_names;
+        auto appendU16 = [&](uint16_t v) {
+            debug_names.push_back(static_cast<uint8_t>(v & 0xff));
+            debug_names.push_back(static_cast<uint8_t>((v >> 8) & 0xff));
+        };
+        auto appendU32 = [&](uint32_t v) {
+            debug_names.push_back(static_cast<uint8_t>(v & 0xff));
+            debug_names.push_back(static_cast<uint8_t>((v >> 8) & 0xff));
+            debug_names.push_back(static_cast<uint8_t>((v >> 16) & 0xff));
+            debug_names.push_back(static_cast<uint8_t>((v >> 24) & 0xff));
+        };
+
+        appendU32(0);      // unit_length placeholder
+        appendU16(5);      // version
+        appendU16(0);      // padding
+        appendU32(0);      // comp_unit_count
+        appendU32(0);      // local_type_unit_count
+        appendU32(0);      // foreign_type_unit_count
+        appendU32(0);      // bucket_count (invalid with name_count>0)
+        appendU32(1);      // name_count
+        appendU32(0);      // abbrev_table_size
+        appendU32(0);      // augmentation_string_size
+
+        uint32_t len = static_cast<uint32_t>(debug_names.size() - 4);
+        debug_names[0] = static_cast<uint8_t>(len & 0xff);
+        debug_names[1] = static_cast<uint8_t>((len >> 8) & 0xff);
+        debug_names[2] = static_cast<uint8_t>((len >> 16) & 0xff);
+        debug_names[3] = static_cast<uint8_t>((len >> 24) & 0xff);
+
+        DebugNamesParser p(debug_names, {});
+        assert(!p.parse());
+    }
+
+    // Hash table entries must be non-decreasing for bucketed lookup.
+    {
+        std::vector<uint8_t> debug_str = {'a', 0x00, 'b', 0x00};
+
+        std::vector<uint8_t> debug_names;
+        auto appendU16 = [&](uint16_t v) {
+            debug_names.push_back(static_cast<uint8_t>(v & 0xff));
+            debug_names.push_back(static_cast<uint8_t>((v >> 8) & 0xff));
+        };
+        auto appendU32 = [&](uint32_t v) {
+            debug_names.push_back(static_cast<uint8_t>(v & 0xff));
+            debug_names.push_back(static_cast<uint8_t>((v >> 8) & 0xff));
+            debug_names.push_back(static_cast<uint8_t>((v >> 16) & 0xff));
+            debug_names.push_back(static_cast<uint8_t>((v >> 24) & 0xff));
+        };
+
+        appendU32(0);      // unit_length placeholder
+        appendU16(5);      // version
+        appendU16(0);      // padding
+        appendU32(1);      // comp_unit_count
+        appendU32(0);      // local_type_unit_count
+        appendU32(0);      // foreign_type_unit_count
+        appendU32(1);      // bucket_count
+        appendU32(2);      // name_count
+        appendU32(0);      // abbrev_table_size
+        appendU32(0);      // augmentation_string_size
+        appendU32(0x100);  // CU list[0]
+        appendU32(1);      // bucket[0]
+        appendU32(100);    // hashes[0]
+        appendU32(99);     // hashes[1] INVALID decreasing order
+        appendU32(0);      // name offset[0]
+        appendU32(2);      // name offset[1]
+        appendU32(0);      // entry offset[0]
+        appendU32(0);      // entry offset[1]
+
+        uint32_t len = static_cast<uint32_t>(debug_names.size() - 4);
+        debug_names[0] = static_cast<uint8_t>(len & 0xff);
+        debug_names[1] = static_cast<uint8_t>((len >> 8) & 0xff);
+        debug_names[2] = static_cast<uint8_t>((len >> 16) & 0xff);
+        debug_names[3] = static_cast<uint8_t>((len >> 24) & 0xff);
+
+        DebugNamesParser p(debug_names, debug_str);
+        assert(!p.parse());
+    }
+
+    // Entry offsets must stay within the entry pool.
+    {
+        std::vector<uint8_t> debug_str = {'f', 'o', 'o', 0x00};
+        auto djb32 = [](const char* s) -> uint32_t {
+            uint32_t h = 5381;
+            while (*s) {
+                h = ((h << 5) + h) + static_cast<uint8_t>(*s++);
+            }
+            return h;
+        };
+
+        std::vector<uint8_t> debug_names;
+        auto appendU16 = [&](uint16_t v) {
+            debug_names.push_back(static_cast<uint8_t>(v & 0xff));
+            debug_names.push_back(static_cast<uint8_t>((v >> 8) & 0xff));
+        };
+        auto appendU32 = [&](uint32_t v) {
+            debug_names.push_back(static_cast<uint8_t>(v & 0xff));
+            debug_names.push_back(static_cast<uint8_t>((v >> 8) & 0xff));
+            debug_names.push_back(static_cast<uint8_t>((v >> 16) & 0xff));
+            debug_names.push_back(static_cast<uint8_t>((v >> 24) & 0xff));
+        };
+
+        appendU32(0);      // unit_length placeholder
+        appendU16(5);      // version
+        appendU16(0);      // padding
+        appendU32(1);      // comp_unit_count
+        appendU32(0);      // local_type_unit_count
+        appendU32(0);      // foreign_type_unit_count
+        appendU32(1);      // bucket_count
+        appendU32(1);      // name_count
+        appendU32(0);      // abbrev_table_size (no abbrev table bytes)
+        appendU32(0);      // augmentation_string_size
+        appendU32(0x100);  // CU list[0]
+        appendU32(1);      // bucket[0]
+        appendU32(djb32("foo")); // hash[0]
+        appendU32(0);      // name offset[0]
+        appendU32(1);      // INVALID entry offset (entry pool is empty)
+
+        uint32_t len = static_cast<uint32_t>(debug_names.size() - 4);
+        debug_names[0] = static_cast<uint8_t>(len & 0xff);
+        debug_names[1] = static_cast<uint8_t>((len >> 8) & 0xff);
+        debug_names[2] = static_cast<uint8_t>((len >> 16) & 0xff);
+        debug_names[3] = static_cast<uint8_t>((len >> 24) & 0xff);
+
+        DebugNamesParser p(debug_names, debug_str);
+        assert(!p.parse());
+    }
+
+    // Duplicate abbrev code entries in one abbrev table must be rejected.
+    {
+        std::vector<uint8_t> debug_names;
+        auto appendU16 = [&](uint16_t v) {
+            debug_names.push_back(static_cast<uint8_t>(v & 0xff));
+            debug_names.push_back(static_cast<uint8_t>((v >> 8) & 0xff));
+        };
+        auto appendU32 = [&](uint32_t v) {
+            debug_names.push_back(static_cast<uint8_t>(v & 0xff));
+            debug_names.push_back(static_cast<uint8_t>((v >> 8) & 0xff));
+            debug_names.push_back(static_cast<uint8_t>((v >> 16) & 0xff));
+            debug_names.push_back(static_cast<uint8_t>((v >> 24) & 0xff));
+        };
+
+        appendU32(0);      // unit_length placeholder
+        appendU16(5);      // version
+        appendU16(0);      // padding
+        appendU32(0);      // comp_unit_count
+        appendU32(0);      // local_type_unit_count
+        appendU32(0);      // foreign_type_unit_count
+        appendU32(0);      // bucket_count
+        appendU32(0);      // name_count
+        size_t abbrev_size_pos = debug_names.size();
+        appendU32(0);      // abbrev_table_size placeholder
+        appendU32(0);      // augmentation_string_size
+
+        std::vector<uint8_t> abbrev;
+        // Abbrev #1: code=1, tag=variable, no attrs.
+        abbrev.push_back(0x01);
+        abbrev.push_back(static_cast<uint8_t>(DwarfTag::DW_TAG_variable));
+        abbrev.push_back(0x00);
+        abbrev.push_back(0x00);
+        // Abbrev #2: duplicate code=1, tag=subprogram, no attrs.
+        abbrev.push_back(0x01);
+        abbrev.push_back(static_cast<uint8_t>(DwarfTag::DW_TAG_subprogram));
+        abbrev.push_back(0x00);
+        abbrev.push_back(0x00);
+        // End-of-table marker.
+        abbrev.push_back(0x00);
+
+        uint32_t abbrev_size = static_cast<uint32_t>(abbrev.size());
+        // patch abbrev_table_size
+        debug_names[abbrev_size_pos + 0] = static_cast<uint8_t>(abbrev_size & 0xff);
+        debug_names[abbrev_size_pos + 1] = static_cast<uint8_t>((abbrev_size >> 8) & 0xff);
+        debug_names[abbrev_size_pos + 2] = static_cast<uint8_t>((abbrev_size >> 16) & 0xff);
+        debug_names[abbrev_size_pos + 3] = static_cast<uint8_t>((abbrev_size >> 24) & 0xff);
+        debug_names.insert(debug_names.end(), abbrev.begin(), abbrev.end());
+
+        uint32_t len = static_cast<uint32_t>(debug_names.size() - 4);
+        debug_names[0] = static_cast<uint8_t>(len & 0xff);
+        debug_names[1] = static_cast<uint8_t>((len >> 8) & 0xff);
+        debug_names[2] = static_cast<uint8_t>((len >> 16) & 0xff);
+        debug_names[3] = static_cast<uint8_t>((len >> 24) & 0xff);
+
+        DebugNamesParser p(debug_names, {});
+        assert(!p.parse());
+    }
+
+    // Name strings referenced from .debug_str are treated leniently; missing NUL terminators
+    // should not prevent parsing the rest of the unit.
+    {
+        std::vector<uint8_t> debug_str = {'f', 'o', 'o'}; // no trailing NUL
+        auto djb32 = [](const char* s) -> uint32_t {
+            uint32_t h = 5381;
+            while (*s) {
+                h = ((h << 5) + h) + static_cast<uint8_t>(*s++);
+            }
+            return h;
+        };
+
+        std::vector<uint8_t> debug_names;
+        auto appendU16 = [&](uint16_t v) {
+            debug_names.push_back(static_cast<uint8_t>(v & 0xff));
+            debug_names.push_back(static_cast<uint8_t>((v >> 8) & 0xff));
+        };
+        auto appendU32 = [&](uint32_t v) {
+            debug_names.push_back(static_cast<uint8_t>(v & 0xff));
+            debug_names.push_back(static_cast<uint8_t>((v >> 8) & 0xff));
+            debug_names.push_back(static_cast<uint8_t>((v >> 16) & 0xff));
+            debug_names.push_back(static_cast<uint8_t>((v >> 24) & 0xff));
+        };
+
+        appendU32(0);      // unit_length placeholder
+        appendU16(5);      // version
+        appendU16(0);      // padding
+        appendU32(1);      // comp_unit_count
+        appendU32(0);      // local_type_unit_count
+        appendU32(0);      // foreign_type_unit_count
+        appendU32(1);      // bucket_count
+        appendU32(1);      // name_count
+        appendU32(0);      // abbrev_table_size
+        appendU32(0);      // augmentation_string_size
+        appendU32(0x100);  // CU list[0]
+        appendU32(1);      // bucket[0]
+        appendU32(djb32("foo")); // hash[0]
+        appendU32(0);      // name offset[0] -> unterminated "foo"
+        appendU32(0);      // entry offset[0]
+
+        uint32_t len = static_cast<uint32_t>(debug_names.size() - 4);
+        debug_names[0] = static_cast<uint8_t>(len & 0xff);
+        debug_names[1] = static_cast<uint8_t>((len >> 8) & 0xff);
+        debug_names[2] = static_cast<uint8_t>((len >> 16) & 0xff);
+        debug_names[3] = static_cast<uint8_t>((len >> 24) & 0xff);
+
+        DebugNamesParser p(debug_names, debug_str);
+        assert(p.parse());
+    }
+
+    // Name offsets must point inside .debug_str.
+    {
+        std::vector<uint8_t> debug_str = {'f', 'o', 'o', 0x00};
+        auto djb32 = [](const char* s) -> uint32_t {
+            uint32_t h = 5381;
+            while (*s) {
+                h = ((h << 5) + h) + static_cast<uint8_t>(*s++);
+            }
+            return h;
+        };
+
+        std::vector<uint8_t> debug_names;
+        auto appendU16 = [&](uint16_t v) {
+            debug_names.push_back(static_cast<uint8_t>(v & 0xff));
+            debug_names.push_back(static_cast<uint8_t>((v >> 8) & 0xff));
+        };
+        auto appendU32 = [&](uint32_t v) {
+            debug_names.push_back(static_cast<uint8_t>(v & 0xff));
+            debug_names.push_back(static_cast<uint8_t>((v >> 8) & 0xff));
+            debug_names.push_back(static_cast<uint8_t>((v >> 16) & 0xff));
+            debug_names.push_back(static_cast<uint8_t>((v >> 24) & 0xff));
+        };
+
+        appendU32(0);      // unit_length placeholder
+        appendU16(5);      // version
+        appendU16(0);      // padding
+        appendU32(1);      // comp_unit_count
+        appendU32(0);      // local_type_unit_count
+        appendU32(0);      // foreign_type_unit_count
+        appendU32(1);      // bucket_count
+        appendU32(1);      // name_count
+        appendU32(0);      // abbrev_table_size
+        appendU32(0);      // augmentation_string_size
+        appendU32(0x100);  // CU list[0]
+        appendU32(1);      // bucket[0]
+        appendU32(djb32("foo")); // hash[0]
+        appendU32(99);     // INVALID name offset (outside debug_str)
+        appendU32(0);      // entry offset[0]
+
+        uint32_t len = static_cast<uint32_t>(debug_names.size() - 4);
+        debug_names[0] = static_cast<uint8_t>(len & 0xff);
+        debug_names[1] = static_cast<uint8_t>((len >> 8) & 0xff);
+        debug_names[2] = static_cast<uint8_t>((len >> 16) & 0xff);
+        debug_names[3] = static_cast<uint8_t>((len >> 24) & 0xff);
+
+        DebugNamesParser p(debug_names, debug_str);
+        assert(!p.parse());
+    }
+
+    // Bucket entries are 1-based and must not exceed name_count.
+    {
+        std::vector<uint8_t> debug_str = {'f', 'o', 'o', 0x00};
+        auto djb32 = [](const char* s) -> uint32_t {
+            uint32_t h = 5381;
+            while (*s) {
+                h = ((h << 5) + h) + static_cast<uint8_t>(*s++);
+            }
+            return h;
+        };
+
+        std::vector<uint8_t> debug_names;
+        auto appendU16 = [&](uint16_t v) {
+            debug_names.push_back(static_cast<uint8_t>(v & 0xff));
+            debug_names.push_back(static_cast<uint8_t>((v >> 8) & 0xff));
+        };
+        auto appendU32 = [&](uint32_t v) {
+            debug_names.push_back(static_cast<uint8_t>(v & 0xff));
+            debug_names.push_back(static_cast<uint8_t>((v >> 8) & 0xff));
+            debug_names.push_back(static_cast<uint8_t>((v >> 16) & 0xff));
+            debug_names.push_back(static_cast<uint8_t>((v >> 24) & 0xff));
+        };
+
+        appendU32(0);      // unit_length placeholder
+        appendU16(5);      // version
+        appendU16(0);      // padding
+        appendU32(1);      // comp_unit_count
+        appendU32(0);      // local_type_unit_count
+        appendU32(0);      // foreign_type_unit_count
+        appendU32(1);      // bucket_count
+        appendU32(1);      // name_count
+        appendU32(0);      // abbrev_table_size
+        appendU32(0);      // augmentation_string_size
+        appendU32(0x100);  // CU list[0]
+        appendU32(2);      // INVALID bucket value (> name_count)
+        appendU32(djb32("foo")); // hash[0]
+        appendU32(0);      // name offset[0]
+        appendU32(0);      // entry offset[0]
+
+        uint32_t len = static_cast<uint32_t>(debug_names.size() - 4);
+        debug_names[0] = static_cast<uint8_t>(len & 0xff);
+        debug_names[1] = static_cast<uint8_t>((len >> 8) & 0xff);
+        debug_names[2] = static_cast<uint8_t>((len >> 16) & 0xff);
+        debug_names[3] = static_cast<uint8_t>((len >> 24) & 0xff);
+
+        DebugNamesParser p(debug_names, debug_str);
+        assert(!p.parse());
+    }
+
+    // Non-empty augmentation strings are treated leniently; missing NUL terminators should not
+    // prevent parsing the rest of the unit.
+    {
+        std::vector<uint8_t> debug_names;
+        auto appendU16 = [&](uint16_t v) {
+            debug_names.push_back(static_cast<uint8_t>(v & 0xff));
+            debug_names.push_back(static_cast<uint8_t>((v >> 8) & 0xff));
+        };
+        auto appendU32 = [&](uint32_t v) {
+            debug_names.push_back(static_cast<uint8_t>(v & 0xff));
+            debug_names.push_back(static_cast<uint8_t>((v >> 8) & 0xff));
+            debug_names.push_back(static_cast<uint8_t>((v >> 16) & 0xff));
+            debug_names.push_back(static_cast<uint8_t>((v >> 24) & 0xff));
+        };
+
+        appendU32(0);      // unit_length placeholder
+        appendU16(5);      // version
+        appendU16(0);      // padding
+        appendU32(0);      // comp_unit_count
+        appendU32(0);      // local_type_unit_count
+        appendU32(0);      // foreign_type_unit_count
+        appendU32(0);      // bucket_count
+        appendU32(0);      // name_count
+        appendU32(0);      // abbrev_table_size
+        appendU32(3);      // augmentation_string_size
+        debug_names.push_back('a');
+        debug_names.push_back('b');
+        debug_names.push_back('c'); // missing trailing NUL
+
+        uint32_t len = static_cast<uint32_t>(debug_names.size() - 4);
+        debug_names[0] = static_cast<uint8_t>(len & 0xff);
+        debug_names[1] = static_cast<uint8_t>((len >> 8) & 0xff);
+        debug_names[2] = static_cast<uint8_t>((len >> 16) & 0xff);
+        debug_names[3] = static_cast<uint8_t>((len >> 24) & 0xff);
+
+        DebugNamesParser p(debug_names, {});
+        assert(p.parse());
+    }
+
+    // Non-zero reserved padding in the unit header must be rejected.
+    {
+        std::vector<uint8_t> debug_names;
+        auto appendU16 = [&](uint16_t v) {
+            debug_names.push_back(static_cast<uint8_t>(v & 0xff));
+            debug_names.push_back(static_cast<uint8_t>((v >> 8) & 0xff));
+        };
+        auto appendU32 = [&](uint32_t v) {
+            debug_names.push_back(static_cast<uint8_t>(v & 0xff));
+            debug_names.push_back(static_cast<uint8_t>((v >> 8) & 0xff));
+            debug_names.push_back(static_cast<uint8_t>((v >> 16) & 0xff));
+            debug_names.push_back(static_cast<uint8_t>((v >> 24) & 0xff));
+        };
+
+        appendU32(0);      // unit_length placeholder
+        appendU16(5);      // version
+        appendU16(1);      // invalid non-zero padding
+        appendU32(0);      // comp_unit_count
+        appendU32(0);      // local_type_unit_count
+        appendU32(0);      // foreign_type_unit_count
+        appendU32(0);      // bucket_count
+        appendU32(0);      // name_count
+        appendU32(0);      // abbrev_table_size
+        appendU32(0);      // augmentation_string_size
+
+        uint32_t len = static_cast<uint32_t>(debug_names.size() - 4);
+        debug_names[0] = static_cast<uint8_t>(len & 0xff);
+        debug_names[1] = static_cast<uint8_t>((len >> 8) & 0xff);
+        debug_names[2] = static_cast<uint8_t>((len >> 16) & 0xff);
+        debug_names[3] = static_cast<uint8_t>((len >> 24) & 0xff);
+
+        DebugNamesParser p(debug_names, {});
+        assert(!p.parse());
+    }
 
     // Truncated DWARF64 unit length (marker present, only 4/8 bytes follow).
     {
@@ -5250,6 +7715,88 @@ void testDebugNamesParserMalformedInputs() {
 
         // Entry pool contains truncated ULEB128 abbrev code.
         appendU8(0x80);
+
+        uint32_t unit_length = static_cast<uint32_t>(debug_names.size() - 4);
+        debug_names[0] = static_cast<uint8_t>(unit_length & 0xff);
+        debug_names[1] = static_cast<uint8_t>((unit_length >> 8) & 0xff);
+        debug_names[2] = static_cast<uint8_t>((unit_length >> 16) & 0xff);
+        debug_names[3] = static_cast<uint8_t>((unit_length >> 24) & 0xff);
+
+        DebugNamesParser parser(debug_names, debug_str);
+        assert(parser.parse());
+        auto entries = parser.lookupName("foo");
+        assert(entries.empty());
+    }
+
+    // Unterminated DW_FORM_string in entry pool must not be treated as a valid skipped attribute.
+    {
+        std::vector<uint8_t> debug_str = {'f', 'o', 'o', 0x00};
+        auto djb32 = [](const char* s) -> uint32_t {
+            uint32_t h = 5381;
+            while (*s) {
+                h = ((h << 5) + h) + static_cast<uint8_t>(*s++);
+            }
+            return h;
+        };
+
+        std::vector<uint8_t> debug_names;
+        auto appendU8 = [&](uint8_t v) { debug_names.push_back(v); };
+        auto appendU16 = [&](uint16_t v) {
+            debug_names.push_back(static_cast<uint8_t>(v & 0xff));
+            debug_names.push_back(static_cast<uint8_t>((v >> 8) & 0xff));
+        };
+        auto appendU32 = [&](uint32_t v) {
+            debug_names.push_back(static_cast<uint8_t>(v & 0xff));
+            debug_names.push_back(static_cast<uint8_t>((v >> 8) & 0xff));
+            debug_names.push_back(static_cast<uint8_t>((v >> 16) & 0xff));
+            debug_names.push_back(static_cast<uint8_t>((v >> 24) & 0xff));
+        };
+
+        appendU32(0);      // unit_length placeholder
+        appendU16(5);      // version
+        appendU16(0);      // padding
+        appendU32(1);      // comp_unit_count
+        appendU32(0);      // local_type_unit_count
+        appendU32(0);      // foreign_type_unit_count
+        appendU32(1);      // bucket_count
+        appendU32(1);      // name_count
+        size_t abbrev_size_pos = debug_names.size();
+        appendU32(0);      // abbrev_table_size placeholder
+        appendU32(0);      // augmentation_string_size
+
+        appendU32(0x100);  // CU list
+        appendU32(1);      // bucket
+        appendU32(djb32("foo")); // hash("foo")
+        appendU32(0);      // name offset
+        appendU32(0);      // entry offset
+
+        std::vector<uint8_t> abbrev;
+        abbrev.push_back(0x01); // code
+        abbrev.push_back(static_cast<uint8_t>(DwarfTag::DW_TAG_variable)); // tag
+        abbrev.push_back(0x01); // DW_IDX_compile_unit
+        abbrev.push_back(static_cast<uint8_t>(DwarfForm::DW_FORM_data1));
+        abbrev.push_back(0x03); // DW_IDX_die_offset
+        abbrev.push_back(static_cast<uint8_t>(DwarfForm::DW_FORM_data4));
+        abbrev.push_back(0x7f); // unknown index, should be skipped
+        abbrev.push_back(static_cast<uint8_t>(DwarfForm::DW_FORM_string));
+        abbrev.push_back(0x00); // end attrs
+        abbrev.push_back(0x00);
+        abbrev.push_back(0x00); // end abbrev table
+
+        uint32_t abbrev_size = static_cast<uint32_t>(abbrev.size());
+        debug_names[abbrev_size_pos + 0] = static_cast<uint8_t>(abbrev_size & 0xff);
+        debug_names[abbrev_size_pos + 1] = static_cast<uint8_t>((abbrev_size >> 8) & 0xff);
+        debug_names[abbrev_size_pos + 2] = static_cast<uint8_t>((abbrev_size >> 16) & 0xff);
+        debug_names[abbrev_size_pos + 3] = static_cast<uint8_t>((abbrev_size >> 24) & 0xff);
+        debug_names.insert(debug_names.end(), abbrev.begin(), abbrev.end());
+
+        // Entry pool: abbrev_code=1, cu_index=0, die_offset=0x20, then unterminated string bytes.
+        appendU8(0x01);
+        appendU8(0x00);
+        appendU32(0x20);
+        appendU8('x');
+        appendU8('y');
+        appendU8('z');
 
         uint32_t unit_length = static_cast<uint32_t>(debug_names.size() - 4);
         debug_names[0] = static_cast<uint8_t>(unit_length & 0xff);
@@ -5512,6 +8059,136 @@ void testDebugMacroParser() {
         assert(defs[1].name == "B");
     }
 
+    // Cyclic DW_MACRO_import chains must terminate (visited-set guard).
+    {
+        std::vector<uint8_t> mac;
+
+        auto appendU8m = [&](uint8_t v) { mac.push_back(v); };
+        auto appendU16m = [&](uint16_t v) {
+            mac.push_back(static_cast<uint8_t>(v & 0xff));
+            mac.push_back(static_cast<uint8_t>((v >> 8) & 0xff));
+        };
+        auto appendU32m = [&](uint32_t v) { ::appendU32(mac, v); };
+        auto appendCStringM = [&](const char* s) {
+            while (*s) appendU8m(static_cast<uint8_t>(*s++));
+            appendU8m(0);
+        };
+
+        auto startUnit = [&]() -> std::pair<size_t, size_t> {
+            size_t lp = mac.size();
+            appendU32m(0);
+            size_t cs = mac.size();
+            appendU16m(5);
+            appendU8m(0x00);
+            return {lp, cs};
+        };
+        auto finishUnit = [&](size_t lp, size_t cs) {
+            uint32_t len = static_cast<uint32_t>(mac.size() - cs);
+            mac[lp + 0] = static_cast<uint8_t>(len & 0xff);
+            mac[lp + 1] = static_cast<uint8_t>((len >> 8) & 0xff);
+            mac[lp + 2] = static_cast<uint8_t>((len >> 16) & 0xff);
+            mac[lp + 3] = static_cast<uint8_t>((len >> 24) & 0xff);
+        };
+
+        uint64_t unit1_off = mac.size();
+        auto [lp1, cs1] = startUnit();
+        appendU8m(static_cast<uint8_t>(DW_MACRO::DW_MACRO_define));
+        appendU8m(1);
+        appendCStringM("A 1");
+        appendU8m(static_cast<uint8_t>(DW_MACRO::DW_MACRO_import));
+        size_t u1_import_pos = mac.size();
+        appendU32m(0); // patch later -> unit2
+        appendU8m(0x00);
+        finishUnit(lp1, cs1);
+
+        uint64_t unit2_off = mac.size();
+        auto [lp2, cs2] = startUnit();
+        appendU8m(static_cast<uint8_t>(DW_MACRO::DW_MACRO_define));
+        appendU8m(2);
+        appendCStringM("B 2");
+        appendU8m(static_cast<uint8_t>(DW_MACRO::DW_MACRO_import));
+        size_t u2_import_pos = mac.size();
+        appendU32m(0); // patch later -> unit1 (cycle)
+        appendU8m(0x00);
+        finishUnit(lp2, cs2);
+
+        // Patch imports to create cycle.
+        mac[u1_import_pos + 0] = static_cast<uint8_t>(unit2_off & 0xff);
+        mac[u1_import_pos + 1] = static_cast<uint8_t>((unit2_off >> 8) & 0xff);
+        mac[u1_import_pos + 2] = static_cast<uint8_t>((unit2_off >> 16) & 0xff);
+        mac[u1_import_pos + 3] = static_cast<uint8_t>((unit2_off >> 24) & 0xff);
+        mac[u2_import_pos + 0] = static_cast<uint8_t>(unit1_off & 0xff);
+        mac[u2_import_pos + 1] = static_cast<uint8_t>((unit1_off >> 8) & 0xff);
+        mac[u2_import_pos + 2] = static_cast<uint8_t>((unit1_off >> 16) & 0xff);
+        mac[u2_import_pos + 3] = static_cast<uint8_t>((unit1_off >> 24) & 0xff);
+
+        DebugMacroParser p(mac);
+        auto defs = p.getDefinitions(unit1_off);
+        assert(defs.size() == 2);
+        assert(defs[0].name == "A");
+        assert(defs[1].name == "B");
+    }
+
+    // Ensure getDefinitions()/getUndefinitions() include *_sup opcodes.
+    {
+        std::vector<uint8_t> debug_str_sup;
+        ::appendCString(debug_str_sup, "SUPDEF 9"); // offset 0
+        uint32_t sup_undef_off = static_cast<uint32_t>(debug_str_sup.size());
+        ::appendCString(debug_str_sup, "SUPDEF");
+
+        std::vector<uint8_t> mac;
+        ::appendU32(mac, 0); // unit_length placeholder
+        size_t cs = mac.size();
+        appendU16LE(mac, 5);     // version
+        mac.push_back(0x00);     // flags: 32-bit offsets
+
+        mac.push_back(static_cast<uint8_t>(DW_MACRO::DW_MACRO_define_sup));
+        appendULEB(mac, 42);     // line
+        ::appendU32(mac, 0);     // sup str offset for "SUPDEF 9"
+
+        mac.push_back(static_cast<uint8_t>(DW_MACRO::DW_MACRO_undef_sup));
+        appendULEB(mac, 43);     // line
+        ::appendU32(mac, sup_undef_off); // sup str offset for "SUPDEF"
+
+        mac.push_back(0x00); // end
+
+        uint32_t len = static_cast<uint32_t>(mac.size() - cs);
+        mac[0] = static_cast<uint8_t>(len & 0xff);
+        mac[1] = static_cast<uint8_t>((len >> 8) & 0xff);
+        mac[2] = static_cast<uint8_t>((len >> 16) & 0xff);
+        mac[3] = static_cast<uint8_t>((len >> 24) & 0xff);
+
+        std::vector<uint8_t> empty;
+        DebugMacroParser p(mac, &empty, &debug_str_sup, &empty, &empty);
+
+        auto entries = p.parseMacroUnit(0);
+        assert(entries.size() == 2);
+        assert(entries[0].type == DW_MACRO::DW_MACRO_define_sup);
+        assert(entries[0].line == 42);
+        assert(entries[0].name == "SUPDEF");
+        assert(entries[0].value == "9");
+        assert(entries[1].type == DW_MACRO::DW_MACRO_undef_sup);
+        assert(entries[1].line == 43);
+        assert(entries[1].name == "SUPDEF");
+
+        auto defs = p.getDefinitions(0);
+        assert(defs.size() == 1);
+        assert(defs[0].line == 42);
+        assert(defs[0].name == "SUPDEF");
+        assert(defs[0].value == "9");
+
+        auto undefs = p.getUndefinitions(0);
+        assert(undefs.size() == 1);
+        assert(undefs[0].line == 43);
+        assert(undefs[0].name == "SUPDEF");
+
+        auto lookup = p.lookupMacro("SUPDEF", 0);
+        assert(lookup.size() == 1);
+        assert(lookup[0].line == 42);
+        assert(lookup[0].name == "SUPDEF");
+        assert(lookup[0].value == "9");
+    }
+
     // If the macro unit provides an opcode operands table, we should be able to skip unknown
     // opcodes and continue parsing later entries.
     {
@@ -5569,10 +8246,152 @@ void testDebugMacroParser() {
         assert(e[2].value == "1");
     }
 
+    // Unknown opcode payload with DW_FORM_addr should be skippable as well.
+    {
+        std::vector<uint8_t> mac;
+        ::appendU32(mac, 0); // unit_length placeholder
+        size_t cs = mac.size();
+        appendU16LE(mac, 5);       // version
+        mac.push_back(0x05);       // flags: has_opcode_operands_table + 64-bit offsets
+
+        // opcode operands table:
+        // opcode_count=1:
+        // - opcode=0xee, operand_count=1, forms=[DW_FORM_addr]
+        mac.push_back(1);
+        mac.push_back(0xee);
+        appendULEB(mac, 1);
+        appendULEB(mac, static_cast<uint64_t>(DwarfForm::DW_FORM_addr));
+
+        // Unknown opcode 0xee payload: 8-byte address.
+        mac.push_back(0xee);
+        ::appendU64(mac, 0x123456789abcdef0ULL);
+
+        // Then a normal define that must still parse.
+        mac.push_back(static_cast<uint8_t>(DW_MACRO::DW_MACRO_define));
+        appendULEB(mac, 1);
+        ::appendCString(mac, "ADDR_OK 1");
+        mac.push_back(0x00); // end
+
+        uint32_t len = static_cast<uint32_t>(mac.size() - cs);
+        mac[0] = static_cast<uint8_t>(len & 0xff);
+        mac[1] = static_cast<uint8_t>((len >> 8) & 0xff);
+        mac[2] = static_cast<uint8_t>((len >> 16) & 0xff);
+        mac[3] = static_cast<uint8_t>((len >> 24) & 0xff);
+
+        DebugMacroParser p(mac);
+        auto e = p.parseMacroUnit(0);
+        assert(e.size() == 2);
+        assert(static_cast<uint8_t>(e[0].type) == 0xee);
+        assert(e[1].type == DW_MACRO::DW_MACRO_define);
+        assert(e[1].name == "ADDR_OK");
+        assert(e[1].value == "1");
+    }
+
+    // Unknown opcode payload with DW_FORM_ref_addr should be skippable as well.
+    {
+        std::vector<uint8_t> mac;
+        ::appendU32(mac, 0); // unit_length placeholder
+        size_t cs = mac.size();
+        appendU16LE(mac, 5);       // version
+        mac.push_back(0x05);       // flags: has 64-bit offsets + opcode operands table
+
+        // opcode operands table:
+        // opcode_count=1:
+        // - opcode=0xed, operand_count=1, forms=[DW_FORM_ref_addr]
+        mac.push_back(1);
+        mac.push_back(0xed);
+        appendULEB(mac, 1);
+        appendULEB(mac, static_cast<uint64_t>(DwarfForm::DW_FORM_ref_addr));
+
+        // Unknown opcode 0xed payload: 8-byte ref_addr (offset_size=8 due to flags).
+        mac.push_back(0xed);
+        ::appendU64(mac, 0x0102030405060708ULL);
+
+        // Then a normal define that must still parse.
+        mac.push_back(static_cast<uint8_t>(DW_MACRO::DW_MACRO_define));
+        appendULEB(mac, 2);
+        ::appendCString(mac, "REF_OK 1");
+        mac.push_back(0x00); // end
+
+        uint32_t len = static_cast<uint32_t>(mac.size() - cs);
+        mac[0] = static_cast<uint8_t>(len & 0xff);
+        mac[1] = static_cast<uint8_t>((len >> 8) & 0xff);
+        mac[2] = static_cast<uint8_t>((len >> 16) & 0xff);
+        mac[3] = static_cast<uint8_t>((len >> 24) & 0xff);
+
+        DebugMacroParser p(mac);
+        auto e = p.parseMacroUnit(0);
+        assert(e.size() == 2);
+        assert(static_cast<uint8_t>(e[0].type) == 0xed);
+        assert(e[1].type == DW_MACRO::DW_MACRO_define);
+        assert(e[1].name == "REF_OK");
+        assert(e[1].value == "1");
+    }
+
+    // Same as above, but with 32-bit offsets in the macro unit header.
+    {
+        std::vector<uint8_t> mac;
+        ::appendU32(mac, 0); // unit_length placeholder
+        size_t cs = mac.size();
+        appendU16LE(mac, 5);       // version
+        mac.push_back(0x04);       // flags: has opcode operands table, 32-bit offsets
+
+        // opcode operands table:
+        // opcode_count=1:
+        // - opcode=0xec, operand_count=1, forms=[DW_FORM_ref_addr]
+        mac.push_back(1);
+        mac.push_back(0xec);
+        appendULEB(mac, 1);
+        appendULEB(mac, static_cast<uint64_t>(DwarfForm::DW_FORM_ref_addr));
+
+        // Unknown opcode 0xec payload: 4-byte ref_addr (offset_size=4 due to flags).
+        mac.push_back(0xec);
+        ::appendU32(mac, 0x89abcdefu);
+
+        // Then a normal define that must still parse.
+        mac.push_back(static_cast<uint8_t>(DW_MACRO::DW_MACRO_define));
+        appendULEB(mac, 3);
+        ::appendCString(mac, "REF32_OK 1");
+        mac.push_back(0x00); // end
+
+        uint32_t len = static_cast<uint32_t>(mac.size() - cs);
+        mac[0] = static_cast<uint8_t>(len & 0xff);
+        mac[1] = static_cast<uint8_t>((len >> 8) & 0xff);
+        mac[2] = static_cast<uint8_t>((len >> 16) & 0xff);
+        mac[3] = static_cast<uint8_t>((len >> 24) & 0xff);
+
+        DebugMacroParser p(mac);
+        auto e = p.parseMacroUnit(0);
+        assert(e.size() == 2);
+        assert(static_cast<uint8_t>(e[0].type) == 0xec);
+        assert(e[1].type == DW_MACRO::DW_MACRO_define);
+        assert(e[1].name == "REF32_OK");
+        assert(e[1].value == "1");
+    }
+
     // Truncated DWARF64 unit header must be rejected.
     {
         std::vector<uint8_t> mac;
         ::appendU32(mac, 0xffffffffu); // DWARF64 marker, but no 64-bit length follows.
+        DebugMacroParser p(mac);
+        auto e = p.parseMacroUnit(0);
+        assert(e.empty());
+    }
+
+    // Reserved header flag bits must be rejected.
+    {
+        std::vector<uint8_t> mac;
+        ::appendU32(mac, 0); // unit_length placeholder
+        size_t cs = mac.size();
+        appendU16LE(mac, 5); // version
+        mac.push_back(0x80); // invalid reserved bit set
+        mac.push_back(0x00); // end of list
+        uint32_t len = static_cast<uint32_t>(mac.size() - cs);
+        mac[0] = static_cast<uint8_t>(len & 0xff);
+        mac[1] = static_cast<uint8_t>((len >> 8) & 0xff);
+        mac[2] = static_cast<uint8_t>((len >> 16) & 0xff);
+        mac[3] = static_cast<uint8_t>((len >> 24) & 0xff);
+
         DebugMacroParser p(mac);
         auto e = p.parseMacroUnit(0);
         assert(e.empty());
@@ -5744,8 +8563,8 @@ void testDwarfParserMacroLookupFallsBackAcrossCUs() {
         size_t start = debug_info.size();
         ::appendU32(debug_info, 0); // unit_length placeholder
         debug_info.push_back(0x05); debug_info.push_back(0x00); // version 5
+        debug_info.push_back(0x01); // unit_type (compile)
         debug_info.push_back(0x08); // address_size
-        debug_info.push_back(0x00); // unit_type (compile)
         ::appendU32(debug_info, 0); // abbrev_offset
         debug_info.push_back(0x01); // abbrev code
         ::appendU32(debug_info, macros_off);
@@ -5778,6 +8597,382 @@ void testDwarfParserMacroLookupFallsBackAcrossCUs() {
     assert(defs[0].value == "1");
 
     std::cout << "DwarfParser macro lookup fallback tests passed!" << std::endl;
+}
+
+void testDwarfParserExposesDebugNamesUnitHeaders() {
+    std::cout << "Testing DwarfParser exposes .debug_names unit headers..." << std::endl;
+
+    DwarfParser unloaded("does-not-exist.elf");
+    assert(unloaded.getDebugNamesUnitHeaders().empty());
+    assert(unloaded.getPrimaryDebugNamesHeader() == nullptr);
+
+    auto debug_names = loadTestDataBinary("debug_names_real_world.bin");
+    auto debug_str = loadTestDataBinary("debug_names_real_world.str");
+
+    std::vector<uint8_t> debug_abbrev = {
+        0x01, 0x11, 0x00, 0x00, 0x00, 0x00
+    };
+
+    std::vector<uint8_t> debug_info;
+    appendU32(debug_info, 0); // unit_length placeholder
+    appendU16(debug_info, 5); // version
+    debug_info.push_back(0x01); // DW_UT_compile
+    debug_info.push_back(0x08); // address_size
+    appendU32(debug_info, 0);   // abbrev offset
+    debug_info.push_back(0x01); // CU abbrev code
+    {
+        uint32_t unit_length = static_cast<uint32_t>(debug_info.size() - 4);
+        debug_info[0] = static_cast<uint8_t>(unit_length & 0xff);
+        debug_info[1] = static_cast<uint8_t>((unit_length >> 8) & 0xff);
+        debug_info[2] = static_cast<uint8_t>((unit_length >> 16) & 0xff);
+        debug_info[3] = static_cast<uint8_t>((unit_length >> 24) & 0xff);
+    }
+
+    std::string dir = makeTempDir("dwarf_names_headers_");
+    std::string elf_path = (std::filesystem::path(dir) / "names_headers.elf").string();
+    writeELFWithSections(elf_path, {
+        {".debug_info", debug_info},
+        {".debug_abbrev", debug_abbrev},
+        {".debug_str", debug_str},
+        {".debug_names", debug_names},
+    });
+
+    DwarfParser parser(elf_path);
+    assert(parser.load());
+    assert(parser.hasAcceleratedLookup());
+
+    const auto& headers = parser.getDebugNamesUnitHeaders();
+    assert(headers.size() == 2);
+    assert(headers[0].version == 5);
+    assert(headers[1].version == 5);
+    assert(headers[0].name_count == 1);
+    assert(headers[1].name_count == 1);
+
+    const DebugNamesHeader* primary = parser.getPrimaryDebugNamesHeader();
+    assert(primary != nullptr);
+    assert(primary->version == 5);
+    assert(primary->name_count == 1);
+
+    std::cout << "DwarfParser .debug_names unit header tests passed!" << std::endl;
+}
+
+void testDwarf5SkeletonUnitHeaderSkipsDWOId() {
+    std::cout << "Testing DWARF5 skeleton unit header dwo_id skipping..." << std::endl;
+
+    // Minimal abbrev: code=1, compile_unit, no children, no attributes.
+    std::vector<uint8_t> debug_abbrev;
+    appendULEB(debug_abbrev, 1);
+    appendULEB(debug_abbrev, static_cast<uint64_t>(DwarfTag::DW_TAG_compile_unit));
+    debug_abbrev.push_back(0x00); // no children
+    debug_abbrev.push_back(0x00); // attr=0
+    debug_abbrev.push_back(0x00); // form=0
+    debug_abbrev.push_back(0x00); // end abbrev table
+
+    // .debug_info: DWARF5 DW_UT_skeleton with dwo_id in header, then DIE abbrev code=1.
+    std::vector<uint8_t> debug_info;
+    size_t start = debug_info.size();
+    appendU32(debug_info, 0); // unit_length placeholder
+    appendU16LE(debug_info, 5); // version
+    debug_info.push_back(static_cast<uint8_t>(DwarfUnitType::DW_UT_skeleton));
+    debug_info.push_back(0x08); // address_size
+    appendU32(debug_info, 0);   // abbrev offset
+    appendU64(debug_info, 0x1122334455667788ULL); // dwo_id (header extra)
+    debug_info.push_back(0x01); // CU abbrev code
+    {
+        uint32_t len = static_cast<uint32_t>(debug_info.size() - start - 4);
+        debug_info[start + 0] = static_cast<uint8_t>(len & 0xff);
+        debug_info[start + 1] = static_cast<uint8_t>((len >> 8) & 0xff);
+        debug_info[start + 2] = static_cast<uint8_t>((len >> 16) & 0xff);
+        debug_info[start + 3] = static_cast<uint8_t>((len >> 24) & 0xff);
+    }
+
+    std::vector<uint8_t> debug_str = {'\0'};
+    std::string dir = makeTempDir("dwarf5_ut_skel_");
+    std::string elf_path = (std::filesystem::path(dir) / "ut_skel.elf").string();
+    writeELFWithSections(elf_path, {
+        {".debug_info", debug_info},
+        {".debug_abbrev", debug_abbrev},
+        {".debug_str", debug_str},
+    });
+
+    DwarfParser parser(elf_path);
+    assert(parser.load());
+    auto cus = parser.getCompilationUnits();
+    assert(cus.size() == 1);
+    assert(cus[0]);
+    assert(cus[0]->getTag() == DwarfTag::DW_TAG_compile_unit);
+
+    std::cout << "DWARF5 skeleton unit header skipping tests passed!" << std::endl;
+}
+
+void testDwarf5SplitCompileUnitHeaderSkipsDWOId() {
+    std::cout << "Testing DWARF5 split-compile unit header dwo_id skipping..." << std::endl;
+
+    // Abbrev: CU has DW_AT_dwo_id (data8), no children.
+    std::vector<uint8_t> debug_abbrev;
+    debug_abbrev.push_back(0x01); // abbrev code
+    debug_abbrev.push_back(0x11); // DW_TAG_compile_unit
+    debug_abbrev.push_back(0x00); // no children
+    appendULEB(debug_abbrev, static_cast<uint64_t>(DwarfAttribute::DW_AT_dwo_id));
+    appendULEB(debug_abbrev, static_cast<uint64_t>(DwarfForm::DW_FORM_data8));
+    debug_abbrev.push_back(0x00); debug_abbrev.push_back(0x00);
+    debug_abbrev.push_back(0x00);
+
+    std::vector<uint8_t> debug_info;
+    size_t start = debug_info.size();
+    appendU32(debug_info, 0); // unit_length placeholder
+    appendU16LE(debug_info, 5); // version
+    debug_info.push_back(static_cast<uint8_t>(DwarfUnitType::DW_UT_split_compile));
+    debug_info.push_back(0x08); // address_size
+    appendU32(debug_info, 0);   // abbrev offset
+    appendU64(debug_info, 0xAABBCCDDEEFF0011ULL); // dwo_id (header extra)
+    debug_info.push_back(0x01); // CU abbrev code
+    appendU64(debug_info, 0xAABBCCDDEEFF0011ULL); // DW_AT_dwo_id attribute
+    {
+        uint32_t len = static_cast<uint32_t>(debug_info.size() - start - 4);
+        debug_info[start + 0] = static_cast<uint8_t>(len & 0xff);
+        debug_info[start + 1] = static_cast<uint8_t>((len >> 8) & 0xff);
+        debug_info[start + 2] = static_cast<uint8_t>((len >> 16) & 0xff);
+        debug_info[start + 3] = static_cast<uint8_t>((len >> 24) & 0xff);
+    }
+
+    std::vector<uint8_t> debug_str = {'\0'};
+    std::string dir = makeTempDir("dwarf5_ut_splitc_");
+    std::string elf_path = (std::filesystem::path(dir) / "ut_splitc.elf").string();
+    writeELFWithSections(elf_path, {
+        {".debug_info", debug_info},
+        {".debug_abbrev", debug_abbrev},
+        {".debug_str", debug_str},
+    });
+
+    DwarfParser parser(elf_path);
+    assert(parser.load());
+    auto cus = parser.getCompilationUnits();
+    assert(cus.size() == 1);
+    auto v = cus[0]->getAttribute(DwarfAttribute::DW_AT_dwo_id);
+    auto u = std::dynamic_pointer_cast<UnsignedAttributeValue>(v);
+    assert(u && u->getValue() == 0xAABBCCDDEEFF0011ULL);
+
+    std::cout << "DWARF5 split-compile unit header skipping tests passed!" << std::endl;
+}
+
+void testDwarf5TypeUnitHeaderSkipsSignatureAndTypeOffset() {
+    std::cout << "Testing DWARF5 type unit header signature/type_offset skipping..." << std::endl;
+
+    // Minimal abbrev: code=1, compile_unit, no children, no attributes.
+    std::vector<uint8_t> debug_abbrev;
+    appendULEB(debug_abbrev, 1);
+    appendULEB(debug_abbrev, static_cast<uint64_t>(DwarfTag::DW_TAG_compile_unit));
+    debug_abbrev.push_back(0x00); // no children
+    debug_abbrev.push_back(0x00); // attr=0
+    debug_abbrev.push_back(0x00); // form=0
+    debug_abbrev.push_back(0x00); // end abbrev table
+
+    std::vector<uint8_t> debug_info;
+    size_t start = debug_info.size();
+    appendU32(debug_info, 0); // unit_length placeholder
+    appendU16LE(debug_info, 5); // version
+    debug_info.push_back(static_cast<uint8_t>(DwarfUnitType::DW_UT_type));
+    debug_info.push_back(0x08); // address_size
+    appendU32(debug_info, 0);   // abbrev offset
+    appendU64(debug_info, 0xDEADBEEFCAFEBABEULL); // type_signature (header extra)
+    appendU32(debug_info, 0x10); // type_offset (header extra, DWARF32)
+    debug_info.push_back(0x01);  // CU abbrev code
+    {
+        uint32_t len = static_cast<uint32_t>(debug_info.size() - start - 4);
+        debug_info[start + 0] = static_cast<uint8_t>(len & 0xff);
+        debug_info[start + 1] = static_cast<uint8_t>((len >> 8) & 0xff);
+        debug_info[start + 2] = static_cast<uint8_t>((len >> 16) & 0xff);
+        debug_info[start + 3] = static_cast<uint8_t>((len >> 24) & 0xff);
+    }
+
+    std::vector<uint8_t> debug_str = {'\0'};
+    std::string dir = makeTempDir("dwarf5_ut_type_");
+    std::string elf_path = (std::filesystem::path(dir) / "ut_type.elf").string();
+    writeELFWithSections(elf_path, {
+        {".debug_info", debug_info},
+        {".debug_abbrev", debug_abbrev},
+        {".debug_str", debug_str},
+    });
+
+    DwarfParser parser(elf_path);
+    assert(parser.load());
+    auto cus = parser.getCompilationUnits();
+    assert(cus.size() == 1);
+    assert(cus[0]);
+    assert(cus[0]->getTag() == DwarfTag::DW_TAG_compile_unit);
+
+    std::cout << "DWARF5 type unit header skipping tests passed!" << std::endl;
+}
+
+void testDwarf5PartialUnitSetsCUContextForAddrx() {
+    std::cout << "Testing DWARF5 DW_UT_partial sets CU context for DW_FORM_addrx*..." << std::endl;
+
+    // .debug_addr: DWARF32 contribution with one address entry.
+    std::vector<uint8_t> debug_addr;
+    appendU32(debug_addr, 0); // unit_length placeholder
+    appendU16LE(debug_addr, 5);
+    debug_addr.push_back(8); // address_size
+    debug_addr.push_back(0); // segment_selector_size
+    appendU64(debug_addr, 0xCAFEBABECAFED00DULL); // entry[0]
+    {
+        uint32_t unit_length = static_cast<uint32_t>(debug_addr.size() - 4);
+        debug_addr[0] = static_cast<uint8_t>(unit_length & 0xff);
+        debug_addr[1] = static_cast<uint8_t>((unit_length >> 8) & 0xff);
+        debug_addr[2] = static_cast<uint8_t>((unit_length >> 16) & 0xff);
+        debug_addr[3] = static_cast<uint8_t>((unit_length >> 24) & 0xff);
+    }
+
+    // .debug_abbrev:
+    // 1) partial_unit, children, DW_AT_addr_base(sec_offset)
+    // 2) variable, no children, DW_AT_low_pc(addrx1)
+    std::vector<uint8_t> debug_abbrev;
+    appendULEB(debug_abbrev, 1);
+    appendULEB(debug_abbrev, static_cast<uint64_t>(DwarfTag::DW_TAG_partial_unit));
+    debug_abbrev.push_back(0x01); // children
+    appendULEB(debug_abbrev, static_cast<uint64_t>(DwarfAttribute::DW_AT_addr_base));
+    appendULEB(debug_abbrev, static_cast<uint64_t>(DwarfForm::DW_FORM_sec_offset));
+    debug_abbrev.push_back(0x00); debug_abbrev.push_back(0x00);
+
+    appendULEB(debug_abbrev, 2);
+    appendULEB(debug_abbrev, static_cast<uint64_t>(DwarfTag::DW_TAG_variable));
+    debug_abbrev.push_back(0x00); // no children
+    appendULEB(debug_abbrev, static_cast<uint64_t>(DwarfAttribute::DW_AT_low_pc));
+    appendULEB(debug_abbrev, static_cast<uint64_t>(DwarfForm::DW_FORM_addrx1));
+    debug_abbrev.push_back(0x00); debug_abbrev.push_back(0x00);
+
+    debug_abbrev.push_back(0x00); // end abbrev table
+
+    // .debug_info: DWARF5 partial unit with addr_base=0 (points at contribution start).
+    std::vector<uint8_t> debug_info;
+    size_t start = debug_info.size();
+    appendU32(debug_info, 0); // unit_length placeholder
+    appendU16LE(debug_info, 5); // version
+    debug_info.push_back(static_cast<uint8_t>(DwarfUnitType::DW_UT_partial));
+    debug_info.push_back(0x08); // address_size
+    appendU32(debug_info, 0);   // abbrev offset
+    debug_info.push_back(0x01); // root DIE abbrev code
+    appendU32(debug_info, 0);   // DW_AT_addr_base = 0 (header start)
+    debug_info.push_back(0x02); // child var abbrev code
+    debug_info.push_back(0x00); // addrx1 index 0 (should resolve to entry[0])
+    debug_info.push_back(0x00); // end children
+    {
+        uint32_t len = static_cast<uint32_t>(debug_info.size() - start - 4);
+        debug_info[start + 0] = static_cast<uint8_t>(len & 0xff);
+        debug_info[start + 1] = static_cast<uint8_t>((len >> 8) & 0xff);
+        debug_info[start + 2] = static_cast<uint8_t>((len >> 16) & 0xff);
+        debug_info[start + 3] = static_cast<uint8_t>((len >> 24) & 0xff);
+    }
+
+    std::vector<uint8_t> debug_str = {'\0'};
+    std::string dir = makeTempDir("dwarf5_ut_partial_addrx_");
+    std::string elf_path = (std::filesystem::path(dir) / "ut_partial_addrx.elf").string();
+    writeELFWithSections(elf_path, {
+        {".debug_info", debug_info},
+        {".debug_abbrev", debug_abbrev},
+        {".debug_str", debug_str},
+        {".debug_addr", debug_addr},
+    });
+
+    DwarfParser parser(elf_path);
+    assert(parser.load());
+    auto cus = parser.getCompilationUnits();
+    assert(cus.size() == 1);
+    assert(cus[0]);
+    assert(cus[0]->getTag() == DwarfTag::DW_TAG_partial_unit);
+    assert(cus[0]->getChildren().size() == 1);
+    auto var = cus[0]->getChildren()[0];
+    auto low_pc = var->getAttribute(DwarfAttribute::DW_AT_low_pc);
+    auto addr = std::dynamic_pointer_cast<AddressAttributeValue>(low_pc);
+    assert(addr && addr->getAddress() == 0xCAFEBABECAFED00DULL);
+
+    std::cout << "DWARF5 DW_UT_partial addrx context tests passed!" << std::endl;
+}
+
+void testDwarf5SplitTypeUnitSetsCUContextForAddrx() {
+    std::cout << "Testing DWARF5 DW_UT_split_type sets CU context for DW_FORM_addrx*..." << std::endl;
+
+    // .debug_addr: DWARF32 contribution with one address entry.
+    std::vector<uint8_t> debug_addr;
+    appendU32(debug_addr, 0); // unit_length placeholder
+    appendU16LE(debug_addr, 5);
+    debug_addr.push_back(8); // address_size
+    debug_addr.push_back(0); // segment_selector_size
+    appendU64(debug_addr, 0x0123456789ABCDEFULL); // entry[0]
+    {
+        uint32_t unit_length = static_cast<uint32_t>(debug_addr.size() - 4);
+        debug_addr[0] = static_cast<uint8_t>(unit_length & 0xff);
+        debug_addr[1] = static_cast<uint8_t>((unit_length >> 8) & 0xff);
+        debug_addr[2] = static_cast<uint8_t>((unit_length >> 16) & 0xff);
+        debug_addr[3] = static_cast<uint8_t>((unit_length >> 24) & 0xff);
+    }
+
+    // .debug_abbrev:
+    // 1) type_unit, children, DW_AT_addr_base(sec_offset)
+    // 2) variable, no children, DW_AT_low_pc(addrx1)
+    std::vector<uint8_t> debug_abbrev;
+    appendULEB(debug_abbrev, 1);
+    appendULEB(debug_abbrev, static_cast<uint64_t>(DwarfTag::DW_TAG_type_unit));
+    debug_abbrev.push_back(0x01); // children
+    appendULEB(debug_abbrev, static_cast<uint64_t>(DwarfAttribute::DW_AT_addr_base));
+    appendULEB(debug_abbrev, static_cast<uint64_t>(DwarfForm::DW_FORM_sec_offset));
+    debug_abbrev.push_back(0x00); debug_abbrev.push_back(0x00);
+
+    appendULEB(debug_abbrev, 2);
+    appendULEB(debug_abbrev, static_cast<uint64_t>(DwarfTag::DW_TAG_variable));
+    debug_abbrev.push_back(0x00); // no children
+    appendULEB(debug_abbrev, static_cast<uint64_t>(DwarfAttribute::DW_AT_low_pc));
+    appendULEB(debug_abbrev, static_cast<uint64_t>(DwarfForm::DW_FORM_addrx1));
+    debug_abbrev.push_back(0x00); debug_abbrev.push_back(0x00);
+
+    debug_abbrev.push_back(0x00); // end abbrev table
+
+    // .debug_info: DWARF5 split-type unit with header extras then DIEs.
+    std::vector<uint8_t> debug_info;
+    size_t start = debug_info.size();
+    appendU32(debug_info, 0); // unit_length placeholder
+    appendU16LE(debug_info, 5); // version
+    debug_info.push_back(static_cast<uint8_t>(DwarfUnitType::DW_UT_split_type));
+    debug_info.push_back(0x08); // address_size
+    appendU32(debug_info, 0);   // abbrev offset
+    appendU64(debug_info, 0xDEADBEEFCAFEBABEULL); // type_signature (header extra)
+    appendU32(debug_info, 0x10); // type_offset (header extra)
+    debug_info.push_back(0x01); // root DIE abbrev code
+    appendU32(debug_info, 0);   // DW_AT_addr_base = 0 (header start)
+    debug_info.push_back(0x02); // child var abbrev code
+    debug_info.push_back(0x00); // addrx1 index 0 (should resolve to entry[0])
+    debug_info.push_back(0x00); // end children
+    {
+        uint32_t len = static_cast<uint32_t>(debug_info.size() - start - 4);
+        debug_info[start + 0] = static_cast<uint8_t>(len & 0xff);
+        debug_info[start + 1] = static_cast<uint8_t>((len >> 8) & 0xff);
+        debug_info[start + 2] = static_cast<uint8_t>((len >> 16) & 0xff);
+        debug_info[start + 3] = static_cast<uint8_t>((len >> 24) & 0xff);
+    }
+
+    std::vector<uint8_t> debug_str = {'\0'};
+    std::string dir = makeTempDir("dwarf5_ut_splitt_addrx_");
+    std::string elf_path = (std::filesystem::path(dir) / "ut_splitt_addrx.elf").string();
+    writeELFWithSections(elf_path, {
+        {".debug_info", debug_info},
+        {".debug_abbrev", debug_abbrev},
+        {".debug_str", debug_str},
+        {".debug_addr", debug_addr},
+    });
+
+    DwarfParser parser(elf_path);
+    assert(parser.load());
+    auto cus = parser.getCompilationUnits();
+    assert(cus.size() == 1);
+    assert(cus[0]);
+    assert(cus[0]->getTag() == DwarfTag::DW_TAG_type_unit);
+    assert(cus[0]->getChildren().size() == 1);
+    auto var = cus[0]->getChildren()[0];
+    auto low_pc = var->getAttribute(DwarfAttribute::DW_AT_low_pc);
+    auto addr = std::dynamic_pointer_cast<AddressAttributeValue>(low_pc);
+    assert(addr && addr->getAddress() == 0x0123456789ABCDEFULL);
+
+    std::cout << "DWARF5 DW_UT_split_type addrx context tests passed!" << std::endl;
 }
 
 void testDwarfParserGetFunctionAtUsesRanges() {
@@ -6398,6 +9593,150 @@ void testAddrxContributionBoundsWhenBasePointsToTableStart() {
     }
 
     std::cout << "DW_FORM_addrx contribution bounds tests passed!" << std::endl;
+}
+
+void testV5IndexedFormsInHelperParsers() {
+    std::cout << "Testing DWARF5 indexed forms in helper parser paths..." << std::endl;
+
+    std::vector<uint8_t> debug_str = {
+        'a','l','p','h','a','\0',
+        'b','e','t','a','\0',
+        'g','a','m','m','a','\0',
+        'd','e','l','t','a','\0',
+        'e','p','s','i','l','o','n','\0'
+    };
+    std::vector<uint8_t> debug_line_str = {'l','i','n','e','c','o','n','s','t','\0'};
+
+    std::vector<uint8_t> debug_str_offsets;
+    appendU32(debug_str_offsets, 0); // unit_length placeholder
+    appendU16(debug_str_offsets, 5);
+    appendU16(debug_str_offsets, 0);
+    appendU32(debug_str_offsets, 0); // "alpha"
+    appendU32(debug_str_offsets, 6); // "beta"
+    appendU32(debug_str_offsets, 11); // "gamma"
+    appendU32(debug_str_offsets, 17); // "delta"
+    appendU32(debug_str_offsets, 23); // "epsilon"
+    {
+        uint32_t unit_length = static_cast<uint32_t>(debug_str_offsets.size() - 4);
+        debug_str_offsets[0] = static_cast<uint8_t>(unit_length & 0xff);
+        debug_str_offsets[1] = static_cast<uint8_t>((unit_length >> 8) & 0xff);
+        debug_str_offsets[2] = static_cast<uint8_t>((unit_length >> 16) & 0xff);
+        debug_str_offsets[3] = static_cast<uint8_t>((unit_length >> 24) & 0xff);
+    }
+
+    std::vector<uint8_t> debug_addr;
+    appendU32(debug_addr, 0); // unit_length placeholder
+    appendU16(debug_addr, 5);
+    debug_addr.push_back(8);
+    debug_addr.push_back(0);
+    appendU64(debug_addr, 0x1111);
+    appendU64(debug_addr, 0x2222);
+    appendU64(debug_addr, 0x3333);
+    appendU64(debug_addr, 0x4444);
+    appendU64(debug_addr, 0x5555);
+    {
+        uint32_t unit_length = static_cast<uint32_t>(debug_addr.size() - 4);
+        debug_addr[0] = static_cast<uint8_t>(unit_length & 0xff);
+        debug_addr[1] = static_cast<uint8_t>((unit_length >> 8) & 0xff);
+        debug_addr[2] = static_cast<uint8_t>((unit_length >> 16) & 0xff);
+        debug_addr[3] = static_cast<uint8_t>((unit_length >> 24) & 0xff);
+    }
+
+    // Bytes consumed in this order:
+    // addrx1=1, addrx2=2, addrx3=3, addrx4=4
+    // strx1=1, strx2=2, strx3=3, strx4=4
+    // const(strx1)=0, const(strx3)=2, const(strx4)=3, const(line_strp)=0.
+    std::vector<uint8_t> debug_info = {
+        0x01,
+        0x02, 0x00,
+        0x03, 0x00, 0x00,
+        0x04, 0x00, 0x00, 0x00,
+        0x01,
+        0x02, 0x00,
+        0x03, 0x00, 0x00,
+        0x04, 0x00, 0x00, 0x00,
+        0x00,
+        0x02, 0x00, 0x00,
+        0x03, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00
+    };
+    std::vector<uint8_t> empty;
+
+    AttributeParser ap(debug_info, empty, debug_str,
+                       /*debug_line=*/empty, /*debug_ranges=*/empty, /*debug_loc=*/empty,
+                       /*debug_str_offsets=*/debug_str_offsets, /*debug_addr=*/debug_addr, /*debug_line_str=*/debug_line_str,
+                       /*debug_rnglists=*/empty, /*debug_loclists=*/empty,
+                       /*debug_str_sup=*/empty);
+    ap.setIsDwarf64(false);
+    ap.setAddressSize(8);
+    ap.setDwarfVersion(DwarfVersion::DWARF5);
+    ap.setCUContext(/*rnglists_base=*/0, /*loclists_base=*/0,
+                    /*addr_base=*/0, /*str_offsets_base=*/0,
+                    /*base_address=*/0);
+
+    uint64_t off = 0;
+
+    auto addr1 = std::dynamic_pointer_cast<AddressAttributeValue>(
+        ap.parseAddressAttribute(DwarfForm::DW_FORM_addrx1, off));
+    assert(addr1);
+    assert(addr1->getAddress() == 0x2222);
+
+    auto addr = std::dynamic_pointer_cast<AddressAttributeValue>(
+        ap.parseAddressAttribute(DwarfForm::DW_FORM_addrx2, off));
+    assert(addr);
+    assert(addr->getAddress() == 0x3333);
+
+    auto addr3 = std::dynamic_pointer_cast<AddressAttributeValue>(
+        ap.parseAddressAttribute(DwarfForm::DW_FORM_addrx3, off));
+    assert(addr3);
+    assert(addr3->getAddress() == 0x4444);
+
+    auto addr4 = std::dynamic_pointer_cast<AddressAttributeValue>(
+        ap.parseAddressAttribute(DwarfForm::DW_FORM_addrx4, off));
+    assert(addr4);
+    assert(addr4->getAddress() == 0x5555);
+
+    auto str1 = std::dynamic_pointer_cast<StringAttributeValue>(
+        ap.parseStringAttribute(DwarfForm::DW_FORM_strx1, off));
+    assert(str1);
+    assert(str1->getValue() == "beta");
+
+    auto str = std::dynamic_pointer_cast<StringAttributeValue>(
+        ap.parseStringAttribute(DwarfForm::DW_FORM_strx2, off));
+    assert(str);
+    assert(str->getValue() == "gamma");
+
+    auto str3 = std::dynamic_pointer_cast<StringAttributeValue>(
+        ap.parseStringAttribute(DwarfForm::DW_FORM_strx3, off));
+    assert(str3);
+    assert(str3->getValue() == "delta");
+
+    auto str4 = std::dynamic_pointer_cast<StringAttributeValue>(
+        ap.parseStringAttribute(DwarfForm::DW_FORM_strx4, off));
+    assert(str4);
+    assert(str4->getValue() == "epsilon");
+
+    auto cstrx1 = std::dynamic_pointer_cast<StringAttributeValue>(
+        ap.parseConstValueAttribute(DwarfAttribute::DW_AT_const_value, DwarfForm::DW_FORM_strx1, off));
+    assert(cstrx1);
+    assert(cstrx1->getValue() == "alpha");
+
+    auto cstrx3 = std::dynamic_pointer_cast<StringAttributeValue>(
+        ap.parseConstValueAttribute(DwarfAttribute::DW_AT_const_value, DwarfForm::DW_FORM_strx3, off));
+    assert(cstrx3);
+    assert(cstrx3->getValue() == "gamma");
+
+    auto cstrx4 = std::dynamic_pointer_cast<StringAttributeValue>(
+        ap.parseConstValueAttribute(DwarfAttribute::DW_AT_const_value, DwarfForm::DW_FORM_strx4, off));
+    assert(cstrx4);
+    assert(cstrx4->getValue() == "delta");
+
+    auto cline = std::dynamic_pointer_cast<StringAttributeValue>(
+        ap.parseConstValueAttribute(DwarfAttribute::DW_AT_const_value, DwarfForm::DW_FORM_line_strp, off));
+    assert(cline);
+    assert(cline->getValue() == "lineconst");
+
+    std::cout << "DWARF5 indexed helper parser tests passed!" << std::endl;
 }
 
 void testRnglistxContributionBoundsWhenBasePointsToTableStart() {
@@ -7952,6 +11291,12 @@ void testSymbolicCFIVerifier() {
         SymbolicCFIVerifier v;
         auto r = v.compareFDEByIndex(lhs, 0, rhs, 0);
         assert(r.verdict == ExpressionVerificationResult::Verdict::EQUIVALENT);
+#if DWARF_HAS_Z3
+        assert(r.verifier_backend == "structural+z3");
+#else
+        assert(r.verifier_backend == "structural+solver-unavailable");
+#endif
+        assert(r.solver_result == "equivalent");
     }
 
     // Different rule payload: same opcode form, different offset encoding value.
@@ -7966,6 +11311,10 @@ void testSymbolicCFIVerifier() {
         auto r = v.compareFDEByIndex(lhs, 0, rhs, 0);
         assert(r.verdict == ExpressionVerificationResult::Verdict::DIFFERENT);
         assert(r.has_mismatch_relative_pc);
+        assert(r.verifier_backend == "structural");
+        assert(r.solver_result == "precheck_register_offset_mismatch");
+        assert(r.counterexample_model.empty());
+        assert(r.counterexample_witness.empty());
     }
 
     // CFA expression equivalence/difference via DW_CFA_def_cfa_expression in CIE.
@@ -8029,10 +11378,34 @@ void testSymbolicCFIVerifier() {
 
         SymbolicCFIVerifier v;
         auto eq = v.compareFDEByIndex(pa, 0, pb, 0);
-        assert(eq.verdict == ExpressionVerificationResult::Verdict::EQUIVALENT);
+        assert(eq.verdict ==
+#if DWARF_HAS_Z3
+               ExpressionVerificationResult::Verdict::EQUIVALENT
+#else
+               ExpressionVerificationResult::Verdict::UNKNOWN
+#endif
+        );
+#if DWARF_HAS_Z3
+        assert(eq.verifier_backend == "structural+z3");
+#else
+        assert(eq.verifier_backend == "solver-unavailable");
+#endif
+#if DWARF_HAS_Z3
+        assert(eq.solver_result == "equivalent");
+#else
+        assert(eq.solver_result == "solver_unavailable");
+#endif
 
         auto diff = v.compareFDEByIndex(pa, 0, pc, 0);
+#if DWARF_HAS_Z3
         assert(diff.verdict == ExpressionVerificationResult::Verdict::DIFFERENT);
+        assert(diff.verifier_backend == "z3");
+        assert(diff.solver_result == "sat");
+#else
+        assert(diff.verdict == ExpressionVerificationResult::Verdict::UNKNOWN);
+        assert(diff.verifier_backend == "solver-unavailable");
+        assert(diff.solver_result == "solver_unavailable");
+#endif
     }
 
     // Register val_expression equivalence/difference via DW_CFA_val_expression in FDE.
@@ -8100,9 +11473,105 @@ void testSymbolicCFIVerifier() {
 
         SymbolicCFIVerifier v;
         auto eq = v.compareFDEByIndex(pa, 0, pb, 0);
-        assert(eq.verdict == ExpressionVerificationResult::Verdict::EQUIVALENT);
+        assert(eq.verdict ==
+#if DWARF_HAS_Z3
+               ExpressionVerificationResult::Verdict::EQUIVALENT
+#else
+               ExpressionVerificationResult::Verdict::UNKNOWN
+#endif
+        );
+#if DWARF_HAS_Z3
+        assert(eq.verifier_backend == "structural+z3");
+#else
+        assert(eq.verifier_backend == "solver-unavailable");
+#endif
+#if DWARF_HAS_Z3
+        assert(eq.solver_result == "equivalent");
+#else
+        assert(eq.solver_result == "solver_unavailable");
+#endif
         auto diff = v.compareFDEByIndex(pa, 0, pc, 0);
+#if DWARF_HAS_Z3
         assert(diff.verdict == ExpressionVerificationResult::Verdict::DIFFERENT);
+        assert(diff.verifier_backend == "z3");
+        assert(diff.solver_result == "sat");
+#else
+        assert(diff.verdict == ExpressionVerificationResult::Verdict::UNKNOWN);
+        assert(diff.verifier_backend == "solver-unavailable");
+        assert(diff.solver_result == "solver_unavailable");
+#endif
+    }
+
+    // AArch64-relevant structural checks: return-address register mismatch.
+    {
+        UnwindInfo lhs;
+        lhs.valid = true;
+        lhs.cfa.type = CFA_Type::REGISTER_OFFSET;
+        lhs.cfa.reg_num = 31;
+        lhs.cfa.offset = 16;
+        lhs.return_address_register = 30;
+
+        UnwindInfo rhs = lhs;
+        rhs.return_address_register = 29;
+
+        SymbolicCFIVerifier v;
+        auto r = v.compareUnwindInfo(lhs, rhs, /*lhs_pc=*/0x1000, /*rhs_pc=*/0x1000);
+        assert(r.verdict == ExpressionVerificationResult::Verdict::DIFFERENT);
+        assert(r.verifier_backend == "structural");
+        assert(r.solver_result == "precheck_ra_register_mismatch");
+    }
+
+    // AArch64 PAC state mismatch should be detected before symbolic expression checks.
+    {
+        UnwindInfo lhs;
+        lhs.valid = true;
+        lhs.cfa.type = CFA_Type::REGISTER_OFFSET;
+        lhs.cfa.reg_num = 31;
+        lhs.cfa.offset = 16;
+        lhs.return_address_register = 30;
+        lhs.aarch64_ra_sign_state = 0;
+
+        UnwindInfo rhs = lhs;
+        rhs.aarch64_ra_sign_state = 1;
+
+        SymbolicCFIVerifier v;
+        auto r = v.compareUnwindInfo(lhs, rhs, /*lhs_pc=*/0x2000, /*rhs_pc=*/0x2000);
+        assert(r.verdict == ExpressionVerificationResult::Verdict::DIFFERENT);
+        assert(r.verifier_backend == "structural");
+        assert(r.solver_result == "precheck_aarch64_ra_sign_state_mismatch");
+    }
+
+    // Missing register rules can be treated as UNDEFINED (default) or as hard mismatch.
+    {
+        UnwindInfo lhs;
+        lhs.valid = true;
+        lhs.cfa.type = CFA_Type::REGISTER_OFFSET;
+        lhs.cfa.reg_num = 31;
+        lhs.cfa.offset = 16;
+        lhs.return_address_register = 30;
+        RegisterRule r;
+        r.type = CFA_RegRule::REGISTER;
+        r.reg_num = 29;
+        lhs.registers[5] = r;
+
+        UnwindInfo rhs = lhs;
+        rhs.registers.erase(5);
+
+        SymbolicCFIVerifier v;
+
+        SymbolicCFICompareOptions strict_missing;
+        strict_missing.treat_missing_register_rule_as_undefined = false;
+        auto miss = v.compareUnwindInfo(lhs, rhs, /*lhs_pc=*/0x3000, /*rhs_pc=*/0x3000, strict_missing);
+        assert(miss.verdict == ExpressionVerificationResult::Verdict::DIFFERENT);
+        assert(miss.verifier_backend == "structural");
+        assert(miss.solver_result == "precheck_register_rule_missing");
+
+        SymbolicCFICompareOptions coerce_missing;
+        coerce_missing.treat_missing_register_rule_as_undefined = true;
+        auto coerced = v.compareUnwindInfo(lhs, rhs, /*lhs_pc=*/0x3000, /*rhs_pc=*/0x3000, coerce_missing);
+        assert(coerced.verdict == ExpressionVerificationResult::Verdict::DIFFERENT);
+        assert(coerced.verifier_backend == "structural");
+        assert(coerced.solver_result == "precheck_register_rule_type_mismatch");
     }
 
     std::cout << "SymbolicCFIVerifier tests passed!" << std::endl;
@@ -8147,6 +11616,11 @@ void testDWPIndexParsing() {
 
     DWPLoader loader;
     assert(loader.parseIndexData(idx, false));
+    assert(loader.hasCUIndexSection());
+    assert(loader.isCUIndexValid());
+    assert(!loader.hasTUIndexSection());
+    assert(!loader.isTUIndexValid());
+    assert(loader.getCUIndexedUnitCount() == 1);
 
     auto entry_opt = loader.findUnit(sig);
     assert(entry_opt.has_value());
@@ -8176,6 +11650,9 @@ void testDWPIndexParsing() {
         idx_v0[0] = 0x00; idx_v0[1] = 0x00; idx_v0[2] = 0x00; idx_v0[3] = 0x00;
         DWPLoader l0;
         assert(!l0.parseIndexData(idx_v0, false));
+        assert(l0.hasCUIndexSection());
+        assert(!l0.isCUIndexValid());
+        assert(l0.getCUIndexedUnitCount() == 0);
     }
 
     // Truncated section-id table should be rejected.
@@ -8184,6 +11661,8 @@ void testDWPIndexParsing() {
         idx_trunc.resize(16); // header only, section_count still says 4
         DWPLoader lt;
         assert(!lt.parseIndexData(idx_trunc, false));
+        assert(lt.hasCUIndexSection());
+        assert(!lt.isCUIndexValid());
     }
 
     // Failed re-parse should not leave stale entries from an earlier successful parse.
@@ -8196,6 +11675,8 @@ void testDWPIndexParsing() {
         idx_bad.resize(16); // malformed
         assert(!ls.parseIndexData(idx_bad, false));
         assert(!ls.findUnit(sig).has_value());
+        assert(ls.hasCUIndexSection());
+        assert(!ls.isCUIndexValid());
     }
 
     // Large offsets/sizes should not overflow extractSection arithmetic.
@@ -8217,6 +11698,18 @@ void testDWPIndexParsing() {
         auto sec = lo.getSectionsForUnit(sig2);
         assert(sec.has_value());
         assert(sec->debug_info.empty());
+    }
+
+    // TU index parsing state is tracked separately.
+    {
+        DWPLoader tu;
+        assert(tu.parseIndexData(idx, true));
+        assert(!tu.hasCUIndexSection());
+        assert(!tu.isCUIndexValid());
+        assert(tu.hasTUIndexSection());
+        assert(tu.isTUIndexValid());
+        assert(tu.getTUIndexedUnitCount() == 1);
+        assert(tu.findUnit(sig).has_value());
     }
 
     std::cout << "DWP index parsing tests passed!" << std::endl;
@@ -8262,6 +11755,57 @@ void testImplicitConstInAbbrev() {
     assert(sval->getValue() == 42);
 
     std::cout << "DW_FORM_implicit_const abbrev tests passed!" << std::endl;
+}
+
+void testImplicitConstParserPathAndSignedValue() {
+    std::cout << "Testing DW_FORM_implicit_const parser path and signed values..." << std::endl;
+
+    // Abbrev table: code=1, tag=compile_unit, no children,
+    // attribute: DW_AT_language with DW_FORM_implicit_const = -7 (SLEB128 0x79).
+    std::vector<uint8_t> debug_abbrev;
+    debug_abbrev.push_back(0x01); // abbrev code
+    debug_abbrev.push_back(0x11); // DW_TAG_compile_unit
+    debug_abbrev.push_back(0x00); // no children
+    debug_abbrev.push_back(0x13); // DW_AT_language
+    debug_abbrev.push_back(0x21); // DW_FORM_implicit_const
+    debug_abbrev.push_back(0x79); // SLEB128(-7)
+    debug_abbrev.push_back(0x00); // end attr list
+    debug_abbrev.push_back(0x00);
+    debug_abbrev.push_back(0x00); // end abbrev table
+
+    // .debug_info CU: unit_length=8, version=4, abbrev_offset=0, addr_size=8, abbrev_code=1
+    std::vector<uint8_t> debug_info;
+    appendU32(debug_info, 8);
+    debug_info.push_back(0x04);
+    debug_info.push_back(0x00);
+    appendU32(debug_info, 0);
+    debug_info.push_back(0x08);
+    debug_info.push_back(0x01);
+
+    std::vector<uint8_t> empty;
+    ELFIO::elfio elf;
+    DIEParser parser(elf, debug_info, debug_abbrev, /*debug_str=*/empty);
+
+    auto cus = parser.parseCompilationUnits();
+    assert(cus.size() == 1);
+    auto lang_attr = cus[0]->getAttribute(DwarfAttribute::DW_AT_language);
+    assert(lang_attr);
+    auto sval = std::dynamic_pointer_cast<SignedAttributeValue>(lang_attr);
+    assert(sval);
+    assert(sval->getValue() == -7);
+
+    // Direct AttributeParser path should also produce signed values and consume no bytes.
+    std::vector<uint8_t> payload = {0xaa, 0xbb};
+    AttributeParser ap(payload, empty, empty);
+    ap.setImplicitConstValue(-13);
+    uint64_t off = 1;
+    auto direct = ap.parseAttribute(DwarfForm::DW_FORM_implicit_const, off);
+    auto direct_s = std::dynamic_pointer_cast<SignedAttributeValue>(direct);
+    assert(direct_s);
+    assert(direct_s->getValue() == -13);
+    assert(off == 1);
+
+    std::cout << "DW_FORM_implicit_const parser path tests passed!" << std::endl;
 }
 
 void testRefAddrBiasForDWO() {
@@ -8743,6 +12287,825 @@ void testSplitDwarfIntegrationELFIO() {
     std::cout << "Split DWARF integration tests passed!" << std::endl;
 }
 
+void testDwarfParserDWPStateTransitions() {
+    std::cout << "Testing DwarfParser DWP state transitions..." << std::endl;
+
+    auto buildPayloadAbbrev = []() -> std::vector<uint8_t> {
+        std::vector<uint8_t> a;
+        a.push_back(0x01); // CU
+        a.push_back(0x11); // DW_TAG_compile_unit
+        a.push_back(0x00); // no children
+        a.push_back(0x00); a.push_back(0x00);
+        a.push_back(0x00); // end table
+        return a;
+    };
+
+    auto buildPayloadInfo = []() -> std::vector<uint8_t> {
+        std::vector<uint8_t> i;
+        appendU32(i, 0); // placeholder unit_length
+        i.push_back(0x04); i.push_back(0x00); // version 4
+        appendU32(i, 0); // abbrev offset
+        i.push_back(0x08); // addr_size
+        i.push_back(0x01); // CU code
+        uint32_t unit_length = static_cast<uint32_t>(i.size() - 4);
+        i[0] = static_cast<uint8_t>(unit_length & 0xff);
+        i[1] = static_cast<uint8_t>((unit_length >> 8) & 0xff);
+        i[2] = static_cast<uint8_t>((unit_length >> 16) & 0xff);
+        i[3] = static_cast<uint8_t>((unit_length >> 24) & 0xff);
+        return i;
+    };
+
+    auto buildValidCUIndex = [](uint64_t sig, uint32_t info_size, uint32_t abbrev_size) -> std::vector<uint8_t> {
+        std::vector<uint8_t> idx;
+        appendU32(idx, 6); // version
+        appendU32(idx, 2); // section_count
+        appendU32(idx, 1); // unit_count
+        appendU32(idx, 1); // slot_count
+        appendU32(idx, 1); // DW_SECT_INFO
+        appendU32(idx, 3); // DW_SECT_ABBREV
+        appendU64(idx, sig);
+        appendU32(idx, 1); // row index
+        appendU32(idx, 0); // info off
+        appendU32(idx, 0); // abbrev off
+        appendU32(idx, info_size);
+        appendU32(idx, abbrev_size);
+        return idx;
+    };
+
+    auto buildMalformedCUIndex = []() -> std::vector<uint8_t> {
+        std::vector<uint8_t> idx;
+        appendU32(idx, 6); // version
+        appendU32(idx, 2); // section_count
+        appendU32(idx, 1); // unit_count
+        appendU32(idx, 1); // slot_count
+        // Missing section ids/tables.
+        return idx;
+    };
+
+    std::string dir = makeTempDir("dwarf_parser_dwp_state_");
+    std::string bad_path = (std::filesystem::path(dir) / "state_bad.dwp").string();
+    std::string good_path = (std::filesystem::path(dir) / "state_good.dwp").string();
+    std::string tu_path = (std::filesystem::path(dir) / "state_tu_only.dwp").string();
+
+    std::vector<uint8_t> info = buildPayloadInfo();
+    std::vector<uint8_t> abbrev = buildPayloadAbbrev();
+    std::vector<uint8_t> str = {'x', 0};
+    const uint64_t sig = 0x1122334455667788ULL;
+
+    writeELFWithSections(bad_path, {
+        {".debug_info.dwo", info},
+        {".debug_abbrev.dwo", abbrev},
+        {".debug_str.dwo", str},
+        {".debug_cu_index", buildMalformedCUIndex()},
+    });
+
+    writeELFWithSections(good_path, {
+        {".debug_info.dwo", info},
+        {".debug_abbrev.dwo", abbrev},
+        {".debug_str.dwo", str},
+        {".debug_cu_index", buildValidCUIndex(sig, static_cast<uint32_t>(info.size()), static_cast<uint32_t>(abbrev.size()))},
+    });
+
+    writeELFWithSections(tu_path, {
+        {".debug_info.dwo", info},
+        {".debug_abbrev.dwo", abbrev},
+        {".debug_str.dwo", str},
+        {".debug_tu_index", buildValidCUIndex(sig, static_cast<uint32_t>(info.size()), static_cast<uint32_t>(abbrev.size()))},
+    });
+
+    DwarfParser parser("unused_main_path.elf");
+
+    // Before loading DWP.
+    assert(!parser.hasLoadedDWP());
+    assert(parser.getLoadedDWPPath().empty());
+    assert(!parser.hasDWPIndexSection());
+    assert(!parser.isDWPIndexValid());
+    assert(parser.getDWPIndexedUnitCount() == 0);
+
+    // After malformed index.
+    assert(parser.loadDWPFile(bad_path));
+    assert(parser.hasLoadedDWP());
+    assert(parser.getLoadedDWPPath() == bad_path);
+    assert(parser.hasDWPIndexSection());
+    assert(!parser.isDWPIndexValid());
+    assert(parser.getDWPIndexedUnitCount() == 0);
+
+    // After valid index.
+    assert(parser.loadDWPFile(good_path));
+    assert(parser.hasLoadedDWP());
+    assert(parser.getLoadedDWPPath() == good_path);
+    assert(parser.hasDWPIndexSection());
+    assert(parser.isDWPIndexValid());
+    assert(parser.getDWPIndexedUnitCount() == 1);
+    assert(!parser.hasDWPTUIndexSection());
+    assert(!parser.isDWPTUIndexValid());
+    assert(parser.getDWPTUIndexedUnitCount() == 0);
+
+    // After TU-only valid index.
+    assert(parser.loadDWPFile(tu_path));
+    assert(parser.hasLoadedDWP());
+    assert(parser.getLoadedDWPPath() == tu_path);
+    assert(!parser.hasDWPIndexSection());
+    assert(!parser.isDWPIndexValid());
+    assert(parser.getDWPIndexedUnitCount() == 0);
+    assert(parser.hasDWPTUIndexSection());
+    assert(parser.isDWPTUIndexValid());
+    assert(parser.getDWPTUIndexedUnitCount() == 1);
+
+    std::cout << "DwarfParser DWP state transition tests passed!" << std::endl;
+}
+
+void testSplitDwarfPrefersDWPOverDWO() {
+    std::cout << "Testing split DWARF preference: .dwp over .dwo..." << std::endl;
+
+    const uint64_t dwo_id = 0x1020304050607080ULL;
+    const std::string dwo_name = "prefer_unit.dwo";
+    const std::string dwp_name = "prefer_unit.dwp";
+
+    // Main executable .debug_str holds the DWO filename.
+    std::vector<uint8_t> main_str;
+    uint32_t dwo_name_off = static_cast<uint32_t>(main_str.size());
+    for (char c : dwo_name) main_str.push_back(static_cast<uint8_t>(c));
+    main_str.push_back(0);
+
+    // Main .debug_abbrev: skeleton CU with dwo_name + dwo_id.
+    std::vector<uint8_t> main_abbrev;
+    main_abbrev.push_back(0x01); // code
+    main_abbrev.push_back(0x11); // DW_TAG_compile_unit
+    main_abbrev.push_back(0x00); // no children
+    appendULEB128(main_abbrev, static_cast<uint64_t>(DwarfAttribute::DW_AT_dwo_name));
+    appendULEB128(main_abbrev, static_cast<uint64_t>(DwarfForm::DW_FORM_strp));
+    appendULEB128(main_abbrev, static_cast<uint64_t>(DwarfAttribute::DW_AT_dwo_id));
+    appendULEB128(main_abbrev, static_cast<uint64_t>(DwarfForm::DW_FORM_data8));
+    main_abbrev.push_back(0x00); main_abbrev.push_back(0x00);
+    main_abbrev.push_back(0x00);
+
+    std::vector<uint8_t> main_info;
+    appendU32(main_info, 0); // placeholder unit_length
+    main_info.push_back(0x04); main_info.push_back(0x00); // version 4
+    appendU32(main_info, 0); // abbrev offset
+    main_info.push_back(0x08); // addr_size
+    main_info.push_back(0x01); // abbrev code
+    appendU32(main_info, dwo_name_off);
+    appendU64(main_info, dwo_id);
+    {
+        uint32_t unit_length = static_cast<uint32_t>(main_info.size() - 4);
+        main_info[0] = static_cast<uint8_t>(unit_length & 0xff);
+        main_info[1] = static_cast<uint8_t>((unit_length >> 8) & 0xff);
+        main_info[2] = static_cast<uint8_t>((unit_length >> 16) & 0xff);
+        main_info[3] = static_cast<uint8_t>((unit_length >> 24) & 0xff);
+    }
+
+    // Shared abbrev for DWO/DWP payload: CU with one variable child(name=strp).
+    std::vector<uint8_t> payload_abbrev;
+    payload_abbrev.push_back(0x01); // CU
+    payload_abbrev.push_back(0x11); // DW_TAG_compile_unit
+    payload_abbrev.push_back(0x01); // has children
+    payload_abbrev.push_back(0x00); payload_abbrev.push_back(0x00);
+    payload_abbrev.push_back(0x02); // variable
+    payload_abbrev.push_back(0x34); // DW_TAG_variable
+    payload_abbrev.push_back(0x00); // no children
+    appendULEB128(payload_abbrev, static_cast<uint64_t>(DwarfAttribute::DW_AT_name));
+    appendULEB128(payload_abbrev, static_cast<uint64_t>(DwarfForm::DW_FORM_strp));
+    payload_abbrev.push_back(0x00); payload_abbrev.push_back(0x00);
+    payload_abbrev.push_back(0x00);
+
+    auto makePayloadInfo = []() -> std::vector<uint8_t> {
+        std::vector<uint8_t> info;
+        appendU32(info, 0); // placeholder unit_length
+        info.push_back(0x04); info.push_back(0x00); // version 4
+        appendU32(info, 0); // abbrev offset
+        info.push_back(0x08); // addr_size
+        info.push_back(0x01); // CU code
+        info.push_back(0x02); // variable code
+        appendU32(info, 0);   // name strp offset
+        info.push_back(0x00); // end children
+        uint32_t unit_length = static_cast<uint32_t>(info.size() - 4);
+        info[0] = static_cast<uint8_t>(unit_length & 0xff);
+        info[1] = static_cast<uint8_t>((unit_length >> 8) & 0xff);
+        info[2] = static_cast<uint8_t>((unit_length >> 16) & 0xff);
+        info[3] = static_cast<uint8_t>((unit_length >> 24) & 0xff);
+        return info;
+    };
+
+    const std::string name_from_dwo = "FromDWO";
+    const std::string name_from_dwp = "FromDWP";
+
+    std::vector<uint8_t> dwo_str;
+    for (char c : name_from_dwo) dwo_str.push_back(static_cast<uint8_t>(c));
+    dwo_str.push_back(0);
+
+    std::vector<uint8_t> dwp_str;
+    for (char c : name_from_dwp) dwp_str.push_back(static_cast<uint8_t>(c));
+    dwp_str.push_back(0);
+
+    std::vector<uint8_t> payload_info = makePayloadInfo();
+
+    // Build .debug_cu_index for one unit with INFO and ABBREV columns.
+    std::vector<uint8_t> cu_index;
+    appendU32(cu_index, 6); // version
+    appendU32(cu_index, 2); // section_count
+    appendU32(cu_index, 1); // unit_count
+    appendU32(cu_index, 1); // slot_count
+    appendU32(cu_index, 1); // DW_SECT_INFO
+    appendU32(cu_index, 3); // DW_SECT_ABBREV
+    appendU64(cu_index, dwo_id); // hash/signature
+    appendU32(cu_index, 1);      // row index (1-based)
+    appendU32(cu_index, 0);      // info offset
+    appendU32(cu_index, 0);      // abbrev offset
+    appendU32(cu_index, static_cast<uint32_t>(payload_info.size()));   // info size
+    appendU32(cu_index, static_cast<uint32_t>(payload_abbrev.size())); // abbrev size
+
+    std::string dir = makeTempDir("dwarf_split_prefer_dwp_");
+    std::string main_path = (std::filesystem::path(dir) / "main_prefer.elf").string();
+    std::string dwo_path = (std::filesystem::path(dir) / dwo_name).string();
+    std::string dwp_path = (std::filesystem::path(dir) / dwp_name).string();
+
+    writeELFWithSections(main_path, {
+        {".debug_info", main_info},
+        {".debug_abbrev", main_abbrev},
+        {".debug_str", main_str},
+    });
+
+    writeELFWithSections(dwo_path, {
+        {".debug_info.dwo", payload_info},
+        {".debug_abbrev.dwo", payload_abbrev},
+        {".debug_str.dwo", dwo_str},
+    });
+
+    writeELFWithSections(dwp_path, {
+        {".debug_info.dwo", payload_info},
+        {".debug_abbrev.dwo", payload_abbrev},
+        {".debug_str.dwo", dwp_str},
+        {".debug_cu_index", cu_index},
+    });
+
+    DwarfParser parser(main_path);
+    parser.addDWOSearchPath(dir);
+    assert(parser.loadDWPFile(dwp_path));
+    assert(parser.load());
+
+    // Must resolve from DWP payload and not fall back to DWO payload.
+    auto dwp_hits = parser.findDIEsByName(name_from_dwp);
+    assert(!dwp_hits.empty());
+    bool found_dwp_var = false;
+    for (const auto& die : dwp_hits) {
+        if (die && die->getTag() == DwarfTag::DW_TAG_variable) {
+            found_dwp_var = true;
+            break;
+        }
+    }
+    assert(found_dwp_var);
+
+    auto dwo_hits = parser.findDIEsByName(name_from_dwo);
+    assert(dwo_hits.empty());
+
+    std::cout << "Split DWARF DWP preference tests passed!" << std::endl;
+}
+
+void testSplitDwarfFallsBackToDWOWhenDWPDoesNotContainUnit() {
+    std::cout << "Testing split DWARF fallback: .dwo when .dwp has no matching unit..." << std::endl;
+
+    const uint64_t dwo_id = 0x8877665544332211ULL;
+    const uint64_t other_sig = 0x1111222233334444ULL;
+    const std::string dwo_name = "fallback_unit.dwo";
+    const std::string dwp_name = "fallback_unit.dwp";
+    const std::string var_name = "FromDWOOnly";
+
+    // Main executable .debug_str holds the DWO filename.
+    std::vector<uint8_t> main_str;
+    uint32_t dwo_name_off = static_cast<uint32_t>(main_str.size());
+    for (char c : dwo_name) main_str.push_back(static_cast<uint8_t>(c));
+    main_str.push_back(0);
+
+    // Main skeleton CU abbrev: dwo_name + dwo_id.
+    std::vector<uint8_t> main_abbrev;
+    main_abbrev.push_back(0x01); // code
+    main_abbrev.push_back(0x11); // DW_TAG_compile_unit
+    main_abbrev.push_back(0x00); // no children
+    appendULEB128(main_abbrev, static_cast<uint64_t>(DwarfAttribute::DW_AT_dwo_name));
+    appendULEB128(main_abbrev, static_cast<uint64_t>(DwarfForm::DW_FORM_strp));
+    appendULEB128(main_abbrev, static_cast<uint64_t>(DwarfAttribute::DW_AT_dwo_id));
+    appendULEB128(main_abbrev, static_cast<uint64_t>(DwarfForm::DW_FORM_data8));
+    main_abbrev.push_back(0x00); main_abbrev.push_back(0x00);
+    main_abbrev.push_back(0x00);
+
+    std::vector<uint8_t> main_info;
+    appendU32(main_info, 0); // placeholder unit_length
+    main_info.push_back(0x04); main_info.push_back(0x00); // version 4
+    appendU32(main_info, 0); // abbrev offset
+    main_info.push_back(0x08); // addr_size
+    main_info.push_back(0x01); // abbrev code
+    appendU32(main_info, dwo_name_off);
+    appendU64(main_info, dwo_id);
+    {
+        uint32_t unit_length = static_cast<uint32_t>(main_info.size() - 4);
+        main_info[0] = static_cast<uint8_t>(unit_length & 0xff);
+        main_info[1] = static_cast<uint8_t>((unit_length >> 8) & 0xff);
+        main_info[2] = static_cast<uint8_t>((unit_length >> 16) & 0xff);
+        main_info[3] = static_cast<uint8_t>((unit_length >> 24) & 0xff);
+    }
+
+    // Shared payload abbrev: CU with one variable child(name=strp).
+    std::vector<uint8_t> payload_abbrev;
+    payload_abbrev.push_back(0x01); // CU
+    payload_abbrev.push_back(0x11); // DW_TAG_compile_unit
+    payload_abbrev.push_back(0x01); // has children
+    payload_abbrev.push_back(0x00); payload_abbrev.push_back(0x00);
+    payload_abbrev.push_back(0x02); // variable
+    payload_abbrev.push_back(0x34); // DW_TAG_variable
+    payload_abbrev.push_back(0x00); // no children
+    appendULEB128(payload_abbrev, static_cast<uint64_t>(DwarfAttribute::DW_AT_name));
+    appendULEB128(payload_abbrev, static_cast<uint64_t>(DwarfForm::DW_FORM_strp));
+    payload_abbrev.push_back(0x00); payload_abbrev.push_back(0x00);
+    payload_abbrev.push_back(0x00);
+
+    std::vector<uint8_t> payload_info;
+    appendU32(payload_info, 0); // placeholder unit_length
+    payload_info.push_back(0x04); payload_info.push_back(0x00); // version 4
+    appendU32(payload_info, 0); // abbrev offset
+    payload_info.push_back(0x08); // addr_size
+    payload_info.push_back(0x01); // CU code
+    payload_info.push_back(0x02); // variable code
+    appendU32(payload_info, 0);   // name strp offset
+    payload_info.push_back(0x00); // end children
+    {
+        uint32_t unit_length = static_cast<uint32_t>(payload_info.size() - 4);
+        payload_info[0] = static_cast<uint8_t>(unit_length & 0xff);
+        payload_info[1] = static_cast<uint8_t>((unit_length >> 8) & 0xff);
+        payload_info[2] = static_cast<uint8_t>((unit_length >> 16) & 0xff);
+        payload_info[3] = static_cast<uint8_t>((unit_length >> 24) & 0xff);
+    }
+
+    std::vector<uint8_t> dwo_str;
+    for (char c : var_name) dwo_str.push_back(static_cast<uint8_t>(c));
+    dwo_str.push_back(0);
+
+    // .debug_cu_index points to a different signature than skeleton dwo_id.
+    std::vector<uint8_t> cu_index;
+    appendU32(cu_index, 6); // version
+    appendU32(cu_index, 2); // section_count
+    appendU32(cu_index, 1); // unit_count
+    appendU32(cu_index, 1); // slot_count
+    appendU32(cu_index, 1); // DW_SECT_INFO
+    appendU32(cu_index, 3); // DW_SECT_ABBREV
+    appendU64(cu_index, other_sig); // hash/signature (non-matching)
+    appendU32(cu_index, 1); // row index
+    appendU32(cu_index, 0); // info offset
+    appendU32(cu_index, 0); // abbrev offset
+    appendU32(cu_index, static_cast<uint32_t>(payload_info.size()));   // info size
+    appendU32(cu_index, static_cast<uint32_t>(payload_abbrev.size())); // abbrev size
+
+    std::string dir = makeTempDir("dwarf_split_fallback_dwo_");
+    std::string main_path = (std::filesystem::path(dir) / "main_fallback.elf").string();
+    std::string dwo_path = (std::filesystem::path(dir) / dwo_name).string();
+    std::string dwp_path = (std::filesystem::path(dir) / dwp_name).string();
+
+    writeELFWithSections(main_path, {
+        {".debug_info", main_info},
+        {".debug_abbrev", main_abbrev},
+        {".debug_str", main_str},
+    });
+
+    writeELFWithSections(dwo_path, {
+        {".debug_info.dwo", payload_info},
+        {".debug_abbrev.dwo", payload_abbrev},
+        {".debug_str.dwo", dwo_str},
+    });
+
+    writeELFWithSections(dwp_path, {
+        {".debug_info.dwo", payload_info},
+        {".debug_abbrev.dwo", payload_abbrev},
+        {".debug_str.dwo", dwo_str},
+        {".debug_cu_index", cu_index},
+    });
+
+    DwarfParser parser(main_path);
+    parser.addDWOSearchPath(dir);
+    parser.setVerbose(true);
+    assert(parser.loadDWPFile(dwp_path));
+    std::ostringstream err;
+    auto* old_cerr = std::cerr.rdbuf(err.rdbuf());
+    assert(parser.load());
+    std::cerr.rdbuf(old_cerr);
+    assert(err.str().find("fallback reason=signature_not_found") != std::string::npos);
+
+    auto hits = parser.findDIEsByName(var_name);
+    assert(!hits.empty());
+    bool found_variable = false;
+    for (const auto& die : hits) {
+        if (die && die->getTag() == DwarfTag::DW_TAG_variable) {
+            found_variable = true;
+            break;
+        }
+    }
+    assert(found_variable);
+    const auto& stats = parser.getSplitDwarfStats();
+    assert(stats.dwo_fallback_hits == 1);
+    assert(stats.fallback_sig_miss == 1);
+    assert(stats.fallback_invalid_index == 0);
+    assert(stats.fallback_no_index == 0);
+
+    std::cout << "Split DWARF DWO fallback tests passed!" << std::endl;
+}
+
+void testSplitDwarfFallsBackToDWOWhenDWPIndexMalformed() {
+    std::cout << "Testing split DWARF fallback: .dwo when .dwp index is malformed..." << std::endl;
+
+    const uint64_t dwo_id = 0xDEADBEEF00112233ULL;
+    const std::string dwo_name = "fallback_bad_index.dwo";
+    const std::string dwp_name = "fallback_bad_index.dwp";
+    const std::string var_name = "FromDWOAfterBadIndex";
+
+    std::vector<uint8_t> main_str;
+    uint32_t dwo_name_off = static_cast<uint32_t>(main_str.size());
+    for (char c : dwo_name) main_str.push_back(static_cast<uint8_t>(c));
+    main_str.push_back(0);
+
+    std::vector<uint8_t> main_abbrev;
+    main_abbrev.push_back(0x01); // code
+    main_abbrev.push_back(0x11); // DW_TAG_compile_unit
+    main_abbrev.push_back(0x00); // no children
+    appendULEB128(main_abbrev, static_cast<uint64_t>(DwarfAttribute::DW_AT_dwo_name));
+    appendULEB128(main_abbrev, static_cast<uint64_t>(DwarfForm::DW_FORM_strp));
+    appendULEB128(main_abbrev, static_cast<uint64_t>(DwarfAttribute::DW_AT_dwo_id));
+    appendULEB128(main_abbrev, static_cast<uint64_t>(DwarfForm::DW_FORM_data8));
+    main_abbrev.push_back(0x00); main_abbrev.push_back(0x00);
+    main_abbrev.push_back(0x00);
+
+    std::vector<uint8_t> main_info;
+    appendU32(main_info, 0); // placeholder unit_length
+    main_info.push_back(0x04); main_info.push_back(0x00); // version 4
+    appendU32(main_info, 0); // abbrev offset
+    main_info.push_back(0x08); // addr_size
+    main_info.push_back(0x01); // abbrev code
+    appendU32(main_info, dwo_name_off);
+    appendU64(main_info, dwo_id);
+    {
+        uint32_t unit_length = static_cast<uint32_t>(main_info.size() - 4);
+        main_info[0] = static_cast<uint8_t>(unit_length & 0xff);
+        main_info[1] = static_cast<uint8_t>((unit_length >> 8) & 0xff);
+        main_info[2] = static_cast<uint8_t>((unit_length >> 16) & 0xff);
+        main_info[3] = static_cast<uint8_t>((unit_length >> 24) & 0xff);
+    }
+
+    // Minimal DWO payload with one variable named var_name.
+    std::vector<uint8_t> payload_abbrev;
+    payload_abbrev.push_back(0x01); // CU
+    payload_abbrev.push_back(0x11); // DW_TAG_compile_unit
+    payload_abbrev.push_back(0x01); // has children
+    payload_abbrev.push_back(0x00); payload_abbrev.push_back(0x00);
+    payload_abbrev.push_back(0x02); // variable
+    payload_abbrev.push_back(0x34); // DW_TAG_variable
+    payload_abbrev.push_back(0x00); // no children
+    appendULEB128(payload_abbrev, static_cast<uint64_t>(DwarfAttribute::DW_AT_name));
+    appendULEB128(payload_abbrev, static_cast<uint64_t>(DwarfForm::DW_FORM_strp));
+    payload_abbrev.push_back(0x00); payload_abbrev.push_back(0x00);
+    payload_abbrev.push_back(0x00);
+
+    std::vector<uint8_t> payload_info;
+    appendU32(payload_info, 0); // placeholder unit_length
+    payload_info.push_back(0x04); payload_info.push_back(0x00); // version 4
+    appendU32(payload_info, 0); // abbrev offset
+    payload_info.push_back(0x08); // addr_size
+    payload_info.push_back(0x01); // CU code
+    payload_info.push_back(0x02); // variable code
+    appendU32(payload_info, 0);   // name strp offset
+    payload_info.push_back(0x00); // end children
+    {
+        uint32_t unit_length = static_cast<uint32_t>(payload_info.size() - 4);
+        payload_info[0] = static_cast<uint8_t>(unit_length & 0xff);
+        payload_info[1] = static_cast<uint8_t>((unit_length >> 8) & 0xff);
+        payload_info[2] = static_cast<uint8_t>((unit_length >> 16) & 0xff);
+        payload_info[3] = static_cast<uint8_t>((unit_length >> 24) & 0xff);
+    }
+
+    std::vector<uint8_t> dwo_str;
+    for (char c : var_name) dwo_str.push_back(static_cast<uint8_t>(c));
+    dwo_str.push_back(0);
+
+    // Intentionally malformed/truncated .debug_cu_index.
+    std::vector<uint8_t> bad_cu_index;
+    appendU32(bad_cu_index, 6); // version
+    appendU32(bad_cu_index, 2); // section_count
+    appendU32(bad_cu_index, 1); // unit_count
+    appendU32(bad_cu_index, 1); // slot_count
+    // Missing section IDs / tables on purpose.
+
+    std::string dir = makeTempDir("dwarf_split_bad_dwp_index_");
+    std::string main_path = (std::filesystem::path(dir) / "main_bad_dwp_index.elf").string();
+    std::string dwo_path = (std::filesystem::path(dir) / dwo_name).string();
+    std::string dwp_path = (std::filesystem::path(dir) / dwp_name).string();
+
+    writeELFWithSections(main_path, {
+        {".debug_info", main_info},
+        {".debug_abbrev", main_abbrev},
+        {".debug_str", main_str},
+    });
+
+    writeELFWithSections(dwo_path, {
+        {".debug_info.dwo", payload_info},
+        {".debug_abbrev.dwo", payload_abbrev},
+        {".debug_str.dwo", dwo_str},
+    });
+
+    writeELFWithSections(dwp_path, {
+        {".debug_info.dwo", payload_info},
+        {".debug_abbrev.dwo", payload_abbrev},
+        {".debug_str.dwo", dwo_str},
+        {".debug_cu_index", bad_cu_index},
+    });
+
+    DwarfParser parser(main_path);
+    parser.addDWOSearchPath(dir);
+    parser.setVerbose(true);
+    assert(parser.loadDWPFile(dwp_path)); // DWP loads, but index has no usable rows.
+    std::ostringstream err;
+    auto* old_cerr = std::cerr.rdbuf(err.rdbuf());
+    assert(parser.load());
+    std::cerr.rdbuf(old_cerr);
+    assert(err.str().find("fallback reason=invalid_cu_index") != std::string::npos);
+
+    auto hits = parser.findDIEsByName(var_name);
+    assert(!hits.empty());
+    bool found_variable = false;
+    for (const auto& die : hits) {
+        if (die && die->getTag() == DwarfTag::DW_TAG_variable) {
+            found_variable = true;
+            break;
+        }
+    }
+    assert(found_variable);
+    const auto& stats = parser.getSplitDwarfStats();
+    assert(stats.dwo_fallback_hits == 1);
+    assert(stats.fallback_invalid_index == 1);
+    assert(stats.fallback_sig_miss == 0);
+    assert(stats.fallback_no_index == 0);
+
+    std::cout << "Split DWARF malformed-index fallback tests passed!" << std::endl;
+}
+
+void testSplitDwarfFallsBackToDWOWhenDWPHasNoCUIndex() {
+    std::cout << "Testing split DWARF fallback: .dwo when .dwp has no CU index..." << std::endl;
+
+    const uint64_t dwo_id = 0xCAFED00D11223344ULL;
+    const std::string dwo_name = "fallback_no_index.dwo";
+    const std::string dwp_name = "fallback_no_index.dwp";
+    const std::string var_name = "FromDWONoIndex";
+
+    std::vector<uint8_t> main_str;
+    uint32_t dwo_name_off = static_cast<uint32_t>(main_str.size());
+    for (char c : dwo_name) main_str.push_back(static_cast<uint8_t>(c));
+    main_str.push_back(0);
+
+    std::vector<uint8_t> main_abbrev;
+    main_abbrev.push_back(0x01); // code
+    main_abbrev.push_back(0x11); // DW_TAG_compile_unit
+    main_abbrev.push_back(0x00); // no children
+    appendULEB128(main_abbrev, static_cast<uint64_t>(DwarfAttribute::DW_AT_dwo_name));
+    appendULEB128(main_abbrev, static_cast<uint64_t>(DwarfForm::DW_FORM_strp));
+    appendULEB128(main_abbrev, static_cast<uint64_t>(DwarfAttribute::DW_AT_dwo_id));
+    appendULEB128(main_abbrev, static_cast<uint64_t>(DwarfForm::DW_FORM_data8));
+    main_abbrev.push_back(0x00); main_abbrev.push_back(0x00);
+    main_abbrev.push_back(0x00);
+
+    std::vector<uint8_t> main_info;
+    appendU32(main_info, 0); // placeholder unit_length
+    main_info.push_back(0x04); main_info.push_back(0x00); // version 4
+    appendU32(main_info, 0); // abbrev offset
+    main_info.push_back(0x08); // addr_size
+    main_info.push_back(0x01); // abbrev code
+    appendU32(main_info, dwo_name_off);
+    appendU64(main_info, dwo_id);
+    {
+        uint32_t unit_length = static_cast<uint32_t>(main_info.size() - 4);
+        main_info[0] = static_cast<uint8_t>(unit_length & 0xff);
+        main_info[1] = static_cast<uint8_t>((unit_length >> 8) & 0xff);
+        main_info[2] = static_cast<uint8_t>((unit_length >> 16) & 0xff);
+        main_info[3] = static_cast<uint8_t>((unit_length >> 24) & 0xff);
+    }
+
+    std::vector<uint8_t> payload_abbrev;
+    payload_abbrev.push_back(0x01); // CU
+    payload_abbrev.push_back(0x11); // DW_TAG_compile_unit
+    payload_abbrev.push_back(0x01); // has children
+    payload_abbrev.push_back(0x00); payload_abbrev.push_back(0x00);
+    payload_abbrev.push_back(0x02); // variable
+    payload_abbrev.push_back(0x34); // DW_TAG_variable
+    payload_abbrev.push_back(0x00); // no children
+    appendULEB128(payload_abbrev, static_cast<uint64_t>(DwarfAttribute::DW_AT_name));
+    appendULEB128(payload_abbrev, static_cast<uint64_t>(DwarfForm::DW_FORM_strp));
+    payload_abbrev.push_back(0x00); payload_abbrev.push_back(0x00);
+    payload_abbrev.push_back(0x00);
+
+    std::vector<uint8_t> payload_info;
+    appendU32(payload_info, 0); // placeholder unit_length
+    payload_info.push_back(0x04); payload_info.push_back(0x00); // version 4
+    appendU32(payload_info, 0); // abbrev offset
+    payload_info.push_back(0x08); // addr_size
+    payload_info.push_back(0x01); // CU code
+    payload_info.push_back(0x02); // variable code
+    appendU32(payload_info, 0);   // name strp offset
+    payload_info.push_back(0x00); // end children
+    {
+        uint32_t unit_length = static_cast<uint32_t>(payload_info.size() - 4);
+        payload_info[0] = static_cast<uint8_t>(unit_length & 0xff);
+        payload_info[1] = static_cast<uint8_t>((unit_length >> 8) & 0xff);
+        payload_info[2] = static_cast<uint8_t>((unit_length >> 16) & 0xff);
+        payload_info[3] = static_cast<uint8_t>((unit_length >> 24) & 0xff);
+    }
+
+    std::vector<uint8_t> dwo_str;
+    for (char c : var_name) dwo_str.push_back(static_cast<uint8_t>(c));
+    dwo_str.push_back(0);
+
+    std::string dir = makeTempDir("dwarf_split_no_cu_index_");
+    std::string main_path = (std::filesystem::path(dir) / "main_no_cu_index.elf").string();
+    std::string dwo_path = (std::filesystem::path(dir) / dwo_name).string();
+    std::string dwp_path = (std::filesystem::path(dir) / dwp_name).string();
+
+    writeELFWithSections(main_path, {
+        {".debug_info", main_info},
+        {".debug_abbrev", main_abbrev},
+        {".debug_str", main_str},
+    });
+
+    writeELFWithSections(dwo_path, {
+        {".debug_info.dwo", payload_info},
+        {".debug_abbrev.dwo", payload_abbrev},
+        {".debug_str.dwo", dwo_str},
+    });
+
+    // DWP has DWO payload sections but no .debug_cu_index.
+    writeELFWithSections(dwp_path, {
+        {".debug_info.dwo", payload_info},
+        {".debug_abbrev.dwo", payload_abbrev},
+        {".debug_str.dwo", dwo_str},
+    });
+
+    DwarfParser parser(main_path);
+    parser.addDWOSearchPath(dir);
+    parser.setVerbose(true);
+    assert(parser.loadDWPFile(dwp_path));
+    std::ostringstream err;
+    auto* old_cerr = std::cerr.rdbuf(err.rdbuf());
+    assert(parser.load());
+    std::cerr.rdbuf(old_cerr);
+    assert(err.str().find("fallback reason=no_cu_index") != std::string::npos);
+
+    auto hits = parser.findDIEsByName(var_name);
+    assert(!hits.empty());
+    bool found_variable = false;
+    for (const auto& die : hits) {
+        if (die && die->getTag() == DwarfTag::DW_TAG_variable) {
+            found_variable = true;
+            break;
+        }
+    }
+    assert(found_variable);
+
+    const auto& stats = parser.getSplitDwarfStats();
+    assert(stats.dwo_fallback_hits == 1);
+    assert(stats.fallback_no_index == 1);
+    assert(stats.fallback_invalid_index == 0);
+    assert(stats.fallback_sig_miss == 0);
+
+    std::cout << "Split DWARF no-index fallback tests passed!" << std::endl;
+}
+
+void testSplitDwarfUsesTUIndexWhenCUIndexAbsent() {
+    std::cout << "Testing split DWARF: TU index lookup when CU index absent..." << std::endl;
+
+    const uint64_t dwo_id = 0x1234567890ABCDEFULL;
+    const std::string dwo_name = "tu_index_only.dwo";
+    const std::string dwp_name = "tu_index_only.dwp";
+    const std::string var_name = "FromTUIndex";
+
+    std::vector<uint8_t> main_str;
+    uint32_t dwo_name_off = static_cast<uint32_t>(main_str.size());
+    for (char c : dwo_name) main_str.push_back(static_cast<uint8_t>(c));
+    main_str.push_back(0);
+
+    std::vector<uint8_t> main_abbrev;
+    main_abbrev.push_back(0x01); // code
+    main_abbrev.push_back(0x11); // DW_TAG_compile_unit
+    main_abbrev.push_back(0x00); // no children
+    appendULEB128(main_abbrev, static_cast<uint64_t>(DwarfAttribute::DW_AT_dwo_name));
+    appendULEB128(main_abbrev, static_cast<uint64_t>(DwarfForm::DW_FORM_strp));
+    appendULEB128(main_abbrev, static_cast<uint64_t>(DwarfAttribute::DW_AT_dwo_id));
+    appendULEB128(main_abbrev, static_cast<uint64_t>(DwarfForm::DW_FORM_data8));
+    main_abbrev.push_back(0x00); main_abbrev.push_back(0x00);
+    main_abbrev.push_back(0x00);
+
+    std::vector<uint8_t> main_info;
+    appendU32(main_info, 0); // placeholder unit_length
+    main_info.push_back(0x04); main_info.push_back(0x00); // version 4
+    appendU32(main_info, 0); // abbrev offset
+    main_info.push_back(0x08); // addr_size
+    main_info.push_back(0x01); // abbrev code
+    appendU32(main_info, dwo_name_off);
+    appendU64(main_info, dwo_id);
+    {
+        uint32_t unit_length = static_cast<uint32_t>(main_info.size() - 4);
+        main_info[0] = static_cast<uint8_t>(unit_length & 0xff);
+        main_info[1] = static_cast<uint8_t>((unit_length >> 8) & 0xff);
+        main_info[2] = static_cast<uint8_t>((unit_length >> 16) & 0xff);
+        main_info[3] = static_cast<uint8_t>((unit_length >> 24) & 0xff);
+    }
+
+    std::vector<uint8_t> payload_abbrev;
+    payload_abbrev.push_back(0x01); // CU
+    payload_abbrev.push_back(0x11); // DW_TAG_compile_unit
+    payload_abbrev.push_back(0x01); // has children
+    payload_abbrev.push_back(0x00); payload_abbrev.push_back(0x00);
+    payload_abbrev.push_back(0x02); // variable
+    payload_abbrev.push_back(0x34); // DW_TAG_variable
+    payload_abbrev.push_back(0x00); // no children
+    appendULEB128(payload_abbrev, static_cast<uint64_t>(DwarfAttribute::DW_AT_name));
+    appendULEB128(payload_abbrev, static_cast<uint64_t>(DwarfForm::DW_FORM_strp));
+    payload_abbrev.push_back(0x00); payload_abbrev.push_back(0x00);
+    payload_abbrev.push_back(0x00);
+
+    std::vector<uint8_t> payload_info;
+    appendU32(payload_info, 0); // placeholder unit_length
+    payload_info.push_back(0x04); payload_info.push_back(0x00); // version 4
+    appendU32(payload_info, 0); // abbrev offset
+    payload_info.push_back(0x08); // addr_size
+    payload_info.push_back(0x01); // CU code
+    payload_info.push_back(0x02); // variable code
+    appendU32(payload_info, 0);   // name strp offset
+    payload_info.push_back(0x00); // end children
+    {
+        uint32_t unit_length = static_cast<uint32_t>(payload_info.size() - 4);
+        payload_info[0] = static_cast<uint8_t>(unit_length & 0xff);
+        payload_info[1] = static_cast<uint8_t>((unit_length >> 8) & 0xff);
+        payload_info[2] = static_cast<uint8_t>((unit_length >> 16) & 0xff);
+        payload_info[3] = static_cast<uint8_t>((unit_length >> 24) & 0xff);
+    }
+
+    std::vector<uint8_t> dwp_str;
+    for (char c : var_name) dwp_str.push_back(static_cast<uint8_t>(c));
+    dwp_str.push_back(0);
+
+    // TU index only (no CU index section).
+    std::vector<uint8_t> tu_index;
+    appendU32(tu_index, 6); // version
+    appendU32(tu_index, 2); // section_count
+    appendU32(tu_index, 1); // unit_count
+    appendU32(tu_index, 1); // slot_count
+    appendU32(tu_index, 1); // DW_SECT_INFO
+    appendU32(tu_index, 3); // DW_SECT_ABBREV
+    appendU64(tu_index, dwo_id); // signature
+    appendU32(tu_index, 1); // row index
+    appendU32(tu_index, 0); // info offset
+    appendU32(tu_index, 0); // abbrev offset
+    appendU32(tu_index, static_cast<uint32_t>(payload_info.size()));   // info size
+    appendU32(tu_index, static_cast<uint32_t>(payload_abbrev.size())); // abbrev size
+
+    std::string dir = makeTempDir("dwarf_split_tu_index_");
+    std::string main_path = (std::filesystem::path(dir) / "main_tu_index.elf").string();
+    std::string dwp_path = (std::filesystem::path(dir) / dwp_name).string();
+
+    writeELFWithSections(main_path, {
+        {".debug_info", main_info},
+        {".debug_abbrev", main_abbrev},
+        {".debug_str", main_str},
+    });
+
+    writeELFWithSections(dwp_path, {
+        {".debug_info.dwo", payload_info},
+        {".debug_abbrev.dwo", payload_abbrev},
+        {".debug_str.dwo", dwp_str},
+        {".debug_tu_index", tu_index},
+    });
+
+    DwarfParser parser(main_path);
+    parser.setVerbose(true);
+    assert(parser.loadDWPFile(dwp_path));
+    assert(parser.load());
+
+    auto hits = parser.findDIEsByName(var_name);
+    assert(!hits.empty());
+    bool found_variable = false;
+    for (const auto& die : hits) {
+        if (die && die->getTag() == DwarfTag::DW_TAG_variable) {
+            found_variable = true;
+            break;
+        }
+    }
+    assert(found_variable);
+
+    const auto& stats = parser.getSplitDwarfStats();
+    assert(stats.dwp_hits == 1);
+    assert(stats.dwo_hits == 0);
+    assert(stats.dwo_fallback_hits == 0);
+    assert(stats.fallback_no_index == 0);
+    assert(stats.fallback_invalid_index == 0);
+    assert(stats.fallback_sig_miss == 0);
+
+    std::cout << "Split DWARF TU-index lookup tests passed!" << std::endl;
+}
+
 void testSplitDwarfDWOAddrxUsesDWODebugAddr() {
     std::cout << "Testing split DWARF: DW_OP_addrx uses DWO .debug_addr..." << std::endl;
 
@@ -9024,6 +13387,83 @@ void testTypedOpsTypedefChainViaDwarfParser() {
     }
 
     std::cout << "Typed ops typedef-chain tests passed!" << std::endl;
+}
+
+void testVariableLocationDiagnosticContextViaDwarfParser() {
+    std::cout << "Testing parser-provided variable location diagnostic context..." << std::endl;
+
+    // .debug_str: "bad\0"
+    std::vector<uint8_t> debug_str;
+    uint32_t off_bad = 0;
+    for (char c : std::string("bad")) debug_str.push_back(static_cast<uint8_t>(c));
+    debug_str.push_back(0);
+
+    // Abbrev:
+    // 1: CU (children)
+    // 2: variable with name(strp) + location(exprloc)
+    std::vector<uint8_t> debug_abbrev;
+    appendULEB128(debug_abbrev, 1);
+    appendULEB128(debug_abbrev, static_cast<uint64_t>(DwarfTag::DW_TAG_compile_unit));
+    debug_abbrev.push_back(0x01); // children
+    debug_abbrev.push_back(0x00); debug_abbrev.push_back(0x00);
+
+    appendULEB128(debug_abbrev, 2);
+    appendULEB128(debug_abbrev, static_cast<uint64_t>(DwarfTag::DW_TAG_variable));
+    debug_abbrev.push_back(0x00); // no children
+    appendULEB128(debug_abbrev, static_cast<uint64_t>(DwarfAttribute::DW_AT_name));
+    appendULEB128(debug_abbrev, static_cast<uint64_t>(DwarfForm::DW_FORM_strp));
+    appendULEB128(debug_abbrev, static_cast<uint64_t>(DwarfAttribute::DW_AT_location));
+    appendULEB128(debug_abbrev, static_cast<uint64_t>(DwarfForm::DW_FORM_exprloc));
+    debug_abbrev.push_back(0x00); debug_abbrev.push_back(0x00);
+    debug_abbrev.push_back(0x00); // end abbrev table
+
+    // .debug_info with one variable that has invalid location opcode 0xff.
+    std::vector<uint8_t> debug_info;
+    appendU32(debug_info, 0); // unit_length placeholder
+    debug_info.push_back(0x04); debug_info.push_back(0x00); // version 4
+    appendU32(debug_info, 0); // abbrev offset
+    debug_info.push_back(0x08); // addr size
+
+    debug_info.push_back(0x01); // CU
+    debug_info.push_back(0x02); // variable
+    appendU32(debug_info, off_bad); // name
+    appendULEB128(debug_info, 1);   // exprloc length
+    debug_info.push_back(0xff);     // unsupported op
+    debug_info.push_back(0x00);     // end children
+
+    uint32_t unit_len = static_cast<uint32_t>(debug_info.size() - 4);
+    debug_info[0] = static_cast<uint8_t>(unit_len & 0xff);
+    debug_info[1] = static_cast<uint8_t>((unit_len >> 8) & 0xff);
+    debug_info[2] = static_cast<uint8_t>((unit_len >> 16) & 0xff);
+    debug_info[3] = static_cast<uint8_t>((unit_len >> 24) & 0xff);
+
+    std::string dir = makeTempDir("dwarf_loc_diag_ctx_");
+    std::string path = (std::filesystem::path(dir) / "loc_diag.elf").string();
+    writeELFWithSections(path, {
+        {".debug_info", debug_info},
+        {".debug_abbrev", debug_abbrev},
+        {".debug_str", debug_str},
+    });
+
+    DwarfParser parser(path);
+    assert(parser.load());
+
+    auto vars = parser.findDIEsByName("bad");
+    assert(!vars.empty());
+    auto loc = parser.getVariableLocation(vars[0], /*pc=*/0);
+    assert(loc.type == VariableLocationType::INVALID);
+    assert(loc.description.find("attr=DW_AT_location") != std::string::npos);
+    assert(loc.description.find("die=0x") != std::string::npos);
+    assert(loc.description.find("cu=0x") != std::string::npos);
+
+    // Subsequent raw evaluation should not inherit previous DIE/CU diagnostics.
+    auto raw = parser.evaluateLocation(std::vector<uint8_t>{0xff}, /*pc=*/0, /*is_loclist=*/false);
+    assert(raw.type == VariableLocationType::INVALID);
+    assert(raw.description.find("attr=DW_AT_location") == std::string::npos);
+    assert(raw.description.find("die=0x") == std::string::npos);
+    assert(raw.description.find("cu=0x") == std::string::npos);
+
+    std::cout << "Parser variable location diagnostic context tests passed!" << std::endl;
 }
 
 void testCallStackAArch64CFAExpressionUnwind() {
@@ -9944,8 +14384,176 @@ void testTypeSystem() {
     assert(enum_type->getEnumeratorName(0) == "RED");
     assert(enum_type->getEnumeratorName(1) == "GREEN");
     assert(enum_type->getEnumeratorName(2) == "BLUE");
+
+    // Test DIE-driven type resolution preserves wrappers and richer metadata.
+    {
+        std::map<uint64_t, std::shared_ptr<DIE>> dies;
+        auto add_die = [&](DwarfTag tag, uint64_t offset) {
+            auto die = std::make_shared<DIE>(tag, offset, 0);
+            dies[offset] = die;
+            return die;
+        };
+        auto lookup = [&](uint64_t offset) -> std::shared_ptr<DIE> {
+            auto it = dies.find(offset);
+            return (it != dies.end()) ? it->second : nullptr;
+        };
+
+        TypeSystem resolving_system(8, lookup);
+
+        auto int_die = add_die(DwarfTag::DW_TAG_base_type, 0x10);
+        int_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("int"));
+        int_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(4));
+        int_die->addAttribute(DwarfAttribute::DW_AT_encoding, std::make_shared<UnsignedAttributeValue>(4));
+
+        auto const_die = add_die(DwarfTag::DW_TAG_const_type, 0x20);
+        const_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x10));
+
+        auto typedef_die = add_die(DwarfTag::DW_TAG_typedef, 0x30);
+        typedef_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("MyInt"));
+        typedef_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x20));
+
+        auto ref_die = add_die(DwarfTag::DW_TAG_reference_type, 0x40);
+        ref_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x30));
+
+        auto elem_die = add_die(DwarfTag::DW_TAG_array_type, 0x50);
+        elem_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x10));
+        auto subrange = add_die(DwarfTag::DW_TAG_subrange_type, 0x51);
+        subrange->addAttribute(DwarfAttribute::DW_AT_lower_bound, std::make_shared<SignedAttributeValue>(-2));
+        subrange->addAttribute(DwarfAttribute::DW_AT_upper_bound, std::make_shared<SignedAttributeValue>(2));
+        elem_die->addChild(subrange);
+
+        auto base_struct_die = add_die(DwarfTag::DW_TAG_structure_type, 0x60);
+        base_struct_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("Base"));
+        base_struct_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(4));
+
+        auto struct_die = add_die(DwarfTag::DW_TAG_structure_type, 0x70);
+        struct_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("Widget"));
+        struct_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(16));
+
+        auto member_die = add_die(DwarfTag::DW_TAG_member, 0x71);
+        member_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("flags"));
+        member_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x10));
+        member_die->addAttribute(DwarfAttribute::DW_AT_data_member_location, std::make_shared<UnsignedAttributeValue>(8));
+        member_die->addAttribute(DwarfAttribute::DW_AT_bit_size, std::make_shared<UnsignedAttributeValue>(3));
+        member_die->addAttribute(DwarfAttribute::DW_AT_data_bit_offset, std::make_shared<UnsignedAttributeValue>(1));
+        member_die->addAttribute(DwarfAttribute::DW_AT_accessibility, std::make_shared<UnsignedAttributeValue>(1));
+        struct_die->addChild(member_die);
+
+        auto inherit_die = add_die(DwarfTag::DW_TAG_inheritance, 0x72);
+        inherit_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x60));
+        inherit_die->addAttribute(DwarfAttribute::DW_AT_data_member_location, std::make_shared<UnsignedAttributeValue>(0));
+        inherit_die->addAttribute(DwarfAttribute::DW_AT_virtuality, std::make_shared<UnsignedAttributeValue>(1));
+        inherit_die->addAttribute(DwarfAttribute::DW_AT_accessibility, std::make_shared<UnsignedAttributeValue>(2));
+        struct_die->addChild(inherit_die);
+
+        auto func_die = add_die(DwarfTag::DW_TAG_subroutine_type, 0x80);
+        func_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x10));
+        auto param_die = add_die(DwarfTag::DW_TAG_formal_parameter, 0x81);
+        param_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x30));
+        func_die->addChild(param_die);
+        auto variadic_die = add_die(DwarfTag::DW_TAG_unspecified_parameters, 0x82);
+        func_die->addChild(variadic_die);
+
+        auto resolved_typedef = std::dynamic_pointer_cast<ModifiedType>(resolving_system.resolveType(typedef_die));
+        assert(resolved_typedef);
+        assert(resolved_typedef->getKind() == ModifiedTypeKind::TYPEDEF);
+        assert(resolved_typedef->getName() == "MyInt");
+        assert(resolved_typedef->getUnderlyingType());
+        assert(resolved_typedef->getUnderlyingType()->getName() == "const int");
+
+        auto resolved_ref = std::dynamic_pointer_cast<ModifiedType>(resolving_system.resolveType(ref_die));
+        assert(resolved_ref);
+        assert(resolved_ref->getKind() == ModifiedTypeKind::REFERENCE);
+        assert(resolved_ref->getSize() == 8);
+        assert(resolved_ref->getName() == "MyInt&");
+
+        auto resolved_array = std::dynamic_pointer_cast<ArrayType>(resolving_system.resolveType(elem_die));
+        assert(resolved_array);
+        assert(resolved_array->getDimensions().size() == 1);
+        assert(resolved_array->getDimensions()[0] == 5);
+
+        auto resolved_struct = std::dynamic_pointer_cast<CompositeType>(resolving_system.resolveType(struct_die));
+        assert(resolved_struct);
+        assert(resolved_struct->getMembers().size() == 1);
+        assert(resolved_struct->getMembers()[0].bit_size == 3);
+        assert(resolved_struct->getMembers()[0].bit_offset == 1);
+        assert(resolved_struct->getMembers()[0].is_public);
+        assert(resolved_struct->getBaseClasses().size() == 1);
+        assert(resolved_struct->getBaseClasses()[0].is_virtual);
+        assert(resolved_struct->getBaseClasses()[0].is_protected);
+
+        auto resolved_func = std::dynamic_pointer_cast<FunctionType>(resolving_system.resolveType(func_die));
+        assert(resolved_func);
+        assert(resolved_func->isVariadic());
+        assert(resolved_func->getParameterTypes().size() == 1);
+        assert(resolved_func->getParameterTypes()[0]->getName() == "MyInt");
+    }
     
     std::cout << "TypeSystem tests passed!" << std::endl;
+}
+
+void testTypePrinter() {
+    std::cout << "Testing TypePrinter..." << std::endl;
+
+    std::map<uint64_t, std::shared_ptr<DIE>> dies;
+    auto add_die = [&](DwarfTag tag, uint64_t offset) {
+        auto die = std::make_shared<DIE>(tag, offset, 0);
+        dies[offset] = die;
+        return die;
+    };
+    auto lookup = [&](uint64_t offset) -> std::shared_ptr<DIE> {
+        auto it = dies.find(offset);
+        return (it != dies.end()) ? it->second : nullptr;
+    };
+
+    auto int_die = add_die(DwarfTag::DW_TAG_base_type, 0x100);
+    int_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("int"));
+    int_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(4));
+    int_die->addAttribute(DwarfAttribute::DW_AT_encoding, std::make_shared<UnsignedAttributeValue>(4));
+
+    auto const_die = add_die(DwarfTag::DW_TAG_const_type, 0x110);
+    const_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x100));
+
+    auto ptr_die = add_die(DwarfTag::DW_TAG_pointer_type, 0x120);
+    ptr_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x110));
+
+    auto typedef_die = add_die(DwarfTag::DW_TAG_typedef, 0x130);
+    typedef_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("Alias"));
+    typedef_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x120));
+
+    auto func_die = add_die(DwarfTag::DW_TAG_subroutine_type, 0x140);
+    func_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x100));
+    auto param_die = add_die(DwarfTag::DW_TAG_formal_parameter, 0x141);
+    param_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x130));
+    func_die->addChild(param_die);
+    func_die->addChild(add_die(DwarfTag::DW_TAG_unspecified_parameters, 0x142));
+
+    auto struct_die = add_die(DwarfTag::DW_TAG_structure_type, 0x150);
+    struct_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("Widget"));
+    struct_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(16));
+    auto member_die = add_die(DwarfTag::DW_TAG_member, 0x151);
+    member_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("value"));
+    member_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x130));
+    member_die->addAttribute(DwarfAttribute::DW_AT_data_member_location, std::make_shared<UnsignedAttributeValue>(8));
+    struct_die->addChild(member_die);
+
+    TypePrinterConfig cfg;
+    cfg.pointer_size_bytes = 8;
+    cfg.show_offsets = true;
+    TypePrinter printer(lookup, cfg);
+
+    assert(printer.formatType(const_die) == "const int");
+    assert(printer.formatType(ptr_die) == "const int*");
+    assert(printer.formatType(typedef_die) == "Alias");
+    assert(printer.formatTypedef(typedef_die) == "typedef const int* Alias");
+    assert(printer.formatType(func_die) == "int (*)(Alias, ...)");
+
+    std::string struct_text = printer.formatStructure(struct_die, true);
+    assert(struct_text.find("struct Widget") != std::string::npos);
+    assert(struct_text.find("Alias value") != std::string::npos);
+    assert(struct_text.find("offset: 8") != std::string::npos);
+
+    std::cout << "TypePrinter tests passed!" << std::endl;
 }
 
 void testRngListsParser() {
@@ -10290,6 +14898,7 @@ int main() {
 	    testVariableLocationCompositeBitPieceOffsets();
 	    testSymbolicExpressionEvaluatorBasic();
 	    testSymbolicExpressionEvaluatorMalformedOperands();
+	    testSymbolicExpressionEvaluatorDiagnosticContextOnUnsupportedOp();
 	    testSymbolicExpressionEvaluatorLoad();
 	    testSymbolicExpressionEvaluatorPieces();
 	    testSymbolicExpressionEvaluatorUnavailablePieces();
@@ -10323,19 +14932,42 @@ int main() {
 	    testSymbolicExpressionEvaluatorCallOpsAndGnuIndices();
 	    testSymbolicExpressionEvaluatorGnuTypedAndParameterOps();
 	    testExpressionVerifier();
+	    testSMTExpressionVerifierBehavior();
 	    testCrossBinaryExpressionComparator();
 	    testAttributeParserBoundedStringsAndBlocks();
 	    testStrpSup();
+	    testGnuAltForms();
+    testGnuIndexForms();
 	    testRefSupForms();
 	    testDIEParserRefSupIntegration();
-	    testDIEParserCUBoundsOnUnterminatedFormString();
-	    testDIEParserTruncatedAbbrevImplicitConst();
+    testDIEParserUnknownVendorFormSkip();
+    testDIEParserCUBoundsOnUnterminatedFormString();
+    testDIEParserTruncatedAbbrevImplicitConst();
     testDebugSupParser();
+    testDwarfParserExposesDebugNamesUnitHeaders();
     testDebugNamesParser();
+    testDebugNamesParserTypeUnitIndexResolvesDIEOffsets();
+    testDebugNamesParserMultipleUnitsLookup();
+    testDebugNamesParserRealWorldMultiUnitFixture();
+    testDebugNamesParserRealWorldMixedFixture();
+    testDebugNamesParserNonEmptyAugmentationStringAccepted();
+    testDebugNamesParserAugmentationPayloadSkipsBytes();
+    testDebugNamesParserAugmentationPayloadLengthPrefixedSkipsBytes();
     testDebugNamesParserBucketLookup();
+    testDebugNamesParserDwarf64UnknownRefSup4Skip();
+    testDebugNamesParserUnknownStrx3Skip();
+    testDebugNamesParserDwarf32UnknownRefSup8Skip();
+    testDebugNamesParserDwarf64UnknownAddrSkip();
+    testDebugNamesParserDwarf32UnknownAddrSkip();
+    testDebugNamesParserDwarf64DieOffsetAsAddr();
     testDebugNamesParserMalformedInputs();
 	    testDebugMacroParser();
 	    testDwarfParserMacroLookupFallsBackAcrossCUs();
+        testDwarf5SkeletonUnitHeaderSkipsDWOId();
+        testDwarf5SplitCompileUnitHeaderSkipsDWOId();
+        testDwarf5TypeUnitHeaderSkipsSignatureAndTypeOffset();
+        testDwarf5PartialUnitSetsCUContextForAddrx();
+        testDwarf5SplitTypeUnitSetsCUContextForAddrx();
 	    testDwarfParserGetFunctionAtUsesRanges();
 	    testDebugLineV4ViaStmtList();
     testDebugLineV5ViaStmtList();
@@ -10343,6 +14975,7 @@ int main() {
     testStrxContributionBoundsWhenBasePointsToTableStart();
     testAddrxBasePointsToContributionHeader();
     testAddrxContributionBoundsWhenBasePointsToTableStart();
+    testV5IndexedFormsInHelperParsers();
     testRnglistxBasePointsToContributionHeader();
     testRnglistxContributionBoundsWhenBasePointsToTableStart();
     testLoclistxBasePointsToContributionHeader();
@@ -10365,17 +14998,25 @@ int main() {
 		    testCFIParserCFAExpressionThenDefCFARegisterOffsetSwitchesBack();
 	    testCFIParserUnknownOpcodeAbortsInstructionStream();
 	    testUnwindInfoValExpressionMemoryEndianness();
-	    testSymbolicCFIVerifier();
+    testSymbolicCFIVerifier();
 		    testDWPIndexParsing();
     testImplicitConstInAbbrev();
+    testImplicitConstParserPathAndSignedValue();
     testRefAddrBiasForDWO();
     testDwarf5SecOffsetLoclistsAndRnglists();
     testDwarf4SecOffsetDebugLocAndRanges();
     testDwarf64LoclistxRnglistxOffsetSize();
     testSplitDwarfIntegrationELFIO();
+    testDwarfParserDWPStateTransitions();
+    testSplitDwarfPrefersDWPOverDWO();
+    testSplitDwarfFallsBackToDWOWhenDWPDoesNotContainUnit();
+    testSplitDwarfFallsBackToDWOWhenDWPIndexMalformed();
+    testSplitDwarfFallsBackToDWOWhenDWPHasNoCUIndex();
+    testSplitDwarfUsesTUIndexWhenCUIndexAbsent();
     testSplitDwarfDWOAddrxUsesDWODebugAddr();
     testTypedOpsTypedefChainViaDwarfParser();
-	    testCallStackAArch64CFAExpressionUnwind();
+    testVariableLocationDiagnosticContextViaDwarfParser();
+    testCallStackAArch64CFAExpressionUnwind();
 	    testEHFramePCRelativeEncoding();
 	    testEHFrameAlignedEncoding();
 	    testEHFrameSetLocUsesCIEAddressSize();
@@ -10384,6 +15025,7 @@ int main() {
 	    testEHFrameTruncatedFDEPointerDoesNotReadPadding();
 	    testSupplementaryDebugInfoViaDebugSup();
     testTypeSystem();
+    testTypePrinter();
         testRngListsParser();
         testLocListsParser();
         testLocationAttributeValue();

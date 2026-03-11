@@ -139,6 +139,8 @@ private:
     SymbolicExpressionResult evaluateFromOffset(const std::vector<uint8_t>& expr, uint64_t start_off);
     bool executeProcedureSubexprInPlace(const std::vector<uint8_t>& subexpr);
     SymbolicExpressionResult evalEntryValueSubexpr(const std::vector<uint8_t>& subexpr);
+    std::string diagnosticContextSuffix() const;
+    void appendDiagnosticContext(SymbolicExpressionResult& result) const;
 };
 
 } // namespace dwarf

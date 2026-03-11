@@ -40,6 +40,14 @@ struct DebugNamesHeader {
     uint32_t abbrev_table_size;
     uint32_t augmentation_string_size;
     std::string augmentation_string;
+    // Best-effort parsed augmentation metadata (DWARF v5 errata 200505.4).
+    // If present, the augmentation string begins with a 4-byte vendor ID and is padded with NULs.
+    std::string augmentation_vendor_id; // 4 bytes when available
+    std::string augmentation_vendor_data; // vendor-specific bytes after vendor ID (NUL padding trimmed)
+    // Some producers emit extra augmentation bytes between the augmentation string and the CU list.
+    // When detected, the parser records them here (these bytes are otherwise vendor-specific).
+    uint32_t augmentation_payload_size = 0;
+    std::vector<uint8_t> augmentation_payload;
     bool is_dwarf64;
     uint64_t header_size;
 };
@@ -75,6 +83,9 @@ public:
     // Get parsed header
     const DebugNamesHeader& getHeader() const { return header_; }
 
+    // Headers for all parsed units.
+    const std::vector<DebugNamesHeader>& getUnitHeaders() const { return unit_headers_; }
+
     // Get CU offsets
     const std::vector<uint64_t>& getCUOffsets() const { return cu_offsets_; }
 
@@ -101,6 +112,7 @@ private:
 
     // Back-compat: mirror the first unit for callers that assume a single-unit parser.
     DebugNamesHeader header_;
+    std::vector<DebugNamesHeader> unit_headers_;
     std::vector<uint64_t> cu_offsets_;
 
     // Name lookup cache (populated on first lookup)

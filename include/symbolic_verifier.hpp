@@ -12,15 +12,14 @@
 namespace dwarf {
 
 struct ExpressionVerificationOptions {
-    // Number of concrete differential trials used to search for counterexamples
-    // when symbolic equivalence is not established.
+    // Deprecated heuristic options kept for CLI/API compatibility.
+    // They no longer influence verification verdicts.
     size_t differential_trials = 64;
-    // Number of synthetic registers generated per trial.
     size_t register_count = 64;
-    // Base seed for deterministic trial generation.
     uint64_t seed = 0x9e3779b97f4a7c15ULL;
-    // Enable/disable concrete differential search.
     bool run_differential = true;
+    // Optional Z3 timeout per equivalence query (0 = solver default/no timeout).
+    uint32_t solver_timeout_ms = 0;
 };
 
 struct ExpressionVerificationResult {
@@ -34,6 +33,10 @@ struct ExpressionVerificationResult {
     std::string reason;
     std::string lhs_summary;
     std::string rhs_summary;
+    std::string verifier_backend;
+    std::string solver_result;
+    std::string counterexample_model;
+    std::string counterexample_witness;
 };
 
 struct DIEExpressionSelectionOptions {

@@ -18,6 +18,16 @@ enum class DwarfVersion : uint8_t {
     DWARF5 = 5
 };
 
+// DWARF 5 Unit Types (DW_UT_*)
+enum class DwarfUnitType : uint8_t {
+    DW_UT_compile = 0x01,
+    DW_UT_type = 0x02,
+    DW_UT_partial = 0x03,
+    DW_UT_skeleton = 0x04,
+    DW_UT_split_compile = 0x05,
+    DW_UT_split_type = 0x06
+};
+
 // DWARF address size
 enum class AddressSize : uint8_t {
     ADDR_32 = 4,
@@ -27,6 +37,8 @@ enum class AddressSize : uint8_t {
 // DWARF tag values (simplified set)
 enum class DwarfTag : uint16_t {
     DW_TAG_compile_unit = 0x11,
+    DW_TAG_partial_unit = 0x3c,          // DWARF 5
+    DW_TAG_type_unit = 0x41,             // DWARF 5
     DW_TAG_subprogram = 0x2e,
     DW_TAG_variable = 0x34,
     DW_TAG_formal_parameter = 0x05,
@@ -53,7 +65,7 @@ enum class DwarfTag : uint16_t {
 };
 
 // DWARF attribute form values
-enum class DwarfForm : uint8_t {
+enum class DwarfForm : uint16_t {
     DW_FORM_addr = 0x01,
     DW_FORM_block2 = 0x03,
     DW_FORM_block4 = 0x04,
@@ -96,7 +108,13 @@ enum class DwarfForm : uint8_t {
     DW_FORM_addrx1 = 0x29,             // DWARF 5
     DW_FORM_addrx2 = 0x2a,             // DWARF 5
     DW_FORM_addrx3 = 0x2b,             // DWARF 5
-    DW_FORM_addrx4 = 0x2c              // DWARF 5
+    DW_FORM_addrx4 = 0x2c,             // DWARF 5
+
+    // GNU split-DWARF predecessor forms for alternate debug object references.
+    DW_FORM_GNU_addr_index = 0x1f01,
+    DW_FORM_GNU_str_index = 0x1f02,
+    DW_FORM_GNU_ref_alt = 0x1f20,
+    DW_FORM_GNU_strp_alt = 0x1f21
 };
 
 // DWARF attribute names
@@ -389,6 +407,7 @@ enum class DwarfOp : uint8_t {
 
     // GNU Extensions (commonly used in real binaries)
     DW_OP_GNU_push_tls_address = 0xe0,
+    DW_OP_WASM_location = 0xed,
     DW_OP_GNU_uninit = 0xf0,
     DW_OP_GNU_encoded_addr = 0xf1,
     DW_OP_GNU_implicit_pointer = 0xf2,

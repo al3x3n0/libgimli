@@ -143,7 +143,8 @@ ExpressionResult ExpressionEvaluator::evaluate(const std::vector<uint8_t>& expre
             return ExpressionResult(ExpressionResult::INVALID, 0,
                                     std::string("Unsupported operation: ") +
                                         DwarfUtils::operationToString(op) +
-                                        " at offset " + std::to_string(op_off));
+                                        " at offset " + std::to_string(op_off) +
+                                        diagnosticContextSuffix());
         }
     }
 
@@ -224,8 +225,31 @@ void ExpressionEvaluator::push(uint64_t value) {
 void ExpressionEvaluator::setExecutionError(std::string msg) const {
     if (!execution_error_) {
         execution_error_ = true;
-        execution_error_message_ = std::move(msg);
+        execution_error_message_ = std::move(msg) + diagnosticContextSuffix();
     }
+}
+
+std::string ExpressionEvaluator::diagnosticContextSuffix() const {
+    std::ostringstream oss;
+    bool any = false;
+    if (context_.diagnostic_cu_offset.has_value()) {
+        oss << (any ? ", " : " [") << "cu=0x"
+            << std::hex << *context_.diagnostic_cu_offset << std::dec;
+        any = true;
+    }
+    if (context_.diagnostic_die_offset.has_value()) {
+        oss << (any ? ", " : " [") << "die=0x"
+            << std::hex << *context_.diagnostic_die_offset << std::dec;
+        any = true;
+    }
+    if (!context_.diagnostic_attribute.empty()) {
+        oss << (any ? ", " : " [") << "attr=" << context_.diagnostic_attribute;
+        any = true;
+    }
+    if (any) {
+        oss << "]";
+    }
+    return oss.str();
 }
 
 bool ExpressionEvaluator::requireStack(size_t n, const char* op_name) {
@@ -464,6 +488,7 @@ void ExpressionEvaluator::initializeOpHandlers() {
     op_handlers_[DwarfOp::DW_OP_GNU_parameter_ref] = &ExpressionEvaluator::handleGnuParameterRef;
     op_handlers_[DwarfOp::DW_OP_GNU_addr_index] = &ExpressionEvaluator::handleGnuAddrIndex;
     op_handlers_[DwarfOp::DW_OP_GNU_const_index] = &ExpressionEvaluator::handleGnuConstIndex;
+    op_handlers_[DwarfOp::DW_OP_WASM_location] = &ExpressionEvaluator::handleWasmLocation;
 
     // Handle literal operations
     for (uint8_t i = 0; i <= 31; ++i) {
@@ -1691,6 +1716,29 @@ void ExpressionEvaluator::handleGnuAddrIndex(uint64_t& offset, const std::vector
 void ExpressionEvaluator::handleGnuConstIndex(uint64_t& offset, const std::vector<uint8_t>& expression) {
     // DW_OP_GNU_const_index is the predecessor to DW_OP_constx
     handleConstx(offset, expression);
+}
+
+void ExpressionEvaluator::handleWasmLocation(uint64_t& offset, const std::vector<uint8_t>& expression) {
+    // WebAssembly extension opcode:
+    //   u8 wasm_location_type, and for kinds [0..2] a ULEB index.
+    // We represent this as a synthetic register-location namespace:
+    //   bits[63:56]=kind, bits[55:0]=index.
+    if (offset >= expression.size()) {
+        setExecutionError("truncated DW_OP_WASM_location");
+        return;
+    }
+
+    uint8_t kind = readU8(offset, expression);
+    uint64_t index = 0;
+    if (kind <= 0x02) {
+        index = readULEB128(offset, expression);
+        if (execution_error_) return;
+    }
+
+    uint64_t encoded = (static_cast<uint64_t>(kind) << 56) |
+                       (index & 0x00ffffffffffffffULL);
+    push(encoded);
+    is_register_location_ = true;
 }
 
 // Helper methods

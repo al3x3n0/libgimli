@@ -414,6 +414,8 @@ std::shared_ptr<AttributeValue> AttributeParser::parseAttribute(DwarfForm form, 
             return parseFormStrp(offset);
         case DwarfForm::DW_FORM_strp_sup:
             return parseFormStrpSup(offset);
+        case DwarfForm::DW_FORM_GNU_strp_alt:
+            return parseFormGnuStrpAlt(offset);
         case DwarfForm::DW_FORM_ref1:
             return parseFormRef1(offset);
         case DwarfForm::DW_FORM_ref2:
@@ -426,6 +428,8 @@ std::shared_ptr<AttributeValue> AttributeParser::parseAttribute(DwarfForm form, 
             return parseFormRefSup4(offset);
         case DwarfForm::DW_FORM_ref_sup8:
             return parseFormRefSup8(offset);
+        case DwarfForm::DW_FORM_GNU_ref_alt:
+            return parseFormGnuRefAlt(offset);
         case DwarfForm::DW_FORM_ref_udata:
             return parseFormRefUdata(offset);
         case DwarfForm::DW_FORM_flag:
@@ -452,7 +456,11 @@ std::shared_ptr<AttributeValue> AttributeParser::parseAttribute(DwarfForm form, 
             return parseFormRefSig8(offset);
         case DwarfForm::DW_FORM_strx:
             return parseFormStrx(offset);
+        case DwarfForm::DW_FORM_GNU_str_index:
+            return parseFormStrx(offset);
         case DwarfForm::DW_FORM_addrx:
+            return parseFormAddrx(offset);
+        case DwarfForm::DW_FORM_GNU_addr_index:
             return parseFormAddrx(offset);
         case DwarfForm::DW_FORM_data16:
             return parseFormData16(offset);
@@ -481,6 +489,84 @@ std::shared_ptr<AttributeValue> AttributeParser::parseAttribute(DwarfForm form, 
         case DwarfForm::DW_FORM_strx4:
             return parseFormStrx4(offset);
         default:
+            // Best-effort skip for unsupported forms so subsequent attributes in the
+            // same DIE can still be decoded.
+            if (!debug_info_.empty()) {
+                const uint64_t form_payload_offset = offset;
+                DwarfUtils::SizeContext szctx;
+                szctx.address_size = address_size_;
+                szctx.offset_size = is_dwarf64_ ? 8 : 4;
+                szctx.ref_addr_uses_address_size = (dwarf_version_ == DwarfVersion::DWARF2);
+                const uint64_t end = currentDebugInfoEnd();
+                std::string skip_severity;
+                size_t n = DwarfUtils::getFormSize(form,
+                                                   debug_info_.data(),
+                                                   static_cast<size_t>(offset),
+                                                   static_cast<size_t>(end),
+                                                   szctx);
+                if (n == 0) {
+                    uint16_t fv = static_cast<uint16_t>(form);
+                    if ((fv & 0xff00u) == 0x1f00u) {
+                        // Heuristic: some unknown vendor forms mirror standard low-byte
+                        // payload encodings (for example block/string/data families).
+                        // Keep this intentionally narrow to avoid regressing existing
+                        // offset-sized fallback behavior for other 0x1fxx forms.
+                        const uint8_t low = static_cast<uint8_t>(fv & 0xffu);
+                        switch (low) {
+                            case 0x01: // addr
+                            case 0x03: // block2
+                            case 0x04: // block4
+                            case 0x05: // data2
+                            case 0x06: // data4
+                            case 0x07: // data8
+                            case 0x08: // string
+                            case 0x09: // block
+                            case 0x0a: // block1
+                            case 0x0b: // data1
+                            case 0x0c: // flag
+                            case 0x0d: // sdata
+                            case 0x0f: // udata
+                            case 0x11: // ref1
+                            case 0x12: // ref2
+                            case 0x13: // ref4
+                            case 0x14: // ref8
+                            case 0x15: // ref_udata
+                            case 0x16: // indirect
+                            case 0x18: // exprloc
+                            case 0x19: // flag_present
+                            case 0x1e: // data16
+                            case 0x24: // ref_sup8
+                                n = DwarfUtils::getFormSize(static_cast<DwarfForm>(low),
+                                                            debug_info_.data(),
+                                                            static_cast<size_t>(offset),
+                                                            static_cast<size_t>(end),
+                                                            szctx);
+                                if (n != 0) skip_severity = "known_shape";
+                                break;
+                            default:
+                                break;
+                        }
+                    }
+                    if (n == 0 && (fv & 0xff00u) == 0x1f00u) {
+                        // Conservative vendor-form fallback: many unknown forms in
+                        // the 0x1fxx space carry offset-sized payloads.
+                        n = (is_dwarf64_ ? 8u : 4u);
+                        if (n != 0) skip_severity = "fallback_offset_sized";
+                    }
+                }
+                const uint16_t fv = static_cast<uint16_t>(form);
+                if (n != 0 && ((fv & 0xff00u) == 0x1f00u)) {
+                    ++unsupported_vendor_form_skip_count_;
+                    ++unsupported_vendor_form_skip_histogram_[fv];
+                    ++unsupported_vendor_form_skip_severity_buckets_[skip_severity.empty() ? "unspecified" : skip_severity];
+                    if (unsupported_vendor_form_skip_samples_.size() < 8) {
+                        unsupported_vendor_form_skip_samples_.push_back(
+                            VendorFormSkipSample{fv, form_payload_offset,
+                                                 skip_severity.empty() ? "unspecified" : skip_severity});
+                    }
+                }
+                advanceOffsetBounded(offset, n);
+            }
             return nullptr;
     }
 }
@@ -537,6 +623,16 @@ std::shared_ptr<AttributeValue> AttributeParser::parseAddressAttribute(DwarfForm
             return parseFormAddr(offset);
         case DwarfForm::DW_FORM_addrx:
             return parseFormAddrx(offset);
+        case DwarfForm::DW_FORM_GNU_addr_index:
+            return parseFormAddrx(offset);
+        case DwarfForm::DW_FORM_addrx1:
+            return parseFormAddrx1(offset);
+        case DwarfForm::DW_FORM_addrx2:
+            return parseFormAddrx2(offset);
+        case DwarfForm::DW_FORM_addrx3:
+            return parseFormAddrx3(offset);
+        case DwarfForm::DW_FORM_addrx4:
+            return parseFormAddrx4(offset);
         default:
             return nullptr;
     }
@@ -571,8 +667,20 @@ std::shared_ptr<AttributeValue> AttributeParser::parseStringAttribute(DwarfForm 
             return parseFormStrp(offset);
         case DwarfForm::DW_FORM_strp_sup:
             return parseFormStrpSup(offset);
+        case DwarfForm::DW_FORM_GNU_strp_alt:
+            return parseFormGnuStrpAlt(offset);
         case DwarfForm::DW_FORM_strx:
             return parseFormStrx(offset);
+        case DwarfForm::DW_FORM_GNU_str_index:
+            return parseFormStrx(offset);
+        case DwarfForm::DW_FORM_strx1:
+            return parseFormStrx1(offset);
+        case DwarfForm::DW_FORM_strx2:
+            return parseFormStrx2(offset);
+        case DwarfForm::DW_FORM_strx3:
+            return parseFormStrx3(offset);
+        case DwarfForm::DW_FORM_strx4:
+            return parseFormStrx4(offset);
         case DwarfForm::DW_FORM_line_strp:
             return parseFormLineStrp(offset);
         default:
@@ -594,6 +702,8 @@ std::shared_ptr<AttributeValue> AttributeParser::parseReferenceAttribute(DwarfFo
             return parseFormRefSup4(offset);
         case DwarfForm::DW_FORM_ref_sup8:
             return parseFormRefSup8(offset);
+        case DwarfForm::DW_FORM_GNU_ref_alt:
+            return parseFormGnuRefAlt(offset);
         case DwarfForm::DW_FORM_ref_udata:
             return parseFormRefUdata(offset);
         case DwarfForm::DW_FORM_ref_addr:
@@ -698,6 +808,8 @@ std::shared_ptr<AttributeValue> AttributeParser::parseTypeAttribute(DwarfAttribu
             return std::make_shared<TypeAttributeValue>(std::static_pointer_cast<ReferenceAttributeValue>(parseFormRefSup4(offset))->getOffset());
         case DwarfForm::DW_FORM_ref_sup8:
             return std::make_shared<TypeAttributeValue>(std::static_pointer_cast<ReferenceAttributeValue>(parseFormRefSup8(offset))->getOffset());
+        case DwarfForm::DW_FORM_GNU_ref_alt:
+            return std::make_shared<TypeAttributeValue>(std::static_pointer_cast<ReferenceAttributeValue>(parseFormGnuRefAlt(offset))->getOffset());
         case DwarfForm::DW_FORM_ref_udata:
             return std::make_shared<TypeAttributeValue>(std::static_pointer_cast<ReferenceAttributeValue>(parseFormRefUdata(offset))->getOffset());
         case DwarfForm::DW_FORM_ref_addr: {
@@ -891,6 +1003,14 @@ std::shared_ptr<AttributeValue> AttributeParser::parseFormStrpSup(uint64_t& offs
     return std::make_shared<StringAttributeValue>("<strp_sup:" + std::to_string(str_offset) + ">");
 }
 
+std::shared_ptr<AttributeValue> AttributeParser::parseFormGnuStrpAlt(uint64_t& offset) const {
+    uint64_t str_offset = is_dwarf64_ ? readU64(offset) : readU32(offset);
+    if (str_offset < debug_str_sup_.size()) {
+        return std::make_shared<StringAttributeValue>(readCStringFromSection(debug_str_sup_, str_offset));
+    }
+    return std::make_shared<StringAttributeValue>("<gnu_strp_alt:" + std::to_string(str_offset) + ">");
+}
+
 std::shared_ptr<AttributeValue> AttributeParser::parseFormRef1(uint64_t& offset) const {
     uint8_t ref = readU8(offset);
     // CU-relative offset - add CU base to get absolute offset
@@ -924,6 +1044,13 @@ std::shared_ptr<AttributeValue> AttributeParser::parseFormRefSup4(uint64_t& offs
 std::shared_ptr<AttributeValue> AttributeParser::parseFormRefSup8(uint64_t& offset) const {
     uint64_t ref = readU64(offset);
     // Section-relative offset into the supplementary .debug_info.
+    return std::make_shared<ReferenceAttributeValue>(sup_debug_info_offset_bias_ + ref);
+}
+
+std::shared_ptr<AttributeValue> AttributeParser::parseFormGnuRefAlt(uint64_t& offset) const {
+    // GNU ref_alt uses the unit's DWARF format width and is section-relative
+    // to the alternate/supplementary .debug_info namespace.
+    uint64_t ref = is_dwarf64_ ? readU64(offset) : readU32(offset);
     return std::make_shared<ReferenceAttributeValue>(sup_debug_info_offset_bias_ + ref);
 }
 
@@ -1057,9 +1184,9 @@ std::shared_ptr<AttributeValue> AttributeParser::parseFormLineStrp(uint64_t& off
 
 std::shared_ptr<AttributeValue> AttributeParser::parseFormImplicitConst(uint64_t& offset) const {
     (void)offset;
-    // Implicit constant value is stored in the abbreviation table
-    // For now, return a placeholder
-    return std::make_shared<UnsignedAttributeValue>(0);
+    // Implicit constant value comes from the abbreviation table and is supplied by DIEParser.
+    // This form consumes no bytes in .debug_info.
+    return std::make_shared<SignedAttributeValue>(implicit_const_value_.value_or(0));
 }
 
 std::shared_ptr<AttributeValue> AttributeParser::parseFormRnglistx(uint64_t& offset) const {
@@ -1975,6 +2102,15 @@ std::shared_ptr<AttributeValue> AttributeParser::parseConstantValue(DwarfAttribu
             return parseDataAttribute(form, offset);
         case DwarfForm::DW_FORM_string:
         case DwarfForm::DW_FORM_strp:
+        case DwarfForm::DW_FORM_strp_sup:
+        case DwarfForm::DW_FORM_GNU_strp_alt:
+        case DwarfForm::DW_FORM_strx:
+        case DwarfForm::DW_FORM_GNU_str_index:
+        case DwarfForm::DW_FORM_strx1:
+        case DwarfForm::DW_FORM_strx2:
+        case DwarfForm::DW_FORM_strx3:
+        case DwarfForm::DW_FORM_strx4:
+        case DwarfForm::DW_FORM_line_strp:
             return parseStringAttribute(form, offset);
         case DwarfForm::DW_FORM_block:
         case DwarfForm::DW_FORM_block1:

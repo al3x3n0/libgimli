@@ -441,6 +441,37 @@ SymExprPtr SymbolicExpressionEvaluator::objectAddrExpr() const {
     return SymExpr::makeVar("object_address");
 }
 
+std::string SymbolicExpressionEvaluator::diagnosticContextSuffix() const {
+    std::ostringstream oss;
+    bool any = false;
+    if (ctx_.diagnostic_cu_offset.has_value()) {
+        oss << (any ? ", " : " [") << "cu=0x"
+            << std::hex << *ctx_.diagnostic_cu_offset << std::dec;
+        any = true;
+    }
+    if (ctx_.diagnostic_die_offset.has_value()) {
+        oss << (any ? ", " : " [") << "die=0x"
+            << std::hex << *ctx_.diagnostic_die_offset << std::dec;
+        any = true;
+    }
+    if (!ctx_.diagnostic_attribute.empty()) {
+        oss << (any ? ", " : " [") << "attr=" << ctx_.diagnostic_attribute;
+        any = true;
+    }
+    if (any) {
+        oss << "]";
+    }
+    return oss.str();
+}
+
+void SymbolicExpressionEvaluator::appendDiagnosticContext(SymbolicExpressionResult& result) const {
+    if (result.type != SymbolicExpressionResult::Type::INVALID) return;
+    std::string suffix = diagnosticContextSuffix();
+    if (suffix.empty()) return;
+    if (result.error.find(suffix) != std::string::npos) return;
+    result.error += suffix;
+}
+
 static uint64_t readU8(const std::vector<uint8_t>& b, uint64_t& off) {
     if (off >= b.size()) {
         setDecodeError("truncated u8");
@@ -768,7 +799,9 @@ SymbolicExpressionResult SymbolicExpressionEvaluator::evaluate(const std::vector
     pieces_.clear();
     setTopKind(SymStackValueKind::ADDRESS);
 
-    return evaluateFromOffset(expr, 0);
+    auto result = evaluateFromOffset(expr, 0);
+    appendDiagnosticContext(result);
+    return result;
 }
 
 SymbolicExpressionResult SymbolicExpressionEvaluator::evaluateFromOffset(const std::vector<uint8_t>& expr,
@@ -1631,6 +1664,27 @@ SymbolicExpressionResult SymbolicExpressionEvaluator::evaluateFromOffset(const s
                     push(SymExpr::makeConst(0));
                 }
                 setTopKind(SymStackValueKind::VALUE);
+                break;
+            }
+            case DwarfOp::DW_OP_WASM_location: {
+                if (off >= expr.size()) return decodeFailure();
+                uint8_t kind = static_cast<uint8_t>(readU8(expr, off));
+                if (hasDecodeError()) return decodeFailure();
+
+                uint64_t index = 0;
+                if (kind <= 0x02) {
+                    index = readULEB(expr, off);
+                    if (hasDecodeError()) return decodeFailure();
+                }
+
+                std::string name;
+                switch (kind) {
+                    case 0x00: name = "wasm_local" + std::to_string(index); break;
+                    case 0x01: name = "wasm_global" + std::to_string(index); break;
+                    case 0x02: name = "wasm_stack" + std::to_string(index); break;
+                    default: name = "wasm_location_kind" + std::to_string(kind); break;
+                }
+                push(SymExpr::makeVar(name), SymStackValueKind::VALUE);
                 break;
             }
             case DwarfOp::DW_OP_addrx:

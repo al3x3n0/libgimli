@@ -137,6 +137,7 @@ public:
 
     // Check if loaded
     bool isLoaded() const { return is_loaded_; }
+    const std::string& getPath() const { return path_; }
 
     // Find unit by signature/DWO ID
     std::optional<DWPIndex::UnitEntry> findUnit(uint64_t signature) const;
@@ -149,11 +150,23 @@ public:
 
     // Get the index
     const DWPIndex& getIndex() const { return index_; }
+    bool hasCUIndexSection() const { return has_cu_index_section_; }
+    bool isCUIndexValid() const { return cu_index_valid_; }
+    bool hasTUIndexSection() const { return has_tu_index_section_; }
+    bool isTUIndexValid() const { return tu_index_valid_; }
+    size_t getCUIndexedUnitCount() const { return cu_index_.units.size(); }
+    size_t getTUIndexedUnitCount() const { return tu_index_.units.size(); }
 
 private:
     bool is_loaded_ = false;
     std::string path_;
     DWPIndex index_;
+    DWPIndex cu_index_;
+    DWPIndex tu_index_;
+    bool has_cu_index_section_ = false;
+    bool cu_index_valid_ = false;
+    bool has_tu_index_section_ = false;
+    bool tu_index_valid_ = false;
 
     // Raw section data from the .dwp file
     std::vector<uint8_t> debug_info_dwo_;

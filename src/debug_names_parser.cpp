@@ -15,6 +15,7 @@ DebugNamesParser::DebugNamesParser(const std::vector<uint8_t>& debug_names,
 bool DebugNamesParser::parse() {
     units_.clear();
     header_ = DebugNamesHeader{};
+    unit_headers_.clear();
     cu_offsets_.clear();
     name_cache_.clear();
     cache_populated_ = false;
@@ -36,6 +37,11 @@ bool DebugNamesParser::parse() {
 
     if (units_.empty()) return false;
 
+    unit_headers_.reserve(units_.size());
+    for (const auto& unit : units_) {
+        unit_headers_.push_back(unit.header);
+    }
+
     // Back-compat: expose first unit via getHeader/getCUOffsets.
     header_ = units_[0].header;
     cu_offsets_ = units_[0].cu_offsets;
@@ -49,28 +55,113 @@ bool DebugNamesParser::parseOneUnit(uint64_t& offset) {
 
     if (!parseHeader(unit, offset)) return false;
     unit.unit_start = unit_start;
+    const uint64_t after_header = offset;
 
-    // Parse CU list
-    if (!parseCUList(unit, offset)) return false;
+    auto parseTables = [&](uint64_t& off) -> bool {
+        // Parse CU list
+        if (!parseCUList(unit, off)) return false;
 
-    // Parse TU list (local type units)
-    if (!parseTUList(unit, offset)) return false;
+        // Parse TU list (local type units)
+        if (!parseTUList(unit, off)) return false;
 
-    // Skip foreign TU list signatures
-    if (!parseForeignTUSignatures(unit, offset)) return false;
+        // Skip foreign TU list signatures
+        if (!parseForeignTUSignatures(unit, off)) return false;
 
-    // Parse buckets, hashes, name offsets, entry offsets
-    if (!parseBuckets(unit, offset)) return false;
-    if (!parseHashes(unit, offset)) return false;
-    if (!parseNameOffsets(unit, offset)) return false;
-    if (!parseEntryOffsets(unit, offset)) return false;
+        // Parse buckets, hashes, name offsets, entry offsets
+        if (!parseBuckets(unit, off)) return false;
+        if (!parseHashes(unit, off)) return false;
+        if (!parseNameOffsets(unit, off)) return false;
+        if (!parseEntryOffsets(unit, off)) return false;
 
-    // Abbrev table
-    if (!parseAbbrevTable(unit, offset)) return false;
+        // Abbrev table
+        if (!parseAbbrevTable(unit, off)) return false;
+        return true;
+    };
+
+    // Some producers emit an augmentation string plus extra augmentation data before the CU list.
+    // The DWARF v5 unit is still length-delimited, so we can recover by scanning forward for a
+    // parseable tables start when the augmentation string is non-empty.
+    uint64_t tables_start = offset;
+    uint64_t off = offset;
+    clearDecodeError();
+    if (!parseTables(off)) {
+        bool has_aug = !unit.header.augmentation_string.empty() || unit.header.augmentation_string_size != 0;
+        if (!has_aug) return false;
+
+        uint64_t offset_size = unit.header.is_dwarf64 ? 8 : 4;
+        uint64_t min_required = 0;
+        min_required += static_cast<uint64_t>(unit.header.comp_unit_count) * offset_size;
+        min_required += static_cast<uint64_t>(unit.header.local_type_unit_count) * offset_size;
+        min_required += static_cast<uint64_t>(unit.header.foreign_type_unit_count) * 8;
+        min_required += static_cast<uint64_t>(unit.header.bucket_count) * 4;
+        min_required += static_cast<uint64_t>(unit.header.name_count) * 4;          // hashes
+        min_required += static_cast<uint64_t>(unit.header.name_count) * offset_size; // name_offsets
+        min_required += static_cast<uint64_t>(unit.header.name_count) * offset_size; // entry_offsets
+        min_required += static_cast<uint64_t>(unit.header.abbrev_table_size);
+
+        if (tables_start > unit.unit_end) return false;
+        if (min_required > (unit.unit_end - tables_start)) return false;
+
+        uint64_t max_skip = (unit.unit_end - tables_start) - min_required;
+        // Hard cap so malformed inputs can't force worst-case scanning.
+        const uint64_t kMaxAugScan = 4096;
+        if (max_skip > kMaxAugScan) max_skip = kMaxAugScan;
+
+        bool recovered = false;
+
+        // Heuristic: some producers prefix the augmentation payload with a 32-bit little-endian
+        // length (payload bytes that follow). If this lands us on a valid tables start, accept it.
+        if ((unit.unit_end - tables_start) >= 4) {
+            uint64_t tmp = tables_start;
+            uint32_t payload_len = DwarfUtils::readU32(debug_names_.data(), tmp, unit.unit_end);
+            uint64_t candidate = tables_start + 4 + static_cast<uint64_t>(payload_len);
+            if (candidate >= tables_start && candidate <= unit.unit_end) {
+                // Ensure the candidate doesn't skip past what could be a valid unit.
+                if ((candidate - tables_start) <= (max_skip + 4)) {
+                    uint64_t try_off = candidate;
+                    clearDecodeError();
+                    if (parseTables(try_off)) {
+                        off = try_off;
+                        tables_start = candidate;
+                        recovered = true;
+                    }
+                }
+            }
+        }
+
+        for (uint64_t skip = 1; skip <= max_skip; ++skip) {
+            if (recovered) break;
+            uint64_t candidate = tables_start + skip;
+            if (candidate > unit.unit_end) break;
+            uint64_t try_off = candidate;
+            clearDecodeError();
+            if (parseTables(try_off)) {
+                off = try_off;
+                tables_start = candidate;
+                recovered = true;
+                break;
+            }
+        }
+        if (!recovered) return false;
+    }
+
+    // Record any detected augmentation payload bytes.
+    if (tables_start > after_header) {
+        uint64_t payload_len = tables_start - after_header;
+        if (payload_len > UINT32_MAX) return false;
+        unit.header.augmentation_payload_size = static_cast<uint32_t>(payload_len);
+        unit.header.augmentation_payload.assign(debug_names_.begin() + static_cast<std::ptrdiff_t>(after_header),
+                                                debug_names_.begin() + static_cast<std::ptrdiff_t>(tables_start));
+    }
+
+    offset = off;
 
     // Entry pool starts immediately after the abbrev table.
     unit.entry_pool_base = offset;
     if (unit.entry_pool_base > unit.unit_end) return false;
+    for (uint64_t rel : unit.entry_offsets) {
+        if (rel > (unit.unit_end - unit.entry_pool_base)) return false;
+    }
 
     units_.push_back(std::move(unit));
 
@@ -118,6 +209,9 @@ bool DebugNamesParser::parseHeader(Unit& unit, uint64_t& offset) {
     // Read padding
     unit.header.padding = readU16(offset, unit_end);
     if (hasDecodeError()) return false;
+    if (unit.header.padding != 0) {
+        return false;
+    }
 
     // Read counts
     unit.header.comp_unit_count = readU32(offset, unit_end);
@@ -128,6 +222,9 @@ bool DebugNamesParser::parseHeader(Unit& unit, uint64_t& offset) {
     unit.header.abbrev_table_size = readU32(offset, unit_end);
     unit.header.augmentation_string_size = readU32(offset, unit_end);
     if (hasDecodeError()) return false;
+    if (unit.header.name_count > 0 && unit.header.bucket_count == 0) {
+        return false;
+    }
 
     // Read augmentation string
     if (unit.header.augmentation_string_size > 0) {
@@ -138,6 +235,20 @@ bool DebugNamesParser::parseHeader(Unit& unit, uint64_t& offset) {
             reinterpret_cast<const char*>(debug_names_.data() + offset),
             unit.header.augmentation_string_size);
         offset += unit.header.augmentation_string_size;
+
+        // Best-effort parse vendor ID + vendor data. The augmentation string begins with a 4-byte
+        // vendor ID followed by vendor-specific bytes, and is padded with NUL bytes.
+        if (unit.header.augmentation_string.size() >= 4) {
+            std::string vendor_id_raw = unit.header.augmentation_string.substr(0, 4);
+            size_t nul = vendor_id_raw.find('\0');
+            unit.header.augmentation_vendor_id = (nul == std::string::npos) ? vendor_id_raw : vendor_id_raw.substr(0, nul);
+
+            std::string vendor_data = unit.header.augmentation_string.substr(4);
+            while (!vendor_data.empty() && vendor_data.back() == '\0') {
+                vendor_data.pop_back();
+            }
+            unit.header.augmentation_vendor_data = std::move(vendor_data);
+        }
     }
 
     unit.header.header_size = offset - start_offset;
@@ -181,8 +292,10 @@ bool DebugNamesParser::parseBuckets(Unit& unit, uint64_t& offset) {
     unit.buckets.reserve(unit.header.bucket_count);
 
     for (uint32_t i = 0; i < unit.header.bucket_count; ++i) {
-        unit.buckets.push_back(readU32(offset, unit.unit_end));
+        uint32_t b = readU32(offset, unit.unit_end);
         if (hasDecodeError() || offset > unit.unit_end) return false;
+        if (b > unit.header.name_count) return false;
+        unit.buckets.push_back(b);
     }
 
     return true;
@@ -193,8 +306,10 @@ bool DebugNamesParser::parseHashes(Unit& unit, uint64_t& offset) {
     unit.hashes.reserve(unit.header.name_count);
 
     for (uint32_t i = 0; i < unit.header.name_count; ++i) {
-        unit.hashes.push_back(readU32(offset, unit.unit_end));
+        uint32_t h = readU32(offset, unit.unit_end);
         if (hasDecodeError() || offset > unit.unit_end) return false;
+        if (!unit.hashes.empty() && h < unit.hashes.back()) return false;
+        unit.hashes.push_back(h);
     }
 
     return true;
@@ -205,8 +320,10 @@ bool DebugNamesParser::parseNameOffsets(Unit& unit, uint64_t& offset) {
     unit.name_offsets.reserve(unit.header.name_count);
 
     for (uint32_t i = 0; i < unit.header.name_count; ++i) {
-        unit.name_offsets.push_back(readOffset(offset, unit.unit_end, unit.header.is_dwarf64));
+        uint64_t noff = readOffset(offset, unit.unit_end, unit.header.is_dwarf64);
         if (hasDecodeError() || offset > unit.unit_end) return false;
+        if (!debug_str_.empty() && noff >= debug_str_.size()) return false;
+        unit.name_offsets.push_back(noff);
     }
 
     return true;
@@ -252,6 +369,9 @@ bool DebugNamesParser::parseAbbrevTable(Unit& unit, uint64_t& offset) {
             if (offset <= attr_before) return false;
         }
 
+        if (unit.abbrevs.find(code) != unit.abbrevs.end()) {
+            return false;
+        }
         unit.abbrevs[code] = std::move(abbrev);
         if (offset <= before) return false;
     }
@@ -302,10 +422,11 @@ void DebugNamesParser::populateCache() const {
         return 0;
     };
 
-    auto skipCString = [&](uint64_t& off, uint64_t end) -> void {
+    auto skipCString = [&](uint64_t& off, uint64_t end) -> bool {
         while (off < end) {
-            if (debug_names_[off++] == 0) break;
+            if (debug_names_[off++] == 0) return true;
         }
+        return false;
     };
 
     auto skipForm = [&](auto&& self, DwarfForm form, uint64_t& off, uint64_t end, bool is_dwarf64) -> bool {
@@ -335,6 +456,9 @@ void DebugNamesParser::populateCache() const {
             case DwarfForm::DW_FORM_strx4:
             case DwarfForm::DW_FORM_addrx4:
                 return need(4);
+            case DwarfForm::DW_FORM_strx3:
+            case DwarfForm::DW_FORM_addrx3:
+                return need(3);
             case DwarfForm::DW_FORM_data8:
             case DwarfForm::DW_FORM_ref8:
             case DwarfForm::DW_FORM_ref_sig8:
@@ -344,7 +468,9 @@ void DebugNamesParser::populateCache() const {
             case DwarfForm::DW_FORM_udata:
             case DwarfForm::DW_FORM_ref_udata:
             case DwarfForm::DW_FORM_strx:
+            case DwarfForm::DW_FORM_GNU_str_index:
             case DwarfForm::DW_FORM_addrx:
+            case DwarfForm::DW_FORM_GNU_addr_index:
             case DwarfForm::DW_FORM_loclistx:
             case DwarfForm::DW_FORM_rnglistx:
                 (void)readULEB128(off, end);
@@ -353,16 +479,20 @@ void DebugNamesParser::populateCache() const {
                 (void)readSLEB128(off, end);
                 return !hasDecodeError() && off <= end;
             case DwarfForm::DW_FORM_string:
-                skipCString(off, end);
-                return true;
+                return skipCString(off, end);
             case DwarfForm::DW_FORM_sec_offset:
             case DwarfForm::DW_FORM_strp:
             case DwarfForm::DW_FORM_line_strp:
             case DwarfForm::DW_FORM_strp_sup:
-            case DwarfForm::DW_FORM_ref_sup4:
-            case DwarfForm::DW_FORM_ref_sup8:
+            case DwarfForm::DW_FORM_GNU_strp_alt:
+            case DwarfForm::DW_FORM_GNU_ref_alt:
+            case DwarfForm::DW_FORM_addr:
             case DwarfForm::DW_FORM_ref_addr:
                 return need(is_dwarf64 ? 8 : 4);
+            case DwarfForm::DW_FORM_ref_sup4:
+                return need(4);
+            case DwarfForm::DW_FORM_ref_sup8:
+                return need(8);
             case DwarfForm::DW_FORM_exprloc:
             case DwarfForm::DW_FORM_block: {
                 uint64_t n = readULEB128(off, end);
@@ -397,6 +527,8 @@ void DebugNamesParser::populateCache() const {
             case DwarfForm::DW_FORM_data4: return readU32(off, end);
             case DwarfForm::DW_FORM_data8: return readU64(off, end);
             case DwarfForm::DW_FORM_udata: return readULEB128(off, end);
+            case DwarfForm::DW_FORM_GNU_str_index: return readULEB128(off, end);
+            case DwarfForm::DW_FORM_GNU_addr_index: return readULEB128(off, end);
             case DwarfForm::DW_FORM_sdata: return static_cast<uint64_t>(readSLEB128(off, end));
             case DwarfForm::DW_FORM_ref1: return readU8(off, end);
             case DwarfForm::DW_FORM_ref2: return readU16(off, end);
@@ -407,7 +539,14 @@ void DebugNamesParser::populateCache() const {
             case DwarfForm::DW_FORM_flag_present: return 1;
             case DwarfForm::DW_FORM_sec_offset:
             case DwarfForm::DW_FORM_ref_addr:
+            case DwarfForm::DW_FORM_GNU_ref_alt:
                 return is_dwarf64 ? readU64(off, end) : readU32(off, end);
+            case DwarfForm::DW_FORM_addr:
+                return is_dwarf64 ? readU64(off, end) : readU32(off, end);
+            case DwarfForm::DW_FORM_ref_sup4:
+                return readU32(off, end);
+            case DwarfForm::DW_FORM_ref_sup8:
+                return readU64(off, end);
             case DwarfForm::DW_FORM_implicit_const:
                 return 0;
             default: {
@@ -452,18 +591,26 @@ void DebugNamesParser::populateCache() const {
 
                 uint64_t die_offset = 0;
                 uint64_t cu_index = 0;
+                uint64_t tu_index = 0;
+                bool has_tu_index = false;
+                bool attrs_ok = true;
 
                 for (const auto& attr : abbrev.attributes) {
                     auto v = readFormUnsigned(attr.second, entry_offset, unit.unit_end, unit.header.is_dwarf64);
                     if (!v.has_value() || hasDecodeError()) {
                         // Unable to skip this form reliably; abandon this name's entry list.
                         entry_offset = unit.unit_end;
+                        attrs_ok = false;
                         break;
                     }
 
                     switch (attr.first) {
                         case DW_IDX::DW_IDX_compile_unit:
                             cu_index = *v;
+                            break;
+                        case DW_IDX::DW_IDX_type_unit:
+                            tu_index = *v;
+                            has_tu_index = true;
                             break;
                         case DW_IDX::DW_IDX_die_offset:
                             die_offset = *v;
@@ -475,10 +622,13 @@ void DebugNamesParser::populateCache() const {
 
                 if (entry_offset > unit.unit_end) break;
                 if (entry_offset <= entry_before) break;
-                // DW_IDX_die_offset is an offset within a CU. Convert it to an absolute .debug_info
-                // section offset using the corresponding CU's section offset, when possible.
+                if (!attrs_ok) break;
+                // DW_IDX_die_offset is an offset within a unit. Convert it to an absolute .debug_info
+                // section offset using the corresponding CU/TU's section offset, when possible.
                 uint64_t abs_die_offset = die_offset;
-                if (cu_index < unit.cu_offsets.size()) {
+                if (has_tu_index && tu_index < unit.tu_offsets.size()) {
+                    abs_die_offset = unit.tu_offsets[static_cast<size_t>(tu_index)] + die_offset;
+                } else if (cu_index < unit.cu_offsets.size()) {
                     abs_die_offset = unit.cu_offsets[static_cast<size_t>(cu_index)] + die_offset;
                 }
 
@@ -536,10 +686,11 @@ std::vector<NameEntry> DebugNamesParser::lookupName(const std::string& name) con
         return 0;
     };
 
-    auto skipCString = [&](uint64_t& off, uint64_t end) -> void {
+    auto skipCString = [&](uint64_t& off, uint64_t end) -> bool {
         while (off < end) {
-            if (debug_names_[off++] == 0) break;
+            if (debug_names_[off++] == 0) return true;
         }
+        return false;
     };
 
     auto skipForm = [&](auto&& self, DwarfForm form, uint64_t& off, uint64_t end, bool is_dwarf64) -> bool {
@@ -569,6 +720,9 @@ std::vector<NameEntry> DebugNamesParser::lookupName(const std::string& name) con
             case DwarfForm::DW_FORM_strx4:
             case DwarfForm::DW_FORM_addrx4:
                 return need(4);
+            case DwarfForm::DW_FORM_strx3:
+            case DwarfForm::DW_FORM_addrx3:
+                return need(3);
             case DwarfForm::DW_FORM_data8:
             case DwarfForm::DW_FORM_ref8:
             case DwarfForm::DW_FORM_ref_sig8:
@@ -578,7 +732,9 @@ std::vector<NameEntry> DebugNamesParser::lookupName(const std::string& name) con
             case DwarfForm::DW_FORM_udata:
             case DwarfForm::DW_FORM_ref_udata:
             case DwarfForm::DW_FORM_strx:
+            case DwarfForm::DW_FORM_GNU_str_index:
             case DwarfForm::DW_FORM_addrx:
+            case DwarfForm::DW_FORM_GNU_addr_index:
             case DwarfForm::DW_FORM_loclistx:
             case DwarfForm::DW_FORM_rnglistx:
                 (void)readULEB128(off, end);
@@ -587,16 +743,20 @@ std::vector<NameEntry> DebugNamesParser::lookupName(const std::string& name) con
                 (void)readSLEB128(off, end);
                 return !hasDecodeError() && off <= end;
             case DwarfForm::DW_FORM_string:
-                skipCString(off, end);
-                return true;
+                return skipCString(off, end);
             case DwarfForm::DW_FORM_sec_offset:
             case DwarfForm::DW_FORM_strp:
             case DwarfForm::DW_FORM_line_strp:
             case DwarfForm::DW_FORM_strp_sup:
-            case DwarfForm::DW_FORM_ref_sup4:
-            case DwarfForm::DW_FORM_ref_sup8:
+            case DwarfForm::DW_FORM_GNU_strp_alt:
+            case DwarfForm::DW_FORM_GNU_ref_alt:
+            case DwarfForm::DW_FORM_addr:
             case DwarfForm::DW_FORM_ref_addr:
                 return need(is_dwarf64 ? 8 : 4);
+            case DwarfForm::DW_FORM_ref_sup4:
+                return need(4);
+            case DwarfForm::DW_FORM_ref_sup8:
+                return need(8);
             case DwarfForm::DW_FORM_exprloc:
             case DwarfForm::DW_FORM_block: {
                 uint64_t n = readULEB128(off, end);
@@ -631,6 +791,8 @@ std::vector<NameEntry> DebugNamesParser::lookupName(const std::string& name) con
             case DwarfForm::DW_FORM_data4: return readU32(off, end);
             case DwarfForm::DW_FORM_data8: return readU64(off, end);
             case DwarfForm::DW_FORM_udata: return readULEB128(off, end);
+            case DwarfForm::DW_FORM_GNU_str_index: return readULEB128(off, end);
+            case DwarfForm::DW_FORM_GNU_addr_index: return readULEB128(off, end);
             case DwarfForm::DW_FORM_sdata: return static_cast<uint64_t>(readSLEB128(off, end));
             case DwarfForm::DW_FORM_ref1: return readU8(off, end);
             case DwarfForm::DW_FORM_ref2: return readU16(off, end);
@@ -641,7 +803,14 @@ std::vector<NameEntry> DebugNamesParser::lookupName(const std::string& name) con
             case DwarfForm::DW_FORM_flag_present: return 1;
             case DwarfForm::DW_FORM_sec_offset:
             case DwarfForm::DW_FORM_ref_addr:
+            case DwarfForm::DW_FORM_GNU_ref_alt:
                 return is_dwarf64 ? readU64(off, end) : readU32(off, end);
+            case DwarfForm::DW_FORM_addr:
+                return is_dwarf64 ? readU64(off, end) : readU32(off, end);
+            case DwarfForm::DW_FORM_ref_sup4:
+                return readU32(off, end);
+            case DwarfForm::DW_FORM_ref_sup8:
+                return readU64(off, end);
             case DwarfForm::DW_FORM_implicit_const:
                 return 0;
             default: {
@@ -709,17 +878,25 @@ std::vector<NameEntry> DebugNamesParser::lookupName(const std::string& name) con
 
                 uint64_t die_offset = 0;
                 uint64_t cu_index = 0;
+                uint64_t tu_index = 0;
+                bool has_tu_index = false;
+                bool attrs_ok = true;
 
                 for (const auto& attr : abbrev.attributes) {
                     auto v = readFormUnsigned(attr.second, entry_offset, unit.unit_end, unit.header.is_dwarf64);
                     if (!v.has_value() || hasDecodeError()) {
                         entry_offset = unit.unit_end;
+                        attrs_ok = false;
                         break;
                     }
 
                     switch (attr.first) {
                         case DW_IDX::DW_IDX_compile_unit:
                             cu_index = *v;
+                            break;
+                        case DW_IDX::DW_IDX_type_unit:
+                            tu_index = *v;
+                            has_tu_index = true;
                             break;
                         case DW_IDX::DW_IDX_die_offset:
                             die_offset = *v;
@@ -731,8 +908,11 @@ std::vector<NameEntry> DebugNamesParser::lookupName(const std::string& name) con
 
                 if (entry_offset > unit.unit_end) break;
                 if (entry_offset <= entry_before) break;
+                if (!attrs_ok) break;
                 uint64_t abs_die_offset = die_offset;
-                if (cu_index < unit.cu_offsets.size()) {
+                if (has_tu_index && tu_index < unit.tu_offsets.size()) {
+                    abs_die_offset = unit.tu_offsets[static_cast<size_t>(tu_index)] + die_offset;
+                } else if (cu_index < unit.cu_offsets.size()) {
                     abs_die_offset = unit.cu_offsets[static_cast<size_t>(cu_index)] + die_offset;
                 }
 

@@ -24,6 +24,10 @@ struct SymbolicCFIStateComparisonResult {
     std::string reason;
     std::string lhs_summary;
     std::string rhs_summary;
+    std::string verifier_backend;
+    std::string solver_result;
+    std::string counterexample_model;
+    std::string counterexample_witness;
 };
 
 struct SymbolicCFIIntervalComparisonResult {
@@ -32,6 +36,10 @@ struct SymbolicCFIIntervalComparisonResult {
     size_t points_checked = 0;
     uint64_t mismatch_relative_pc = 0;
     bool has_mismatch_relative_pc = false;
+    std::string verifier_backend;
+    std::string solver_result;
+    std::string counterexample_model;
+    std::string counterexample_witness;
 };
 
 class SymbolicCFIVerifier {
@@ -65,4 +73,3 @@ private:
 };
 
 } // namespace dwarf
-

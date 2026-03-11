@@ -1,0 +1,433 @@
+#include "smt_verifier.hpp"
+#include "dwarf_utils.hpp"
+
+#include <algorithm>
+#include <cctype>
+#include <sstream>
+#include <unordered_map>
+#include <vector>
+#if DWARF_HAS_Z3
+#include <z3++.h>
+#endif
+
+namespace dwarf {
+
+#if DWARF_HAS_Z3
+
+namespace {
+
+uint64_t decodeBytesToU64(const std::vector<uint8_t>& bytes, bool little_endian) {
+    if (bytes.empty()) return 0;
+    if (bytes.size() > 8) return 0;
+
+    uint64_t out = 0;
+    if (little_endian) {
+        for (size_t i = 0; i < bytes.size(); ++i) {
+            out |= static_cast<uint64_t>(bytes[i]) << (i * 8);
+        }
+        return out;
+    }
+
+    for (uint8_t b : bytes) {
+        out = (out << 8) | static_cast<uint64_t>(b);
+    }
+    return out;
+}
+
+std::string sanitizeSymbol(const std::string& in) {
+    std::string out;
+    out.reserve(in.size() + 8);
+    out = "sym_";
+    for (char ch : in) {
+        unsigned char u = static_cast<unsigned char>(ch);
+        if (std::isalnum(u) || ch == '_') out.push_back(ch);
+        else out.push_back('_');
+    }
+    if (out.size() == 4) out += "anon";
+    return out;
+}
+
+class Encoder {
+public:
+    explicit Encoder(z3::context& ctx, bool little_endian)
+        : ctx_(ctx),
+          little_endian_(little_endian),
+          memory_(ctx_.constant("mem", ctx_.array_sort(ctx_.bv_sort(64), ctx_.bv_sort(8)))),
+          ok_(true) {}
+
+    z3::expr encodeValue(const SymExprPtr& expr) {
+        if (!expr) return fail("null symbolic expression");
+        auto it = cache_.find(expr.get());
+        if (it != cache_.end()) return it->second;
+        z3::expr encoded = encodeRaw(expr);
+        cache_.emplace(expr.get(), encoded);
+        return encoded;
+    }
+
+    bool ok() const { return ok_; }
+    const std::string& error() const { return error_; }
+
+private:
+    z3::context& ctx_;
+    bool little_endian_;
+    z3::expr memory_;
+    bool ok_;
+    std::string error_;
+    std::unordered_map<const SymExpr*, z3::expr> cache_;
+    std::unordered_map<std::string, z3::expr> variables_;
+    std::unordered_map<std::string, size_t> symbol_counts_;
+
+    z3::expr fail(const std::string& why) {
+        if (ok_) {
+            ok_ = false;
+            error_ = why;
+        }
+        return ctx_.bv_val(0, 64);
+    }
+
+    z3::expr bvZero() { return ctx_.bv_val(0, 64); }
+    z3::expr bvOne() { return ctx_.bv_val(1, 64); }
+
+    z3::expr mkVar(const std::string& name) {
+        auto it = variables_.find(name);
+        if (it != variables_.end()) return it->second;
+        std::string base = sanitizeSymbol(name);
+        size_t suffix = symbol_counts_[base]++;
+        std::string full = (suffix == 0) ? base : (base + "_" + std::to_string(suffix));
+        z3::expr v = ctx_.bv_const(full.c_str(), 64);
+        variables_.emplace(name, v);
+        return v;
+    }
+
+    z3::expr nonZero(const z3::expr& v) { return v != bvZero(); }
+
+    z3::expr toBool01(const z3::expr& pred) { return z3::ite(pred, bvOne(), bvZero()); }
+
+    z3::expr maskedShift(const z3::expr& amount) {
+        z3::expr lo6 = amount.extract(5, 0);
+        return z3::zext(lo6, 58);
+    }
+
+    z3::expr loadN(const z3::expr& addr, uint64_t size_bytes) {
+        if (size_bytes == 0 || size_bytes > 8) return fail("unsupported load size");
+
+        std::vector<z3::expr> bytes;
+        bytes.reserve(static_cast<size_t>(size_bytes));
+        for (uint64_t i = 0; i < size_bytes; ++i) {
+            z3::expr a = addr + ctx_.bv_val(i, 64);
+            bytes.push_back(z3::select(memory_, a));
+        }
+
+        z3::expr value = little_endian_ ? bytes.back() : bytes.front();
+        if (little_endian_) {
+            for (size_t i = bytes.size() - 1; i > 0; --i) {
+                value = z3::concat(value, bytes[i - 1]);
+            }
+        } else {
+            for (size_t i = 1; i < bytes.size(); ++i) {
+                value = z3::concat(value, bytes[i]);
+            }
+        }
+
+        unsigned bits = static_cast<unsigned>(size_bytes * 8);
+        if (bits < 64) value = z3::zext(value, 64 - bits);
+        return value;
+    }
+
+    z3::expr encodeRaw(const SymExprPtr& expr) {
+        switch (expr->kind) {
+            case SymExpr::Kind::CONST_U64:
+                return ctx_.bv_val(expr->const_u64, 64);
+            case SymExpr::Kind::BYTES:
+                if (expr->raw_bytes.size() > 8) return fail("bytes literal wider than 64 bits");
+                return ctx_.bv_val(decodeBytesToU64(expr->raw_bytes, little_endian_), 64);
+            case SymExpr::Kind::VAR:
+                return mkVar(expr->name);
+            case SymExpr::Kind::UNKNOWN:
+                return fail("unsupported unknown node: " + expr->name);
+
+            case SymExpr::Kind::NEG: {
+                if (expr->args.size() != 1) return fail("NEG arity mismatch");
+                return -encodeValue(expr->args[0]);
+            }
+            case SymExpr::Kind::NOT: {
+                if (expr->args.size() != 1) return fail("NOT arity mismatch");
+                return ~encodeValue(expr->args[0]);
+            }
+            case SymExpr::Kind::ABS: {
+                if (expr->args.size() != 1) return fail("ABS arity mismatch");
+                z3::expr v = encodeValue(expr->args[0]);
+                return z3::ite(z3::slt(v, bvZero()), -v, v);
+            }
+
+            case SymExpr::Kind::ADD:
+            case SymExpr::Kind::SUB:
+            case SymExpr::Kind::MUL:
+            case SymExpr::Kind::DIV:
+            case SymExpr::Kind::MOD:
+            case SymExpr::Kind::AND:
+            case SymExpr::Kind::OR:
+            case SymExpr::Kind::XOR:
+            case SymExpr::Kind::SHL:
+            case SymExpr::Kind::SHR:
+            case SymExpr::Kind::SHRA:
+            case SymExpr::Kind::EQ:
+            case SymExpr::Kind::NE:
+            case SymExpr::Kind::LT:
+            case SymExpr::Kind::LE:
+            case SymExpr::Kind::GT:
+            case SymExpr::Kind::GE: {
+                if (expr->args.size() != 2) return fail("binary arity mismatch");
+                z3::expr a = encodeValue(expr->args[0]);
+                z3::expr b = encodeValue(expr->args[1]);
+                switch (expr->kind) {
+                    case SymExpr::Kind::ADD: return a + b;
+                    case SymExpr::Kind::SUB: return a - b;
+                    case SymExpr::Kind::MUL: return a * b;
+                    case SymExpr::Kind::DIV: return z3::udiv(a, b);
+                    case SymExpr::Kind::MOD: return z3::urem(a, b);
+                    case SymExpr::Kind::AND: return a & b;
+                    case SymExpr::Kind::OR: return a | b;
+                    case SymExpr::Kind::XOR: return a ^ b;
+                    case SymExpr::Kind::SHL: return z3::shl(a, maskedShift(b));
+                    case SymExpr::Kind::SHR: return z3::lshr(a, maskedShift(b));
+                    case SymExpr::Kind::SHRA: return z3::ashr(a, maskedShift(b));
+                    case SymExpr::Kind::EQ: return toBool01(a == b);
+                    case SymExpr::Kind::NE: return toBool01(a != b);
+                    case SymExpr::Kind::LT: return toBool01(z3::slt(a, b));
+                    case SymExpr::Kind::LE: return toBool01(z3::sle(a, b));
+                    case SymExpr::Kind::GT: return toBool01(z3::sgt(a, b));
+                    case SymExpr::Kind::GE: return toBool01(z3::sge(a, b));
+                    default: break;
+                }
+                return fail("internal binary dispatch error");
+            }
+
+            case SymExpr::Kind::ITE: {
+                if (expr->args.size() != 3) return fail("ITE arity mismatch");
+                z3::expr cond = encodeValue(expr->args[0]);
+                z3::expr t = encodeValue(expr->args[1]);
+                z3::expr f = encodeValue(expr->args[2]);
+                return z3::ite(nonZero(cond), t, f);
+            }
+
+            case SymExpr::Kind::LOAD: {
+                if (expr->args.size() != 1) return fail("LOAD arity mismatch");
+                return loadN(encodeValue(expr->args[0]), expr->aux_bytes);
+            }
+
+            case SymExpr::Kind::MASK: {
+                if (expr->args.size() != 1) return fail("MASK arity mismatch");
+                z3::expr v = encodeValue(expr->args[0]);
+                if (expr->aux_bytes == 0 || expr->aux_bytes >= 8) return v;
+                unsigned bits = static_cast<unsigned>(expr->aux_bytes * 8);
+                z3::expr lo = v.extract(bits - 1, 0);
+                return z3::zext(lo, 64 - bits);
+            }
+
+            case SymExpr::Kind::SEXT: {
+                if (expr->args.size() != 1) return fail("SEXT arity mismatch");
+                z3::expr v = encodeValue(expr->args[0]);
+                if (expr->aux_bytes == 0 || expr->aux_bytes >= 8) return v;
+                unsigned bits = static_cast<unsigned>(expr->aux_bytes * 8);
+                z3::expr lo = v.extract(bits - 1, 0);
+                return z3::sext(lo, 64 - bits);
+            }
+        }
+        return fail("unsupported symbolic node");
+    }
+};
+
+bool samePieceMetadata(const SymPiece& lhs, const SymPiece& rhs) {
+    return lhs.kind == rhs.kind &&
+           lhs.byte_size == rhs.byte_size &&
+           lhs.bit_size == rhs.bit_size &&
+           lhs.bit_offset == rhs.bit_offset &&
+           lhs.implicit_bytes == rhs.implicit_bytes;
+}
+
+std::string formatModelWitness(const z3::model& model) {
+    std::vector<std::pair<std::string, std::string>> entries;
+    entries.reserve(model.num_consts());
+    for (unsigned i = 0; i < model.num_consts(); ++i) {
+        z3::func_decl d = model.get_const_decl(i);
+        z3::expr v = model.get_const_interp(d);
+        std::string name = d.name().str();
+        if (name.rfind("sym_", 0) == 0) {
+            name = name.substr(4);
+        }
+        std::string value;
+        if (v.is_bv()) {
+            uint64_t n = 0;
+            if (v.is_numeral_u64(n)) {
+                std::ostringstream oss;
+                oss << "0x" << std::hex << n;
+                value = oss.str();
+            } else {
+                value = v.to_string();
+            }
+        } else {
+            value = v.to_string();
+        }
+        entries.emplace_back(std::move(name), std::move(value));
+    }
+    std::sort(entries.begin(), entries.end(), [](const auto& a, const auto& b) {
+        return a.first < b.first;
+    });
+    std::ostringstream out;
+    for (size_t i = 0; i < entries.size(); ++i) {
+        if (i != 0) out << ";";
+        out << entries[i].first << "=" << entries[i].second;
+    }
+    return out.str();
+}
+
+SMTVerificationResult checkPredicateUnsat(z3::context& ctx, const z3::expr& predicate, uint32_t timeout_ms) {
+    SMTVerificationResult out;
+    z3::solver solver(ctx);
+    if (timeout_ms != 0) {
+        z3::params p(ctx);
+        p.set("timeout", timeout_ms);
+        solver.set(p);
+    }
+    solver.add(predicate);
+
+    z3::check_result result = solver.check();
+    if (result == z3::unsat) {
+        out.verdict = ExpressionVerificationResult::Verdict::EQUIVALENT;
+        out.reason = "SMT proof established equivalence (UNSAT for lhs != rhs)";
+        out.solver_result = "unsat";
+        return out;
+    }
+    if (result == z3::sat) {
+        out.verdict = ExpressionVerificationResult::Verdict::DIFFERENT;
+        out.reason = "SMT found a counterexample (SAT for lhs != rhs)";
+        out.solver_result = "sat";
+        z3::model model = solver.get_model();
+        out.model = model.to_string();
+        out.witness = formatModelWitness(model);
+        return out;
+    }
+
+    out.verdict = ExpressionVerificationResult::Verdict::UNKNOWN;
+    out.reason = "SMT solver returned unknown";
+    out.solver_result = "unknown";
+    std::string why = solver.reason_unknown();
+    if (!why.empty()) out.reason += ": " + why;
+    return out;
+}
+
+} // namespace
+
+bool SMTExpressionVerifier::isAvailable() {
+    return true;
+}
+
+SMTVerificationResult SMTExpressionVerifier::verify(const SymbolicExpressionResult& lhs,
+                                                    const SymbolicExpressionResult& rhs,
+                                                    uint32_t timeout_ms) const {
+    SMTVerificationResult out;
+
+    if (lhs.type == SymbolicExpressionResult::Type::INVALID ||
+        rhs.type == SymbolicExpressionResult::Type::INVALID) {
+        out.verdict = ExpressionVerificationResult::Verdict::UNKNOWN;
+        out.reason = "symbolic evaluation invalid";
+        out.solver_result = "precheck_invalid_symbolic";
+        return out;
+    }
+
+    if (lhs.type != rhs.type) {
+        out.verdict = ExpressionVerificationResult::Verdict::DIFFERENT;
+        out.reason = "result type mismatch";
+        out.solver_result = "precheck_type_mismatch";
+        return out;
+    }
+
+    z3::context ctx;
+    Encoder encoder(ctx, DwarfUtils::objectIsLittleEndian());
+
+    if (lhs.type == SymbolicExpressionResult::Type::COMPOSITE) {
+        if (lhs.pieces.size() != rhs.pieces.size()) {
+            out.verdict = ExpressionVerificationResult::Verdict::DIFFERENT;
+            out.reason = "composite piece-count mismatch";
+            return out;
+        }
+
+        z3::expr any_diff = ctx.bool_val(false);
+        bool has_symbolic_piece = false;
+        for (size_t i = 0; i < lhs.pieces.size(); ++i) {
+            const auto& l = lhs.pieces[i];
+            const auto& r = rhs.pieces[i];
+            if (!samePieceMetadata(l, r)) {
+                out.verdict = ExpressionVerificationResult::Verdict::DIFFERENT;
+                out.reason = "composite piece metadata mismatch at index " + std::to_string(i);
+                out.solver_result = "precheck_piece_metadata_mismatch";
+                return out;
+            }
+            if (!l.location && !r.location) continue;
+            if (!l.location || !r.location) {
+                out.verdict = ExpressionVerificationResult::Verdict::DIFFERENT;
+                out.reason = "composite piece location presence mismatch at index " + std::to_string(i);
+                out.solver_result = "precheck_piece_location_presence_mismatch";
+                return out;
+            }
+
+            z3::expr lv = encoder.encodeValue(l.location);
+            z3::expr rv = encoder.encodeValue(r.location);
+            has_symbolic_piece = true;
+            any_diff = any_diff || (lv != rv);
+        }
+
+        if (!encoder.ok()) {
+            out.verdict = ExpressionVerificationResult::Verdict::UNKNOWN;
+            out.reason = "SMT encoding unsupported: " + encoder.error();
+            out.solver_result = "encoding_error";
+            return out;
+        }
+
+        if (!has_symbolic_piece) {
+            out.verdict = ExpressionVerificationResult::Verdict::EQUIVALENT;
+            out.reason = "composite metadata matched with no symbolic locations";
+            out.solver_result = "precheck_no_symbolic_piece";
+            return out;
+        }
+        return checkPredicateUnsat(ctx, any_diff, timeout_ms);
+    }
+
+    if (!lhs.expression || !rhs.expression) {
+        out.verdict = ExpressionVerificationResult::Verdict::UNKNOWN;
+        out.reason = "missing symbolic expression";
+        out.solver_result = "precheck_missing_expression";
+        return out;
+    }
+
+    z3::expr l = encoder.encodeValue(lhs.expression);
+    z3::expr r = encoder.encodeValue(rhs.expression);
+    if (!encoder.ok()) {
+        out.verdict = ExpressionVerificationResult::Verdict::UNKNOWN;
+        out.reason = "SMT encoding unsupported: " + encoder.error();
+        out.solver_result = "encoding_error";
+        return out;
+    }
+    return checkPredicateUnsat(ctx, l != r, timeout_ms);
+}
+
+#else
+
+bool SMTExpressionVerifier::isAvailable() {
+    return false;
+}
+
+SMTVerificationResult SMTExpressionVerifier::verify(const SymbolicExpressionResult&,
+                                                    const SymbolicExpressionResult&,
+                                                    uint32_t) const {
+    SMTVerificationResult out;
+    out.verdict = ExpressionVerificationResult::Verdict::UNKNOWN;
+    out.reason = "SMT verification unavailable: library built without Z3 support";
+    out.solver_result = "solver_unavailable";
+    return out;
+}
+
+#endif
+
+} // namespace dwarf

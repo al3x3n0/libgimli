@@ -44,6 +44,53 @@ std::shared_ptr<Type> PrimitiveType::resolve() {
     return std::static_pointer_cast<Type>(shared_from_this());
 }
 
+// ModifiedType implementation
+ModifiedType::ModifiedType(ModifiedTypeKind kind,
+                           std::shared_ptr<Type> underlying_type,
+                           uint64_t size,
+                           const std::string& name)
+    : kind_(kind), underlying_type_(std::move(underlying_type)), size_(size), name_(name) {
+}
+
+std::string ModifiedType::getName() const {
+    const std::string underlying_name = underlying_type_ ? underlying_type_->getName() : "void";
+    switch (kind_) {
+        case ModifiedTypeKind::TYPEDEF:
+            return name_.empty() ? underlying_name : name_;
+        case ModifiedTypeKind::CONST:
+            return "const " + underlying_name;
+        case ModifiedTypeKind::VOLATILE:
+            return "volatile " + underlying_name;
+        case ModifiedTypeKind::RESTRICT:
+            return underlying_name + " restrict";
+        case ModifiedTypeKind::REFERENCE:
+            return underlying_name + "&";
+    }
+    return underlying_name;
+}
+
+uint64_t ModifiedType::getSize() const {
+    if (size_ != 0) return size_;
+    return underlying_type_ ? underlying_type_->getSize() : 0;
+}
+
+std::string ModifiedType::getDescription() const {
+    std::stringstream ss;
+    ss << getName();
+    uint64_t size = getSize();
+    if (size != 0) ss << " (" << size << " bytes)";
+    return ss.str();
+}
+
+bool ModifiedType::isComplete() const {
+    return underlying_type_ ? underlying_type_->isComplete() : false;
+}
+
+std::shared_ptr<Type> ModifiedType::resolve() {
+    if (!underlying_type_) return nullptr;
+    return underlying_type_->resolve();
+}
+
 // CompositeType implementation
 CompositeType::CompositeType(Kind kind, const std::string& name, uint64_t size)
     : kind_(kind), name_(name), size_(size) {
@@ -78,6 +125,10 @@ void CompositeType::addMember(const std::string& name, std::shared_ptr<Type> typ
     members_.push_back({name, type, offset, 0, 0, false, false, false, false});
 }
 
+void CompositeType::addMember(const Member& member) {
+    members_.push_back(member);
+}
+
 std::shared_ptr<Type> CompositeType::getMemberType(const std::string& name) const {
     for (const auto& member : members_) {
         if (member.name == name) {
@@ -98,6 +149,10 @@ uint64_t CompositeType::getMemberOffset(const std::string& name) const {
 
 void CompositeType::addBaseClass(std::shared_ptr<CompositeType> base, uint64_t offset) {
     base_classes_.push_back({base, offset, false, false, false, false});
+}
+
+void CompositeType::addBaseClass(const BaseClass& base) {
+    base_classes_.push_back(base);
 }
 
 // ArrayType implementation
@@ -247,6 +302,15 @@ std::shared_ptr<Type> TypeSystem::createPointerType(std::shared_ptr<Type> pointe
     return type;
 }
 
+std::shared_ptr<Type> TypeSystem::createReferenceType(std::shared_ptr<Type> referee_type) {
+    auto type = std::make_shared<ModifiedType>(ModifiedTypeKind::REFERENCE,
+                                               std::move(referee_type),
+                                               pointer_size_bytes_);
+    type->setDwarfTag(DwarfTag::DW_TAG_reference_type);
+    all_types_.push_back(type);
+    return type;
+}
+
 std::shared_ptr<Type> TypeSystem::createArrayType(std::shared_ptr<Type> element_type, 
                                                   const std::vector<uint64_t>& dimensions) {
     auto type = std::make_shared<ArrayType>(element_type, dimensions);
@@ -260,6 +324,32 @@ std::shared_ptr<Type> TypeSystem::createFunctionType(std::shared_ptr<Type> retur
                                                      bool is_variadic) {
     auto type = std::make_shared<FunctionType>(return_type, parameter_types, is_variadic);
     type->setDwarfTag(DwarfTag::DW_TAG_subroutine_type);
+    all_types_.push_back(type);
+    return type;
+}
+
+std::shared_ptr<Type> TypeSystem::createModifiedType(ModifiedTypeKind kind,
+                                                     std::shared_ptr<Type> underlying_type,
+                                                     uint64_t size,
+                                                     const std::string& name) {
+    auto type = std::make_shared<ModifiedType>(kind, std::move(underlying_type), size, name);
+    switch (kind) {
+        case ModifiedTypeKind::TYPEDEF:
+            type->setDwarfTag(DwarfTag::DW_TAG_typedef);
+            break;
+        case ModifiedTypeKind::CONST:
+            type->setDwarfTag(DwarfTag::DW_TAG_const_type);
+            break;
+        case ModifiedTypeKind::VOLATILE:
+            type->setDwarfTag(DwarfTag::DW_TAG_volatile_type);
+            break;
+        case ModifiedTypeKind::RESTRICT:
+            type->setDwarfTag(DwarfTag::DW_TAG_restrict_type);
+            break;
+        case ModifiedTypeKind::REFERENCE:
+            type->setDwarfTag(DwarfTag::DW_TAG_reference_type);
+            break;
+    }
     all_types_.push_back(type);
     return type;
 }
@@ -309,6 +399,9 @@ std::shared_ptr<Type> TypeSystem::resolveType(std::shared_ptr<DIE> die) {
         case DwarfTag::DW_TAG_pointer_type:
             type = resolvePointerType(die);
             break;
+        case DwarfTag::DW_TAG_reference_type:
+            type = resolveModifiedType(die, ModifiedTypeKind::REFERENCE);
+            break;
         case DwarfTag::DW_TAG_array_type:
             type = resolveArrayType(die);
             break;
@@ -325,6 +418,15 @@ std::shared_ptr<Type> TypeSystem::resolveType(std::shared_ptr<DIE> die) {
             break;
         case DwarfTag::DW_TAG_typedef:
             type = resolveTypedefType(die);
+            break;
+        case DwarfTag::DW_TAG_const_type:
+            type = resolveModifiedType(die, ModifiedTypeKind::CONST);
+            break;
+        case DwarfTag::DW_TAG_volatile_type:
+            type = resolveModifiedType(die, ModifiedTypeKind::VOLATILE);
+            break;
+        case DwarfTag::DW_TAG_restrict_type:
+            type = resolveModifiedType(die, ModifiedTypeKind::RESTRICT);
             break;
         default:
             return nullptr;
@@ -437,38 +539,31 @@ std::shared_ptr<Type> TypeSystem::resolvePointerType(std::shared_ptr<DIE> die) {
 }
 
 std::shared_ptr<Type> TypeSystem::resolveArrayType(std::shared_ptr<DIE> die) {
-    std::string name = getTypeName(die);
     uint64_t size = getTypeSize(die);
-    
+
     auto element_type = getTypeReference(die);
     std::shared_ptr<Type> resolved_element = element_type ? resolveType(element_type) : nullptr;
-    
+
     if (resolved_element) {
-        // Parse subrange types for dimensions
         std::vector<uint64_t> dimensions;
-        
-        // Look for subrange types in the DIE
+
         for (const auto& child : die->getChildren()) {
             if (child->getTag() == DwarfTag::DW_TAG_subrange_type) {
-                auto count_attr = child->getAttribute(DwarfAttribute::DW_AT_count);
-                if (count_attr && count_attr->getType() == AttributeValueType::UNSIGNED) {
-                    uint64_t count = std::static_pointer_cast<UnsignedAttributeValue>(count_attr)->getValue();
-                    dimensions.push_back(count);
-                } else {
-                    // Default to 1 if no count specified
-                    dimensions.push_back(1);
-                }
+                dimensions.push_back(getSubrangeCount(child));
             }
         }
-        
-        // If no subrange types found, default to single element
+
         if (dimensions.empty()) {
-            dimensions.push_back(1);
+            if (size != 0 && resolved_element->getSize() != 0) {
+                dimensions.push_back(size / resolved_element->getSize());
+            } else {
+                dimensions.push_back(1);
+            }
         }
-        
+
         return createArrayType(resolved_element, dimensions);
     } else {
-        return createPrimitiveType(PrimitiveType::Kind::INTEGER, size, name);
+        return createPrimitiveType(PrimitiveType::Kind::INTEGER, size, getTypeName(die));
     }
 }
 
@@ -494,13 +589,63 @@ std::shared_ptr<Type> TypeSystem::resolveCompositeType(std::shared_ptr<DIE> die)
             std::shared_ptr<Type> resolved_member_type = member_type ? resolveType(member_type) : nullptr;
             
             if (resolved_member_type) {
-                uint64_t member_offset = 0; // Default offset
+                Member member{member_name, resolved_member_type, 0, 0, 0, false, false, false, false};
                 auto offset_attr = child->getAttribute(DwarfAttribute::DW_AT_data_member_location);
                 if (offset_attr && offset_attr->getType() == AttributeValueType::UNSIGNED) {
-                    member_offset = std::static_pointer_cast<UnsignedAttributeValue>(offset_attr)->getValue();
+                    member.offset = std::static_pointer_cast<UnsignedAttributeValue>(offset_attr)->getValue();
                 }
-                
-                composite_type->addMember(member_name, resolved_member_type, member_offset);
+
+                auto bit_size_attr = child->getAttribute(DwarfAttribute::DW_AT_bit_size);
+                if (bit_size_attr && bit_size_attr->getType() == AttributeValueType::UNSIGNED) {
+                    member.bit_size = std::static_pointer_cast<UnsignedAttributeValue>(bit_size_attr)->getValue();
+                }
+
+                auto bit_offset_attr = child->getAttribute(DwarfAttribute::DW_AT_data_bit_offset);
+                if (bit_offset_attr && bit_offset_attr->getType() == AttributeValueType::UNSIGNED) {
+                    member.bit_offset = std::static_pointer_cast<UnsignedAttributeValue>(bit_offset_attr)->getValue();
+                }
+
+                auto external_attr = child->getAttribute(DwarfAttribute::DW_AT_external);
+                if (external_attr && external_attr->getType() == AttributeValueType::FLAG) {
+                    member.is_static = std::static_pointer_cast<FlagAttributeValue>(external_attr)->getValue();
+                }
+
+                auto access_attr = child->getAttribute(DwarfAttribute::DW_AT_accessibility);
+                if (access_attr && access_attr->getType() == AttributeValueType::UNSIGNED) {
+                    switch (std::static_pointer_cast<UnsignedAttributeValue>(access_attr)->getValue()) {
+                        case 1: member.is_public = true; break;
+                        case 2: member.is_protected = true; break;
+                        case 3: member.is_private = true; break;
+                        default: break;
+                    }
+                }
+
+                composite_type->addMember(member);
+            }
+        } else if (child->getTag() == DwarfTag::DW_TAG_inheritance) {
+            auto base_type_die = getTypeReference(child);
+            auto base_type = base_type_die ? resolveType(base_type_die) : nullptr;
+            auto base_composite = std::dynamic_pointer_cast<CompositeType>(base_type);
+            if (base_composite) {
+                BaseClass base{base_composite, 0, false, false, false, false};
+                auto offset_attr = child->getAttribute(DwarfAttribute::DW_AT_data_member_location);
+                if (offset_attr && offset_attr->getType() == AttributeValueType::UNSIGNED) {
+                    base.offset = std::static_pointer_cast<UnsignedAttributeValue>(offset_attr)->getValue();
+                }
+                auto virtuality_attr = child->getAttribute(DwarfAttribute::DW_AT_virtuality);
+                if (virtuality_attr && virtuality_attr->getType() == AttributeValueType::UNSIGNED) {
+                    base.is_virtual = std::static_pointer_cast<UnsignedAttributeValue>(virtuality_attr)->getValue() != 0;
+                }
+                auto access_attr = child->getAttribute(DwarfAttribute::DW_AT_accessibility);
+                if (access_attr && access_attr->getType() == AttributeValueType::UNSIGNED) {
+                    switch (std::static_pointer_cast<UnsignedAttributeValue>(access_attr)->getValue()) {
+                        case 1: base.is_public = true; break;
+                        case 2: base.is_protected = true; break;
+                        case 3: base.is_private = true; break;
+                        default: break;
+                    }
+                }
+                composite_type->addBaseClass(base);
             }
         }
     }
@@ -548,8 +693,8 @@ std::shared_ptr<Type> TypeSystem::resolveFunctionType(std::shared_ptr<DIE> die) 
     }
     
     std::vector<std::shared_ptr<Type>> parameter_types;
-    
-    // Parse parameters
+    bool is_variadic = false;
+
     for (const auto& child : die->getChildren()) {
         if (child->getTag() == DwarfTag::DW_TAG_formal_parameter) {
             auto param_type = getTypeReference(child);
@@ -557,23 +702,32 @@ std::shared_ptr<Type> TypeSystem::resolveFunctionType(std::shared_ptr<DIE> die) 
             if (resolved_param) {
                 parameter_types.push_back(resolved_param);
             }
+        } else if (child->getTag() == DwarfTag::DW_TAG_unspecified_parameters) {
+            is_variadic = true;
         }
     }
-    
-    return createFunctionType(resolved_return, parameter_types, false);
+
+    return createFunctionType(resolved_return, parameter_types, is_variadic);
 }
 
 std::shared_ptr<Type> TypeSystem::resolveTypedefType(std::shared_ptr<DIE> die) {
     std::string name = getTypeName(die);
-    
+
     auto underlying_type = getTypeReference(die);
     std::shared_ptr<Type> resolved_underlying = underlying_type ? resolveType(underlying_type) : nullptr;
-    
+
     if (resolved_underlying) {
-        return resolved_underlying; // Typedef is just an alias
+        return createModifiedType(ModifiedTypeKind::TYPEDEF, resolved_underlying, resolved_underlying->getSize(), name);
     } else {
-        return createPrimitiveType(PrimitiveType::Kind::INTEGER, 0, name);
+        return createModifiedType(ModifiedTypeKind::TYPEDEF, nullptr, 0, name);
     }
+}
+
+std::shared_ptr<Type> TypeSystem::resolveModifiedType(std::shared_ptr<DIE> die, ModifiedTypeKind kind) {
+    auto underlying_die = getTypeReference(die);
+    std::shared_ptr<Type> resolved_underlying = underlying_die ? resolveType(underlying_die) : nullptr;
+    const uint64_t size = (kind == ModifiedTypeKind::REFERENCE) ? pointer_size_bytes_ : getTypeSize(die);
+    return createModifiedType(kind, resolved_underlying, size, getTypeName(die));
 }
 
 // Attribute helpers
@@ -607,6 +761,35 @@ std::shared_ptr<DIE> TypeSystem::getTypeReference(std::shared_ptr<DIE> die) cons
     if (offset == 0) return nullptr;
     if (!die_lookup_) return nullptr;
     return die_lookup_(offset);
+}
+
+uint64_t TypeSystem::getSubrangeCount(std::shared_ptr<DIE> die) const {
+    if (!die) return 1;
+
+    auto count_attr = die->getAttribute(DwarfAttribute::DW_AT_count);
+    if (count_attr && count_attr->getType() == AttributeValueType::UNSIGNED) {
+        return std::static_pointer_cast<UnsignedAttributeValue>(count_attr)->getValue();
+    }
+
+    int64_t lower = 0;
+    auto lower_attr = die->getAttribute(DwarfAttribute::DW_AT_lower_bound);
+    if (auto u = std::dynamic_pointer_cast<UnsignedAttributeValue>(lower_attr)) {
+        lower = static_cast<int64_t>(u->getValue());
+    } else if (auto s = std::dynamic_pointer_cast<SignedAttributeValue>(lower_attr)) {
+        lower = s->getValue();
+    }
+
+    auto upper_attr = die->getAttribute(DwarfAttribute::DW_AT_upper_bound);
+    if (auto u = std::dynamic_pointer_cast<UnsignedAttributeValue>(upper_attr)) {
+        int64_t upper = static_cast<int64_t>(u->getValue());
+        return upper >= lower ? static_cast<uint64_t>(upper - lower + 1) : 1;
+    }
+    if (auto s = std::dynamic_pointer_cast<SignedAttributeValue>(upper_attr)) {
+        int64_t upper = s->getValue();
+        return upper >= lower ? static_cast<uint64_t>(upper - lower + 1) : 1;
+    }
+
+    return 1;
 }
 
 } // namespace dwarf

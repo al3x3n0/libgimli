@@ -17,31 +17,56 @@ A comprehensive C++ library for parsing and evaluating DWARF debug information f
 - **ELFIO**: Header-only ELF file I/O library (included as submodule)
 - **CMake**: Build system (version 3.16 or later)
 - **C++17 Compiler**: GCC 7+, Clang 5+, or MSVC 2017+
+- **Z3**: Optional. Enables solver-backed semantic verification for `compare-expr` and parts of `compare-cfi`
 
 ## Building
 
 ```bash
-# Clone the repository
-git clone <repository-url>
-cd dwarf
-
-# Initialize submodules
-git submodule update --init --recursive
-
-# Create build directory
-mkdir build
-cd build
-
-# Configure and build
-cmake ..
-make -j$(nproc)
+# Configure and build (default: Z3 enabled when available)
+cmake -S . -B build
+cmake --build build -j
 
 # Run tests
-./dwarf_tests
+ctest --test-dir build --output-on-failure
 
 # Run example
-./dwarf_example <path-to-elf-file>
+./build/dwarf_example <path-to-elf-file>
 ```
+
+Optional solver-free build:
+
+```bash
+# Build parser/query/CLI support without Z3
+cmake -S . -B build-noz3 -DDWARF_ENABLE_Z3=OFF
+cmake --build build-noz3 -j
+ctest --test-dir build-noz3 --output-on-failure
+```
+
+Behavior by build mode:
+- With Z3 enabled, semantic compare can prove equivalence/counterexamples and emits solver-backed buckets such as `unsat`, `sat`, `z3`, and `structural+z3`.
+- With Z3 disabled, the same APIs and CLI subcommands remain available.
+- In no-Z3 builds, `compare-expr` returns `solver_result=solver_unavailable` and `verifier_backend=solver-unavailable` for solver-dependent rows.
+- In no-Z3 builds, `compare-cfi` still reports deterministic structural matches, with backends such as `structural+solver-unavailable`.
+
+### Installed CMake Package
+
+The install step exports a CMake package with a namespaced target:
+
+```bash
+cmake -S . -B build
+cmake --build build -j
+cmake --install build --prefix /tmp/dwarf-install
+```
+
+Consumer example:
+
+```cmake
+find_package(DwarfParser CONFIG REQUIRED)
+add_executable(app main.cpp)
+target_link_libraries(app PRIVATE Dwarf::dwarf_parser)
+```
+
+If the installed package was built with Z3 enabled, `find_package(DwarfParser)` will also resolve the Z3 dependency automatically.
 
 ## Usage
 
@@ -166,21 +191,100 @@ std::cout << "Result: " << result.description << std::endl;
 
 ### Command Line Tool
 
-The example program provides a command-line interface for exploring DWARF information:
+`dwarf_dump` provides section dumps plus semantic comparison subcommands:
 
 ```bash
-# Show all information
-./dwarf_example program.elf --all
+# Dump .debug_info
+./build/dwarf_dump -i program.elf
 
-# Show only types
-./dwarf_example program.elf --types
+# Dump everything
+./build/dwarf_dump -A program.elf
 
-# Show only functions
-./dwarf_example program.elf --functions
+# Compare location expressions (strict gate: fail on any difference)
+./build/dwarf_dump compare-expr before.elf after.elf \
+  --strict --max-different=0 --format=text
 
-# Show only variables
-./dwarf_example program.elf --variables
+# Compare location expressions with JSON report output
+./build/dwarf_dump compare-expr before.elf after.elf \
+  --format=json --schema-version=1 --output=compare-expr.json
+
+# Optional: relocation/index sanity checks + normalized range-aware location compare
+./build/dwarf_dump compare-expr before.elf after.elf \
+  --reloc-check --normalize-loc --range-aware \
+  --min-equivalent-coverage=0.99 --max-different-coverage=0.00 \
+  --fail-on-uncovered
+
+# Compare unwind/CFI across all FDEs (strict gate)
+./build/dwarf_dump compare-cfi before.elf after.elf \
+  --all-fdes --strict --max-different=0
+
+# Compare unwind/CFI while tolerating unknown/missing rows
+./build/dwarf_dump compare-cfi before.elf after.elf \
+  --all-fdes --allow-unknown --allow-missing --max-different=0
+
+# C++ API example for semantic compare (expr + CFI)
+./build/dwarf_semantic_compare_example before.elf after.elf
 ```
+
+`dwarf_semantic_compare_example` demonstrates:
+- `CrossBinaryExpressionComparator` for variable-location semantic equivalence
+- solver-aware gate evaluation (`trigger`, `trigger_detail`, `signature`)
+- `SymbolicCFIVerifier::compareFDEByIndex` for unwind/CFI equivalence metadata
+
+### CI Gate Examples
+
+Use `dwarf_dump` exit codes directly in CI jobs to enforce regression gates:
+
+```bash
+# Expression equivalence gate
+./build/dwarf_dump compare-expr old.elf new.elf \
+  --strict --max-different=0 --format=json --output=expr-report.json
+
+# CFI equivalence gate over all functions/FDEs
+./build/dwarf_dump compare-cfi old.elf new.elf \
+  --all-fdes --strict --max-different=0 --format=json --output=cfi-report.json
+
+# Optional policy: fail only on confirmed differences
+./build/dwarf_dump compare-cfi old.elf new.elf \
+  --all-fdes --allow-unknown --allow-missing --max-different=0
+```
+
+### Solver-Backed Semantic Policies
+
+`compare-expr` and `compare-cfi` support solver-specific gates and summaries:
+
+```bash
+# Fail gate if any row is produced by a disallowed solver outcome/backend
+./build/dwarf_dump compare-expr old.elf new.elf \
+  --fail-on-solver-result=unknown \
+  --fail-on-verifier-backend=z3
+
+# Emit only solver/backend bucket summaries (no per-row report)
+./build/dwarf_dump compare-cfi old.elf new.elf \
+  --all-fdes --emit-solver-summary-only --format=json --schema-version=1
+```
+
+Useful options:
+- `--solver-timeout-ms=<N>`
+- `--fail-on-solver-result=<K>` (repeatable)
+- `--fail-on-verifier-backend=<K>` (repeatable)
+- `--emit-solver-summary-only`
+- If both `fail-on` policies match a row, `solver_result` policy triggers first.
+
+No-Z3 behavior:
+- `compare-expr` still runs, but solver-dependent rows report `solver_result=solver_unavailable` and `verifier_backend=solver-unavailable`.
+- `compare-cfi` still runs and can report structural equivalence, typically with `solver_result=equivalent` and `verifier_backend=structural+solver-unavailable`.
+- This means gate policies remain usable in solver-free builds, but they evaluate against fallback buckets instead of Z3-backed ones.
+
+JSON rows include solver metadata:
+- `solver_result`
+- `verifier_backend`
+- `counterexample_model`
+- `counterexample_witness`
+
+JSON summaries include bucket counts:
+- `solver_result_counts`
+- `verifier_backend_counts`
 
 ### Test Suite
 
@@ -189,6 +293,110 @@ The test suite validates core functionality:
 ```bash
 ./dwarf_tests
 ```
+
+### Semantic Compare API Cookbook
+
+For a complete runnable API sample, see:
+- `examples/semantic_compare_example.cpp`
+
+Minimal C++ patterns:
+
+```cpp
+#include "dwarf_parser.hpp"
+#include "expression_compare.hpp"
+#include "cfi_symbolic.hpp"
+
+using namespace dwarf;
+```
+
+1. Load two binaries and run variable location-expression semantic compare:
+
+```cpp
+DwarfParser lhs("before.elf");
+DwarfParser rhs("after.elf");
+if (!lhs.load() || !rhs.load() || !lhs.isValid() || !rhs.isValid()) {
+    // handle load error
+}
+
+CrossBinaryExpressionComparator cmp;
+CrossBinaryCompareOptions opts;
+opts.tag = DwarfTag::DW_TAG_variable;
+opts.attribute = DwarfAttribute::DW_AT_location;
+opts.include_missing = true;
+opts.verification_options.solver_timeout_ms = 200;
+
+auto rows = cmp.compareParsersByName(lhs, rhs, opts);
+auto summary = cmp.summarize(rows);
+```
+
+2. Apply solver-aware gate policy from library API:
+
+```cpp
+CrossBinaryGateOptions gate_opts;
+gate_opts.max_different = 0;
+gate_opts.fail_on_solver_results.insert("unknown");
+gate_opts.fail_on_verifier_backends.insert("unspecified");
+
+auto gate = cmp.evaluateGate(rows, gate_opts);
+// gate.pass, gate.reason, gate.trigger, gate.trigger_detail, gate.signature
+```
+
+3. Render report payloads:
+
+```cpp
+std::string report_text = cmp.renderTextReport(rows, /*max_rows=*/50);
+std::string report_json = cmp.renderJsonReport(rows, /*max_rows=*/50);
+```
+
+4. Compare unwind/CFI semantics for a specific FDE pair:
+
+```cpp
+if (lhs.hasCFI() && rhs.hasCFI() &&
+    !lhs.getCFIParser().getFDEs().empty() &&
+    !rhs.getCFIParser().getFDEs().empty()) {
+    SymbolicCFIVerifier cfi_verifier;
+    SymbolicCFICompareOptions cfi_opts;
+    cfi_opts.expression_options.solver_timeout_ms = 200;
+
+    auto cfi = cfi_verifier.compareFDEByIndex(
+        lhs.getCFIParser(), 0,
+        rhs.getCFIParser(), 0,
+        cfi_opts);
+    // cfi.verdict, cfi.verifier_backend, cfi.solver_result, cfi.reason
+}
+```
+
+Common interpretation hints:
+- `solver_result=unsat` usually means proof of equivalence.
+- `solver_result=sat` means a semantic counterexample exists.
+- `solver_result` values starting with `precheck_` are deterministic structural checks before SMT solving.
+- `solver_result=solver_unavailable` means the library was built without Z3, so no SMT proof was attempted.
+- `counterexample_model` / `counterexample_witness` are most useful for `sat` mismatches.
+
+### Semantic Compare Contract
+
+Compatibility guidance for semantic compare outputs/APIs:
+
+- CLI JSON contract is versioned with `--schema-version`.
+- For `schema_version=1`, these gate fields are part of the public contract:
+  - `gate.pass`
+  - `gate.reason`
+  - `gate.trigger`
+  - `gate.trigger_detail`
+  - `gate.signature`
+- For expression rows, solver metadata contract includes:
+  - `verifier_backend`
+  - `solver_result`
+  - `counterexample_model`
+  - `counterexample_witness`
+- For CFI rows, solver metadata contract includes the same four fields above.
+
+Stability policy:
+- New fields may be added in minor releases without breaking existing fields.
+- Existing field names/meanings for the current schema version are not changed without introducing a new schema version.
+- `precheck_*` solver buckets are intended to be machine-consumable and deterministic for structural failures.
+- `solver_unavailable`, `solver-unavailable`, and `structural+solver-unavailable` are part of the supported contract for solver-free builds.
+- If multiple fail-on policies match, `solver_result` policy takes precedence over `verifier_backend`.
 
 ## API Reference
 

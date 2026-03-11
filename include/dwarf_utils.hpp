@@ -10,6 +10,15 @@ namespace dwarf {
 // Utility functions for DWARF parsing
 class DwarfUtils {
 public:
+    struct SizeContext {
+        uint8_t address_size = 4;
+        uint8_t offset_size = 4;
+        // Optional explicit ref_addr size. If 0, offset_size is used.
+        uint8_t ref_addr_size = 0;
+        // DWARF2-style ref_addr uses address size instead of offset size.
+        bool ref_addr_uses_address_size = false;
+    };
+
     // Tag name conversion
     static std::string tagToString(DwarfTag tag);
     static DwarfTag stringToTag(const std::string& str);
@@ -64,11 +73,19 @@ public:
     
     // Size utilities
     static size_t getFormSize(DwarfForm form, const uint8_t* data, size_t offset, size_t max_offset);
+    static size_t getFormSize(DwarfForm form, const uint8_t* data, size_t offset, size_t max_offset,
+                              const SizeContext& ctx);
     static size_t getOperationSize(DwarfOp op, const uint8_t* data, size_t offset, size_t max_offset);
+    static size_t getOperationSize(DwarfOp op, const uint8_t* data, size_t offset, size_t max_offset,
+                                   const SizeContext& ctx);
     
     // Expression utilities
     static std::string expressionToAssembly(const std::vector<uint8_t>& expression);
+    static std::string expressionToAssembly(const std::vector<uint8_t>& expression,
+                                            const SizeContext& ctx);
     static std::vector<std::string> expressionToTokens(const std::vector<uint8_t>& expression);
+    static std::vector<std::string> expressionToTokens(const std::vector<uint8_t>& expression,
+                                                       const SizeContext& ctx);
     
     // File utilities
     static bool fileExists(const std::string& filename);

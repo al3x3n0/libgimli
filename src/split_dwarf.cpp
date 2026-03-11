@@ -214,7 +214,22 @@ std::string SplitDwarfLoader::findFile(const std::string& filename) const {
 DWPLoader::DWPLoader() = default;
 
 bool DWPLoader::parseIndexData(const std::vector<uint8_t>& index_data, bool is_tu_index) {
-    return parseIndex(index_data, is_tu_index);
+    bool ok = parseIndex(index_data, is_tu_index);
+    if (is_tu_index) {
+        has_tu_index_section_ = true;
+        tu_index_valid_ = ok;
+        if (ok) tu_index_ = index_;
+        else tu_index_ = DWPIndex{};
+    } else {
+        has_cu_index_section_ = true;
+        cu_index_valid_ = ok;
+        if (ok) cu_index_ = index_;
+        else cu_index_ = DWPIndex{};
+    }
+    if (cu_index_valid_) index_ = cu_index_;
+    else if (tu_index_valid_) index_ = tu_index_;
+    else index_ = DWPIndex{};
+    return ok;
 }
 
 bool DWPLoader::load(const std::string& path) {
@@ -224,6 +239,23 @@ bool DWPLoader::load(const std::string& path) {
     }
 
     path_ = path;
+    index_ = DWPIndex{};
+    cu_index_ = DWPIndex{};
+    tu_index_ = DWPIndex{};
+    has_cu_index_section_ = false;
+    cu_index_valid_ = false;
+    has_tu_index_section_ = false;
+    tu_index_valid_ = false;
+    debug_info_dwo_.clear();
+    debug_abbrev_dwo_.clear();
+    debug_str_dwo_.clear();
+    debug_str_offsets_dwo_.clear();
+    debug_line_dwo_.clear();
+    debug_line_str_dwo_.clear();
+    debug_loclists_dwo_.clear();
+    debug_rnglists_dwo_.clear();
+    debug_macro_dwo_.clear();
+    debug_addr_dwo_.clear();
 
     // Load all .dwo sections
     for (const auto& section : reader.sections) {
@@ -258,10 +290,27 @@ bool DWPLoader::load(const std::string& path) {
         } else if (name == ".debug_addr.dwo") {
             debug_addr_dwo_ = std::move(section_data);
         } else if (name == ".debug_cu_index") {
-            parseIndex(section_data, false);
+            has_cu_index_section_ = true;
+            cu_index_valid_ = parseIndex(section_data, false);
+            if (cu_index_valid_) {
+                cu_index_ = index_;
+            }
         } else if (name == ".debug_tu_index") {
-            parseIndex(section_data, true);
+            has_tu_index_section_ = true;
+            tu_index_valid_ = parseIndex(section_data, true);
+            if (tu_index_valid_) {
+                tu_index_ = index_;
+            }
         }
+    }
+
+    // Prefer CU index for default lookups; fall back to TU index if CU is absent.
+    if (cu_index_valid_) {
+        index_ = cu_index_;
+    } else if (tu_index_valid_) {
+        index_ = tu_index_;
+    } else {
+        index_ = DWPIndex{};
     }
 
     is_loaded_ = true;
@@ -269,8 +318,16 @@ bool DWPLoader::load(const std::string& path) {
 }
 
 std::optional<DWPIndex::UnitEntry> DWPLoader::findUnit(uint64_t signature) const {
+    auto it_cu = cu_index_.units.find(signature);
+    if (it_cu != cu_index_.units.end()) {
+        return it_cu->second;
+    }
+    auto it_tu = tu_index_.units.find(signature);
+    if (it_tu != tu_index_.units.end()) {
+        return it_tu->second;
+    }
     auto it = index_.units.find(signature);
-    if (it != index_.units.end()) {
+    if (it != index_.units.end()) { // defensive fallback
         return it->second;
     }
     return std::nullopt;

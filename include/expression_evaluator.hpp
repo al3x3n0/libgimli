@@ -58,6 +58,10 @@ struct EvaluationContext {
     uint8_t address_size = 8;          // Target address size in bytes (4 or 8 typically)
     uint8_t offset_size = 4;           // DWARF DIE reference size in bytes (4 for DWARF32, 8 for DWARF64)
     uint64_t cu_base_offset = 0;       // CU header start offset in DIE offset space (bias-aware)
+    // Optional diagnostic context for richer unsupported-op/form error reporting.
+    std::optional<uint64_t> diagnostic_cu_offset;
+    std::optional<uint64_t> diagnostic_die_offset;
+    std::string diagnostic_attribute;
 
     struct BaseTypeInfo {
         uint64_t byte_size = 0;
@@ -166,6 +170,7 @@ private:
     int call_depth_ = 0;
     mutable bool execution_error_ = false;
     mutable std::string execution_error_message_;
+    std::string diagnosticContextSuffix() const;
     
     // Operation handlers
     void handleAddr(uint64_t& offset, const std::vector<uint8_t>& expression);
@@ -258,6 +263,7 @@ private:
     void handleGnuParameterRef(uint64_t& offset, const std::vector<uint8_t>& expression);
     void handleGnuAddrIndex(uint64_t& offset, const std::vector<uint8_t>& expression);
     void handleGnuConstIndex(uint64_t& offset, const std::vector<uint8_t>& expression);
+    void handleWasmLocation(uint64_t& offset, const std::vector<uint8_t>& expression);
 
     // Helper methods
     uint64_t readULEB128(uint64_t& offset, const std::vector<uint8_t>& data) const;

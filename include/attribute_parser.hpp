@@ -7,6 +7,7 @@
 #include <memory>
 #include <vector>
 #include <map>
+#include <optional>
 
 namespace dwarf {
 
@@ -49,6 +50,12 @@ struct LineState {
 // Attribute parser for handling DWARF attributes
 class AttributeParser {
 public:
+    struct VendorFormSkipSample {
+        uint16_t form = 0;
+        uint64_t offset = 0;
+        std::string severity;
+    };
+
     AttributeParser(const std::vector<uint8_t>& debug_info,
                    const std::vector<uint8_t>& debug_abbrev,
                    const std::vector<uint8_t>& debug_str,
@@ -73,6 +80,17 @@ public:
     void setIsDwarf64(bool is_dwarf64) { is_dwarf64_ = is_dwarf64; }
     void setDebugInfoOffsetBias(uint64_t bias) { debug_info_offset_bias_ = bias; }
     void setSupplementaryDebugInfoOffsetBias(uint64_t bias) { sup_debug_info_offset_bias_ = bias; }
+    void setImplicitConstValue(std::optional<int64_t> value) { implicit_const_value_ = value; }
+    uint64_t getUnsupportedVendorFormSkipCount() const { return unsupported_vendor_form_skip_count_; }
+    const std::vector<VendorFormSkipSample>& getUnsupportedVendorFormSkipSamples() const {
+        return unsupported_vendor_form_skip_samples_;
+    }
+    const std::map<uint16_t, uint64_t>& getUnsupportedVendorFormSkipHistogram() const {
+        return unsupported_vendor_form_skip_histogram_;
+    }
+    const std::map<std::string, uint64_t>& getUnsupportedVendorFormSkipSeverityBuckets() const {
+        return unsupported_vendor_form_skip_severity_buckets_;
+    }
     
     // Main parsing methods
     std::shared_ptr<AttributeValue> parseAttribute(DwarfForm form, uint64_t& offset) const;
@@ -154,6 +172,11 @@ private:
     mutable bool is_dwarf64_ = false;
     mutable uint64_t debug_info_offset_bias_ = 0;
     mutable uint64_t sup_debug_info_offset_bias_ = 0;
+    mutable std::optional<int64_t> implicit_const_value_;
+    mutable uint64_t unsupported_vendor_form_skip_count_ = 0;
+    mutable std::vector<VendorFormSkipSample> unsupported_vendor_form_skip_samples_;
+    mutable std::map<uint16_t, uint64_t> unsupported_vendor_form_skip_histogram_;
+    mutable std::map<std::string, uint64_t> unsupported_vendor_form_skip_severity_buckets_;
     
     // Data reading helpers
     uint64_t readULEB128(uint64_t& offset) const;
@@ -175,12 +198,14 @@ private:
     std::shared_ptr<AttributeValue> parseFormString(uint64_t& offset) const;
     std::shared_ptr<AttributeValue> parseFormStrp(uint64_t& offset) const;
     std::shared_ptr<AttributeValue> parseFormStrpSup(uint64_t& offset) const;
+    std::shared_ptr<AttributeValue> parseFormGnuStrpAlt(uint64_t& offset) const;
     std::shared_ptr<AttributeValue> parseFormRef1(uint64_t& offset) const;
     std::shared_ptr<AttributeValue> parseFormRef2(uint64_t& offset) const;
     std::shared_ptr<AttributeValue> parseFormRef4(uint64_t& offset) const;
     std::shared_ptr<AttributeValue> parseFormRef8(uint64_t& offset) const;
     std::shared_ptr<AttributeValue> parseFormRefSup4(uint64_t& offset) const;
     std::shared_ptr<AttributeValue> parseFormRefSup8(uint64_t& offset) const;
+    std::shared_ptr<AttributeValue> parseFormGnuRefAlt(uint64_t& offset) const;
     std::shared_ptr<AttributeValue> parseFormRefUdata(uint64_t& offset) const;
     std::shared_ptr<AttributeValue> parseFormFlag(uint64_t& offset) const;
     std::shared_ptr<AttributeValue> parseFormFlagPresent(uint64_t& offset) const;
