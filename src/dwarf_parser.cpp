@@ -2,6 +2,7 @@
 #include "dwarf_utils.hpp"
 #include "attribute_parser.hpp"
 #include "debug_sup_parser.hpp"
+#include <elfio/elfio_relocation.hpp>
 #include <iostream>
 #include <fstream>
 #include <algorithm>
@@ -12,6 +13,97 @@
 namespace dwarf {
 
 static std::string pathDirname(const std::string& path);
+
+static ELFIO::Elf_Half findSectionIndex(const ELFIO::elfio& elf, const ELFIO::section* target) {
+    ELFIO::Elf_Half idx = 0;
+    for (const auto& sec : elf.sections) {
+        if (sec.get() == target) {
+            return idx;
+        }
+        ++idx;
+    }
+    return static_cast<ELFIO::Elf_Half>(elf.sections.size());
+}
+
+static bool writeRelocatedValue(std::vector<uint8_t>& data,
+                                uint64_t offset,
+                                uint64_t value,
+                                size_t width,
+                                bool little_endian) {
+    if (offset + width > data.size()) return false;
+    if (little_endian) {
+        for (size_t i = 0; i < width; ++i) {
+            data[offset + i] = static_cast<uint8_t>((value >> (i * 8)) & 0xff);
+        }
+        return true;
+    }
+    for (size_t i = 0; i < width; ++i) {
+        size_t shift = (width - 1 - i) * 8;
+        data[offset + i] = static_cast<uint8_t>((value >> shift) & 0xff);
+    }
+    return true;
+}
+
+static void applyRelocationsToSection(const ELFIO::elfio& elf,
+                                      const ELFIO::section* target,
+                                      std::vector<uint8_t>& data) {
+    if (!target || data.empty()) return;
+    if (elf.get_type() != ELFIO::ET_REL) return;
+
+    const ELFIO::Elf_Half target_index = findSectionIndex(elf, target);
+    if (target_index >= elf.sections.size()) return;
+
+    const bool little_endian = (elf.get_encoding() == ELFIO::ELFDATA2LSB);
+    for (const auto& rel_sec_ptr : elf.sections) {
+        const auto* rel_sec = rel_sec_ptr.get();
+        if (!rel_sec) continue;
+        const auto rel_type = rel_sec->get_type();
+        if (rel_type != ELFIO::SHT_REL && rel_type != ELFIO::SHT_RELA) continue;
+        if (rel_sec->get_info() != target_index) continue;
+        if (rel_sec->get_link() >= elf.sections.size()) continue;
+
+        auto* mutable_rel_sec = const_cast<ELFIO::section*>(rel_sec);
+        auto* mutable_sym_sec = const_cast<ELFIO::section*>(elf.sections[rel_sec->get_link()]);
+        ELFIO::relocation_section_accessor relocs(elf, mutable_rel_sec);
+        ELFIO::symbol_section_accessor syms(elf, mutable_sym_sec);
+
+        const auto count = relocs.get_entries_num();
+        for (unsigned i = 0; i < count; ++i) {
+            ELFIO::Elf64_Addr offset = 0;
+            ELFIO::Elf_Word symbol = 0;
+            unsigned reloc_kind = 0;
+            ELFIO::Elf_Sxword addend = 0;
+            if (!relocs.get_entry(i, offset, symbol, reloc_kind, addend)) continue;
+
+            size_t width = 0;
+            switch (reloc_kind) {
+                case 10: // R_X86_64_32
+                case 11: // R_X86_64_32S
+                    width = 4;
+                    break;
+                case 1: // R_X86_64_64
+                    width = 8;
+                    break;
+                default:
+                    continue;
+            }
+
+            std::string name;
+            ELFIO::Elf64_Addr value = 0;
+            ELFIO::Elf_Xword size = 0;
+            unsigned char bind = 0;
+            unsigned char sym_type = 0;
+            ELFIO::Elf_Half section_index = 0;
+            unsigned char other = 0;
+            if (!syms.get_symbol(symbol, name, value, size, bind, sym_type, section_index, other)) {
+                continue;
+            }
+
+            uint64_t relocated = static_cast<uint64_t>(value) + static_cast<uint64_t>(addend);
+            writeRelocatedValue(data, static_cast<uint64_t>(offset), relocated, width, little_endian);
+        }
+    }
+}
 
 static void appendVendorFormSkipSamples(DwarfParser::SupportTelemetry& telemetry,
                                         const std::vector<DIEParser::VendorFormSkipDetail>& samples) {
@@ -321,8 +413,10 @@ std::vector<uint8_t> DwarfParser::getSectionData(const ELFIO::section* section) 
     
     const char* data = section->get_data();
     size_t size = section->get_size();
-    
-    return std::vector<uint8_t>(data, data + size);
+
+    std::vector<uint8_t> out(data, data + size);
+    applyRelocationsToSection(*elf_, section, out);
+    return out;
 }
 
 bool DwarfParser::parseCompilationUnits() {

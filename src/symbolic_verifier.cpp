@@ -8,6 +8,14 @@ namespace dwarf {
 
 namespace {
 
+std::string formatUnsupportedDetail(const char* side, uint8_t opcode, bool vendor_extension) {
+    std::ostringstream ss;
+    ss << side << " unsupported opcode 0x"
+       << std::hex << static_cast<unsigned>(opcode) << std::dec;
+    if (vendor_extension) ss << " [vendor/extension]";
+    return ss.str();
+}
+
 std::string summarizeSymResult(const SymbolicExpressionResult& r) {
     std::ostringstream ss;
     switch (r.type) {
@@ -165,6 +173,25 @@ ExpressionVerificationResult ExpressionVerifier::verifyWithContexts(
 
     out.lhs_summary = summarizeSymResult(l);
     out.rhs_summary = summarizeSymResult(r);
+    out.lhs_unsupported_opcode = l.unsupported_opcode;
+    out.rhs_unsupported_opcode = r.unsupported_opcode;
+    out.lhs_unsupported_vendor_extension = l.unsupported_vendor_extension;
+    out.rhs_unsupported_vendor_extension = r.unsupported_vendor_extension;
+
+    if (l.type == SymbolicExpressionResult::Type::INVALID && l.unsupported_opcode.has_value()) {
+        out.verdict = ExpressionVerificationResult::Verdict::UNKNOWN;
+        out.reason = formatUnsupportedDetail("lhs", *l.unsupported_opcode, l.unsupported_vendor_extension);
+        out.verifier_backend = "structural";
+        out.solver_result = "unsupported_opcode";
+        return out;
+    }
+    if (r.type == SymbolicExpressionResult::Type::INVALID && r.unsupported_opcode.has_value()) {
+        out.verdict = ExpressionVerificationResult::Verdict::UNKNOWN;
+        out.reason = formatUnsupportedDetail("rhs", *r.unsupported_opcode, r.unsupported_vendor_extension);
+        out.verifier_backend = "structural";
+        out.solver_result = "unsupported_opcode";
+        return out;
+    }
 
     SMTExpressionVerifier smt;
     SMTVerificationResult smt_result = smt.verify(l, r, opts.solver_timeout_ms);

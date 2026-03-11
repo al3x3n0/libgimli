@@ -46,6 +46,9 @@ struct EvaluationContext {
     uint64_t cfa = 0;                  // Canonical Frame Address from CFI
     uint64_t object_address = 0;       // Object address for DW_OP_push_object_address
     uint64_t tls_base = 0;             // Thread-local storage base for DW_OP_form_tls_address
+    uint64_t text_base = 0;            // Text section base for GNU/EH encoded relative addresses
+    uint64_t data_base = 0;            // Data section base for GNU/EH encoded relative addresses
+    uint64_t function_base = 0;        // Function base for GNU/EH encoded relative addresses
 
     // DWARF 5 address table (debug_addr section)
     const std::vector<uint64_t>* debug_addr_table = nullptr;
@@ -109,6 +112,9 @@ struct ExpressionResult {
     Type type;
     uint64_t value;
     std::string description;
+    bool uninitialized = false;
+    std::optional<uint8_t> unsupported_opcode;
+    bool unsupported_vendor_extension = false;
     std::vector<PieceDescriptor> pieces;  // For COMPOSITE type
 
     ExpressionResult(Type t, uint64_t v, const std::string& desc = "")
@@ -168,6 +174,7 @@ private:
     // the current implicit value so DW_OP_piece/DW_OP_bit_piece can emit IMPLICIT pieces.
     std::optional<std::vector<uint8_t>> pending_implicit_bytes_;
     int call_depth_ = 0;
+    bool uninitialized_taint_ = false;
     mutable bool execution_error_ = false;
     mutable std::string execution_error_message_;
     std::string diagnosticContextSuffix() const;

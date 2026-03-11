@@ -139,12 +139,12 @@ private:
             case SymExpr::Kind::CONST_U64:
                 return ctx_.bv_val(expr->const_u64, 64);
             case SymExpr::Kind::BYTES:
-                if (expr->raw_bytes.size() > 8) return fail("bytes literal wider than 64 bits");
+                if (expr->raw_bytes.size() > 8) return mkVar("wide_bytes_" + expr->toString());
                 return ctx_.bv_val(decodeBytesToU64(expr->raw_bytes, little_endian_), 64);
             case SymExpr::Kind::VAR:
                 return mkVar(expr->name);
             case SymExpr::Kind::UNKNOWN:
-                return fail("unsupported unknown node: " + expr->name);
+                return mkVar("unknown_" + expr->name);
 
             case SymExpr::Kind::NEG: {
                 if (expr->args.size() != 1) return fail("NEG arity mismatch");
@@ -213,6 +213,9 @@ private:
 
             case SymExpr::Kind::LOAD: {
                 if (expr->args.size() != 1) return fail("LOAD arity mismatch");
+                if (expr->aux_bytes > 8) {
+                    return mkVar("wide_load_" + expr->toString());
+                }
                 return loadN(encodeValue(expr->args[0]), expr->aux_bytes);
             }
 
@@ -244,6 +247,61 @@ bool samePieceMetadata(const SymPiece& lhs, const SymPiece& rhs) {
            lhs.bit_size == rhs.bit_size &&
            lhs.bit_offset == rhs.bit_offset &&
            lhs.implicit_bytes == rhs.implicit_bytes;
+}
+
+const std::vector<uint8_t>* largeBytesLiteral(const SymExprPtr& expr) {
+    if (!expr || expr->kind != SymExpr::Kind::BYTES) return nullptr;
+    if (expr->raw_bytes.size() <= 8) return nullptr;
+    return &expr->raw_bytes;
+}
+
+bool structurallyEqualExpr(const SymExprPtr& lhs, const SymExprPtr& rhs) {
+    if (!lhs || !rhs) return lhs == rhs;
+    return lhs->toString() == rhs->toString();
+}
+
+bool needsUnsupportedStructuralPrecheck(const SymExprPtr& expr) {
+    if (!expr) return false;
+    switch (expr->kind) {
+        case SymExpr::Kind::BYTES:
+            return expr->raw_bytes.size() > 8;
+        case SymExpr::Kind::LOAD:
+            if (expr->aux_bytes == 0 || expr->aux_bytes > 8) return true;
+            break;
+        case SymExpr::Kind::NEG:
+        case SymExpr::Kind::NOT:
+        case SymExpr::Kind::ABS:
+            return expr->args.size() != 1;
+        case SymExpr::Kind::ADD:
+        case SymExpr::Kind::SUB:
+        case SymExpr::Kind::MUL:
+        case SymExpr::Kind::DIV:
+        case SymExpr::Kind::MOD:
+        case SymExpr::Kind::AND:
+        case SymExpr::Kind::OR:
+        case SymExpr::Kind::XOR:
+        case SymExpr::Kind::SHL:
+        case SymExpr::Kind::SHR:
+        case SymExpr::Kind::SHRA:
+        case SymExpr::Kind::EQ:
+        case SymExpr::Kind::NE:
+        case SymExpr::Kind::LT:
+        case SymExpr::Kind::LE:
+        case SymExpr::Kind::GT:
+        case SymExpr::Kind::GE:
+            return expr->args.size() != 2;
+        case SymExpr::Kind::ITE:
+            return expr->args.size() != 3;
+        case SymExpr::Kind::MASK:
+        case SymExpr::Kind::SEXT:
+            return expr->args.size() != 1;
+        default:
+            break;
+    }
+    for (const auto& arg : expr->args) {
+        if (needsUnsupportedStructuralPrecheck(arg)) return true;
+    }
+    return false;
 }
 
 std::string formatModelWitness(const z3::model& model) {
@@ -343,6 +401,13 @@ SMTVerificationResult SMTExpressionVerifier::verify(const SymbolicExpressionResu
         return out;
     }
 
+    if (lhs.uninitialized != rhs.uninitialized) {
+        out.verdict = ExpressionVerificationResult::Verdict::DIFFERENT;
+        out.reason = "uninitialized taint mismatch";
+        out.solver_result = "precheck_uninitialized_mismatch";
+        return out;
+    }
+
     z3::context ctx;
     Encoder encoder(ctx, DwarfUtils::objectIsLittleEndian());
 
@@ -355,6 +420,7 @@ SMTVerificationResult SMTExpressionVerifier::verify(const SymbolicExpressionResu
 
         z3::expr any_diff = ctx.bool_val(false);
         bool has_symbolic_piece = false;
+        bool had_deterministic_piece_compare = false;
         for (size_t i = 0; i < lhs.pieces.size(); ++i) {
             const auto& l = lhs.pieces[i];
             const auto& r = rhs.pieces[i];
@@ -372,6 +438,26 @@ SMTVerificationResult SMTExpressionVerifier::verify(const SymbolicExpressionResu
                 return out;
             }
 
+            if (needsUnsupportedStructuralPrecheck(l.location) &&
+                needsUnsupportedStructuralPrecheck(r.location) &&
+                structurallyEqualExpr(l.location, r.location)) {
+                had_deterministic_piece_compare = true;
+                continue;
+            }
+
+            if (const auto* lbytes = largeBytesLiteral(l.location)) {
+                if (const auto* rbytes = largeBytesLiteral(r.location)) {
+                    had_deterministic_piece_compare = true;
+                    if (*lbytes != *rbytes) {
+                        out.verdict = ExpressionVerificationResult::Verdict::DIFFERENT;
+                        out.reason = "composite wide-byte piece mismatch at index " + std::to_string(i);
+                        out.solver_result = "precheck_piece_wide_bytes_mismatch";
+                        return out;
+                    }
+                    continue;
+                }
+            }
+
             z3::expr lv = encoder.encodeValue(l.location);
             z3::expr rv = encoder.encodeValue(r.location);
             has_symbolic_piece = true;
@@ -387,8 +473,12 @@ SMTVerificationResult SMTExpressionVerifier::verify(const SymbolicExpressionResu
 
         if (!has_symbolic_piece) {
             out.verdict = ExpressionVerificationResult::Verdict::EQUIVALENT;
-            out.reason = "composite metadata matched with no symbolic locations";
-            out.solver_result = "precheck_no_symbolic_piece";
+            out.reason = had_deterministic_piece_compare
+                             ? "composite piece expressions matched exactly without SMT"
+                             : "composite metadata matched with no symbolic locations";
+            out.solver_result = had_deterministic_piece_compare
+                                    ? "precheck_piece_structural_equal"
+                                    : "precheck_no_symbolic_piece";
             return out;
         }
         return checkPredicateUnsat(ctx, any_diff, timeout_ms);
@@ -398,6 +488,28 @@ SMTVerificationResult SMTExpressionVerifier::verify(const SymbolicExpressionResu
         out.verdict = ExpressionVerificationResult::Verdict::UNKNOWN;
         out.reason = "missing symbolic expression";
         out.solver_result = "precheck_missing_expression";
+        return out;
+    }
+
+    if (const auto* lbytes = largeBytesLiteral(lhs.expression)) {
+        if (const auto* rbytes = largeBytesLiteral(rhs.expression)) {
+            const bool same = (*lbytes == *rbytes);
+            out.verdict = same ? ExpressionVerificationResult::Verdict::EQUIVALENT
+                               : ExpressionVerificationResult::Verdict::DIFFERENT;
+            out.reason = same ? "wide byte literals matched exactly"
+                              : "wide byte literals differ";
+            out.solver_result = same ? "precheck_wide_bytes_equal"
+                                     : "precheck_wide_bytes_mismatch";
+            return out;
+        }
+    }
+
+    if (needsUnsupportedStructuralPrecheck(lhs.expression) &&
+        needsUnsupportedStructuralPrecheck(rhs.expression) &&
+        structurallyEqualExpr(lhs.expression, rhs.expression)) {
+        out.verdict = ExpressionVerificationResult::Verdict::EQUIVALENT;
+        out.reason = "symbolic expressions matched structurally without SMT";
+        out.solver_result = "precheck_structural_equal";
         return out;
     }
 

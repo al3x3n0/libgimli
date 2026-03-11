@@ -3,6 +3,7 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <sstream>
 #include <sys/wait.h>
 #include <vector>
 #include <filesystem>
@@ -68,6 +69,15 @@ void appendU64LE(std::vector<uint8_t>& out, uint64_t v) {
     out.push_back(static_cast<uint8_t>((v >> 40) & 0xff));
     out.push_back(static_cast<uint8_t>((v >> 48) & 0xff));
     out.push_back(static_cast<uint8_t>((v >> 56) & 0xff));
+}
+
+void appendULEB128(std::vector<uint8_t>& out, uint64_t v) {
+    do {
+        uint8_t byte = static_cast<uint8_t>(v & 0x7f);
+        v >>= 7;
+        if (v != 0) byte |= 0x80;
+        out.push_back(byte);
+    } while (v != 0);
 }
 
 void writeELFWithSections(const std::string& path,
@@ -322,6 +332,211 @@ bool objectArrayContainsUIntField(const std::vector<std::string>& objects,
         if (extractUIntFieldFromObject(obj, key, &ok) == value && ok) return true;
     }
     return false;
+}
+
+std::string makeInvalidLocationOpcodeELF(const std::string& stem) {
+    std::vector<uint8_t> debug_str;
+    const uint32_t off_bad = 0;
+    for (char c : std::string("bad")) debug_str.push_back(static_cast<uint8_t>(c));
+    debug_str.push_back(0);
+
+    std::vector<uint8_t> debug_abbrev;
+    appendULEB128(debug_abbrev, 1);
+    appendULEB128(debug_abbrev, 0x11); // DW_TAG_compile_unit
+    debug_abbrev.push_back(0x01); // children
+    debug_abbrev.push_back(0x00);
+    debug_abbrev.push_back(0x00);
+
+    appendULEB128(debug_abbrev, 2);
+    appendULEB128(debug_abbrev, 0x34); // DW_TAG_variable
+    debug_abbrev.push_back(0x00); // no children
+    appendULEB128(debug_abbrev, 0x03); // DW_AT_name
+    appendULEB128(debug_abbrev, 0x0e); // DW_FORM_strp
+    appendULEB128(debug_abbrev, 0x02); // DW_AT_location
+    appendULEB128(debug_abbrev, 0x18); // DW_FORM_exprloc
+    debug_abbrev.push_back(0x00);
+    debug_abbrev.push_back(0x00);
+    debug_abbrev.push_back(0x00); // end abbrev table
+
+    std::vector<uint8_t> debug_info;
+    appendU32LE(debug_info, 0); // unit_length placeholder
+    appendU16LE(debug_info, 4); // version
+    appendU32LE(debug_info, 0); // abbrev offset
+    debug_info.push_back(0x08); // addr size
+
+    debug_info.push_back(0x01); // CU
+    debug_info.push_back(0x02); // variable
+    appendU32LE(debug_info, off_bad);
+    appendULEB128(debug_info, 1); // exprloc length
+    debug_info.push_back(0xff);   // unsupported op
+    debug_info.push_back(0x00);   // end children
+
+    const uint32_t unit_len = static_cast<uint32_t>(debug_info.size() - 4);
+    debug_info[0] = static_cast<uint8_t>(unit_len & 0xff);
+    debug_info[1] = static_cast<uint8_t>((unit_len >> 8) & 0xff);
+    debug_info[2] = static_cast<uint8_t>((unit_len >> 16) & 0xff);
+    debug_info[3] = static_cast<uint8_t>((unit_len >> 24) & 0xff);
+
+    fs::path dir = fs::temp_directory_path() / fs::path(stem);
+    fs::create_directories(dir);
+    std::string path = (dir / "invalid_loc.elf").string();
+    writeELFWithSections(path, {
+        {".debug_info", debug_info},
+        {".debug_abbrev", debug_abbrev},
+        {".debug_str", debug_str},
+    });
+    return path;
+}
+
+std::string makeSingleVariableLocationELF(const std::string& stem,
+                                          const std::string& var_name,
+                                          const std::vector<uint8_t>& expr) {
+    std::vector<uint8_t> debug_str;
+    const uint32_t off_name = 0;
+    for (char c : var_name) debug_str.push_back(static_cast<uint8_t>(c));
+    debug_str.push_back(0);
+
+    std::vector<uint8_t> debug_abbrev;
+    appendULEB128(debug_abbrev, 1);
+    appendULEB128(debug_abbrev, 0x11); // DW_TAG_compile_unit
+    debug_abbrev.push_back(0x01); // children
+    debug_abbrev.push_back(0x00);
+    debug_abbrev.push_back(0x00);
+
+    appendULEB128(debug_abbrev, 2);
+    appendULEB128(debug_abbrev, 0x34); // DW_TAG_variable
+    debug_abbrev.push_back(0x00); // no children
+    appendULEB128(debug_abbrev, 0x03); // DW_AT_name
+    appendULEB128(debug_abbrev, 0x0e); // DW_FORM_strp
+    appendULEB128(debug_abbrev, 0x02); // DW_AT_location
+    appendULEB128(debug_abbrev, 0x18); // DW_FORM_exprloc
+    debug_abbrev.push_back(0x00);
+    debug_abbrev.push_back(0x00);
+    debug_abbrev.push_back(0x00); // end abbrev table
+
+    std::vector<uint8_t> debug_info;
+    appendU32LE(debug_info, 0); // unit_length placeholder
+    appendU16LE(debug_info, 4); // version
+    appendU32LE(debug_info, 0); // abbrev offset
+    debug_info.push_back(0x08); // addr size
+
+    debug_info.push_back(0x01); // CU
+    debug_info.push_back(0x02); // variable
+    appendU32LE(debug_info, off_name);
+    appendULEB128(debug_info, static_cast<uint64_t>(expr.size()));
+    debug_info.insert(debug_info.end(), expr.begin(), expr.end());
+    debug_info.push_back(0x00); // end children
+
+    const uint32_t unit_len = static_cast<uint32_t>(debug_info.size() - 4);
+    debug_info[0] = static_cast<uint8_t>(unit_len & 0xff);
+    debug_info[1] = static_cast<uint8_t>((unit_len >> 8) & 0xff);
+    debug_info[2] = static_cast<uint8_t>((unit_len >> 16) & 0xff);
+    debug_info[3] = static_cast<uint8_t>((unit_len >> 24) & 0xff);
+
+    fs::path dir = fs::temp_directory_path() / fs::path(stem);
+    fs::create_directories(dir);
+    std::string path = (dir / "single_var.elf").string();
+    writeELFWithSections(path, {
+        {".debug_info", debug_info},
+        {".debug_abbrev", debug_abbrev},
+        {".debug_str", debug_str},
+    });
+    return path;
+}
+
+struct VendorTelemetryExpectations {
+    uint64_t skips = 0;
+    std::vector<uint64_t> forms;
+    std::vector<std::string> severities;
+    std::vector<std::string> buckets;
+    std::vector<std::pair<uint64_t, uint64_t>> histogram_entries;
+    std::vector<std::pair<std::string, uint64_t>> severity_entries;
+    std::vector<std::pair<std::string, uint64_t>> bucket_entries;
+};
+
+VendorTelemetryExpectations makeVendorTelemetryExpectations(
+    uint64_t skips,
+    std::vector<uint64_t> forms,
+    std::vector<std::string> severities,
+    std::vector<std::string> buckets,
+    std::vector<std::pair<uint64_t, uint64_t>> histogram_entries,
+    std::vector<std::pair<std::string, uint64_t>> severity_entries,
+    std::vector<std::pair<std::string, uint64_t>> bucket_entries) {
+    VendorTelemetryExpectations out;
+    out.skips = skips;
+    out.forms = std::move(forms);
+    out.severities = std::move(severities);
+    out.buckets = std::move(buckets);
+    out.histogram_entries = std::move(histogram_entries);
+    out.severity_entries = std::move(severity_entries);
+    out.bucket_entries = std::move(bucket_entries);
+    return out;
+}
+
+void assertVendorTelemetryText(const std::string& out_text,
+                               const VendorTelemetryExpectations& expected) {
+    assert(extractValueForTextKey(out_text, "vendor_form_skips") == std::to_string(expected.skips));
+    std::string text_examples = extractValueForTextKey(out_text, "vendor_form_skip_examples");
+    for (uint64_t form : expected.forms) {
+        std::ostringstream needle;
+        needle << "form=0x" << std::hex << form;
+        assert(text_examples.find(needle.str()) != std::string::npos);
+    }
+    for (const auto& severity : expected.severities) {
+        assert(text_examples.find("severity=" + severity) != std::string::npos);
+    }
+
+    std::string histogram = extractValueForTextKey(out_text, "vendor_form_skip_histogram");
+    for (const auto& [form, count] : expected.histogram_entries) {
+        std::ostringstream needle;
+        needle << "0x" << std::hex << form << std::dec << ":" << count;
+        assert(histogram.find(needle.str()) != std::string::npos);
+    }
+
+    std::string offset_buckets = extractValueForTextKey(out_text, "vendor_form_skip_offset_buckets");
+    for (const auto& [bucket, count] : expected.bucket_entries) {
+        assert(offset_buckets.find(bucket + ":" + std::to_string(count)) != std::string::npos);
+    }
+
+    std::string severity_buckets = extractValueForTextKey(out_text, "vendor_form_skip_severity_buckets");
+    for (const auto& [severity, count] : expected.severity_entries) {
+        assert(severity_buckets.find(severity + ":" + std::to_string(count)) != std::string::npos);
+    }
+}
+
+void assertVendorTelemetryJsonV2(const std::string& out_json_v2,
+                                 const VendorTelemetryExpectations& expected) {
+    assert(out_json_v2.find("\"schema_version\":2") != std::string::npos);
+    auto examples = extractObjectsFromArrayKey(out_json_v2, "vendor_form_skip_examples_structured");
+    auto hist = extractObjectsFromArrayKey(out_json_v2, "vendor_form_skip_histogram_structured");
+    auto buckets = extractObjectsFromArrayKey(out_json_v2, "vendor_form_skip_offset_buckets_structured");
+    auto sev = extractObjectsFromArrayKey(out_json_v2, "vendor_form_skip_severity_buckets_structured");
+    assert(!examples.empty());
+    assert(!hist.empty());
+    assert(!buckets.empty());
+    assert(!sev.empty());
+
+    for (uint64_t form : expected.forms) {
+        assert(objectArrayContainsUIntField(examples, "form", form));
+    }
+    for (const auto& severity : expected.severities) {
+        assert(objectArrayContainsStringField(examples, "severity", severity));
+    }
+    for (const auto& bucket : expected.buckets) {
+        assert(objectArrayContainsStringField(buckets, "bucket", bucket));
+    }
+    for (const auto& [form, count] : expected.histogram_entries) {
+        assert(objectArrayContainsUIntField(hist, "form", form));
+        assert(objectArrayContainsUIntField(hist, "count", count));
+    }
+    for (const auto& [severity, count] : expected.severity_entries) {
+        assert(objectArrayContainsStringField(sev, "severity", severity));
+        assert(objectArrayContainsUIntField(sev, "count", count));
+    }
+    for (const auto& [bucket, count] : expected.bucket_entries) {
+        assert(objectArrayContainsStringField(buckets, "bucket", bucket));
+        assert(objectArrayContainsUIntField(buckets, "count", count));
+    }
 }
 
 } // namespace
@@ -708,17 +923,13 @@ int main() {
         int code_text = runAndCapture(dwarf_dump + " --show-support " + vendor_elf,
                                       "/tmp/dwarf_cli_support_vendor_form.txt", out_text);
         assert(code_text == 0);
-        assert(extractValueForTextKey(out_text, "vendor_form_skips") == "2");
+        assertVendorTelemetryText(out_text, makeVendorTelemetryExpectations(
+            2, {0x1f22}, {"fallback_offset_sized"}, {"unit_die_payload"},
+            {{0x1f22, 2}}, {{"fallback_offset_sized", 2}}, {{"unit_die_payload", 2}}));
+        // Dedup: repeated form+attr should still emit a single exemplar string.
         std::string text_examples = extractValueForTextKey(out_text, "vendor_form_skip_examples");
-        assert(text_examples.find("form=0x1f22") != std::string::npos);
         assert(text_examples.find("die=0x") != std::string::npos);
         assert(text_examples.find("attr=DW_AT_type") != std::string::npos);
-        assert(text_examples.find("severity=fallback_offset_sized") != std::string::npos);
-        assert(extractValueForTextKey(out_text, "vendor_form_skip_histogram") == "0x1f22:2");
-        assert(extractValueForTextKey(out_text, "vendor_form_skip_offset_buckets") == "unit_die_payload:2");
-        assert(extractValueForTextKey(out_text, "vendor_form_skip_severity_buckets") ==
-               "fallback_offset_sized:2");
-        // Dedup: repeated form+attr should still emit a single exemplar string.
         assert(text_examples.find(';') == std::string::npos);
 
         std::string out_json;
@@ -748,23 +959,11 @@ int main() {
             dwarf_dump + " --show-support --format=json --schema-version=2 " + vendor_elf,
             "/tmp/dwarf_cli_support_vendor_form_json_v2.txt", out_json_v2);
         assert(code_json_v2 == 0);
-        assert(out_json_v2.find("\"schema_version\":2") != std::string::npos);
+        assertVendorTelemetryJsonV2(out_json_v2, makeVendorTelemetryExpectations(
+            2, {0x1f22}, {"fallback_offset_sized"}, {"unit_die_payload"},
+            {{0x1f22, 2}}, {{"fallback_offset_sized", 2}}, {{"unit_die_payload", 2}}));
         auto v2_examples = extractObjectsFromArrayKey(out_json_v2, "vendor_form_skip_examples_structured");
-        auto v2_hist = extractObjectsFromArrayKey(out_json_v2, "vendor_form_skip_histogram_structured");
-        auto v2_buckets = extractObjectsFromArrayKey(out_json_v2, "vendor_form_skip_offset_buckets_structured");
-        auto v2_sev = extractObjectsFromArrayKey(out_json_v2, "vendor_form_skip_severity_buckets_structured");
-        assert(!v2_examples.empty());
-        assert(!v2_hist.empty());
-        assert(!v2_buckets.empty());
-        assert(!v2_sev.empty());
         assert(objectArrayContainsStringField(v2_examples, "attr", "DW_AT_type"));
-        assert(objectArrayContainsStringField(v2_examples, "severity", "fallback_offset_sized"));
-        assert(objectArrayContainsUIntField(v2_examples, "form", 7970)); // 0x1f22
-        assert(objectArrayContainsUIntField(v2_hist, "count", 2));
-        assert(objectArrayContainsUIntField(v2_hist, "form", 7970));
-        assert(objectArrayContainsStringField(v2_buckets, "bucket", "unit_die_payload"));
-        assert(objectArrayContainsUIntField(v2_sev, "count", 2));
-        assert(objectArrayContainsStringField(v2_sev, "severity", "fallback_offset_sized"));
     }
 
     {
@@ -816,26 +1015,18 @@ int main() {
         int code_text = runAndCapture(dwarf_dump + " --show-support " + vendor_elf,
                                       "/tmp/dwarf_cli_support_vendor_form_known.txt", out_text);
         assert(code_text == 0);
-        assert(extractValueForTextKey(out_text, "vendor_form_skips") == "1");
-        std::string known_examples = extractValueForTextKey(out_text, "vendor_form_skip_examples");
-        assert(known_examples.find("form=0x1f0a") != std::string::npos);
-        assert(known_examples.find("severity=known_shape") != std::string::npos);
-        assert(extractValueForTextKey(out_text, "vendor_form_skip_histogram") == "0x1f0a:1");
-        assert(extractValueForTextKey(out_text, "vendor_form_skip_offset_buckets") == "unit_die_payload:1");
-        assert(extractValueForTextKey(out_text, "vendor_form_skip_severity_buckets") == "known_shape:1");
+        assertVendorTelemetryText(out_text, makeVendorTelemetryExpectations(
+            1, {0x1f0a}, {"known_shape"}, {"unit_die_payload"},
+            {{0x1f0a, 1}}, {{"known_shape", 1}}, {{"unit_die_payload", 1}}));
 
         std::string out_json_v2;
         int code_json_v2 = runAndCapture(
             dwarf_dump + " --show-support --format=json --schema-version=2 " + vendor_elf,
             "/tmp/dwarf_cli_support_vendor_form_known_json_v2.txt", out_json_v2);
         assert(code_json_v2 == 0);
-        assert(out_json_v2.find("\"schema_version\":2") != std::string::npos);
-        auto known_examples_v2 = extractObjectsFromArrayKey(out_json_v2, "vendor_form_skip_examples_structured");
-        auto known_sev_v2 = extractObjectsFromArrayKey(out_json_v2, "vendor_form_skip_severity_buckets_structured");
-        assert(objectArrayContainsUIntField(known_examples_v2, "form", 7946)); // 0x1f0a
-        assert(objectArrayContainsStringField(known_examples_v2, "severity", "known_shape"));
-        assert(objectArrayContainsStringField(known_sev_v2, "severity", "known_shape"));
-        assert(objectArrayContainsUIntField(known_sev_v2, "count", 1));
+        assertVendorTelemetryJsonV2(out_json_v2, makeVendorTelemetryExpectations(
+            1, {0x1f0a}, {"known_shape"}, {"unit_die_payload"},
+            {{0x1f0a, 1}}, {{"known_shape", 1}}, {{"unit_die_payload", 1}}));
     }
 
     {
@@ -889,10 +1080,11 @@ int main() {
         int code_text = runAndCapture(dwarf_dump + " --show-support " + vendor_elf,
                                       "/tmp/dwarf_cli_support_vendor_form_mixed.txt", out_text);
         assert(code_text == 0);
-        assert(extractValueForTextKey(out_text, "vendor_form_skips") == "2");
-        assert(extractValueForTextKey(out_text, "vendor_form_skip_histogram") == "0x1f0a:1;0x1f22:1");
-        assert(extractValueForTextKey(out_text, "vendor_form_skip_severity_buckets") ==
-               "fallback_offset_sized:1;known_shape:1");
+        assertVendorTelemetryText(out_text, makeVendorTelemetryExpectations(
+            2, {0x1f0a, 0x1f22}, {"known_shape", "fallback_offset_sized"}, {"unit_die_payload"},
+            {{0x1f0a, 1}, {0x1f22, 1}},
+            {{"known_shape", 1}, {"fallback_offset_sized", 1}},
+            {{"unit_die_payload", 2}}));
         {
             std::string line = extractValueForTextKey(out_text, "vendor_form_skip_examples");
             assert(line.find("severity=known_shape") != std::string::npos);
@@ -905,18 +1097,11 @@ int main() {
             dwarf_dump + " --show-support --format=json --schema-version=2 " + vendor_elf,
             "/tmp/dwarf_cli_support_vendor_form_mixed_json_v2.txt", out_json_v2);
         assert(code_json_v2 == 0);
-        assert(out_json_v2.find("\"schema_version\":2") != std::string::npos);
-        auto mixed_examples_v2 = extractObjectsFromArrayKey(out_json_v2, "vendor_form_skip_examples_structured");
-        auto mixed_hist_v2 = extractObjectsFromArrayKey(out_json_v2, "vendor_form_skip_histogram_structured");
-        auto mixed_sev_v2 = extractObjectsFromArrayKey(out_json_v2, "vendor_form_skip_severity_buckets_structured");
-        assert(objectArrayContainsUIntField(mixed_examples_v2, "form", 7946)); // 0x1f0a
-        assert(objectArrayContainsUIntField(mixed_examples_v2, "form", 7970)); // 0x1f22
-        assert(objectArrayContainsStringField(mixed_examples_v2, "severity", "known_shape"));
-        assert(objectArrayContainsStringField(mixed_examples_v2, "severity", "fallback_offset_sized"));
-        assert(objectArrayContainsUIntField(mixed_hist_v2, "form", 7946));
-        assert(objectArrayContainsUIntField(mixed_hist_v2, "form", 7970));
-        assert(objectArrayContainsStringField(mixed_sev_v2, "severity", "known_shape"));
-        assert(objectArrayContainsStringField(mixed_sev_v2, "severity", "fallback_offset_sized"));
+        assertVendorTelemetryJsonV2(out_json_v2, makeVendorTelemetryExpectations(
+            2, {0x1f0a, 0x1f22}, {"known_shape", "fallback_offset_sized"}, {"unit_die_payload"},
+            {{0x1f0a, 1}, {0x1f22, 1}},
+            {{"known_shape", 1}, {"fallback_offset_sized", 1}},
+            {{"unit_die_payload", 2}}));
     }
 
     {
@@ -1797,6 +1982,217 @@ int main() {
         assert(row_json.find("\"solver_result\"") != std::string::npos);
         assert(row_json.find("\"counterexample_model\"") != std::string::npos);
         assert(row_json.find("\"counterexample_witness\"") != std::string::npos);
+    }
+
+    {
+        std::string invalid_expr_elf = makeInvalidLocationOpcodeELF("dwarf_cli_invalid_expr_compare");
+
+        std::string out_text;
+        int code_text = runAndCapture(
+            dwarf_dump + " compare-expr " + invalid_expr_elf + " " + invalid_expr_elf +
+                " --name=bad --allow-unknown --allow-missing",
+            "/tmp/dwarf_expr_unsupported_opcode_text.txt", out_text);
+        assert(code_text == 0);
+        assert(out_text.find("lhs_unsupported_opcode") != std::string::npos);
+        assert(out_text.find("rhs_unsupported_opcode") != std::string::npos);
+        assert(out_text.find("lhs_unsupported_vendor_extension") != std::string::npos);
+        assert(out_text.find("rhs_unsupported_vendor_extension") != std::string::npos);
+        assert(out_text.find("|255|255|1|1|") != std::string::npos);
+
+        std::string out_json;
+        int code_json = runAndCapture(
+            dwarf_dump + " compare-expr " + invalid_expr_elf + " " + invalid_expr_elf +
+                " --name=bad --allow-unknown --allow-missing --format=json --schema-version=1",
+            "/tmp/dwarf_expr_unsupported_opcode_json.txt", out_json);
+        assert(code_json == 0);
+        std::string row_json = extractFirstObjectFromArrayKey(out_json, "comparisons");
+        assert(!row_json.empty());
+        assert(row_json.find("\"lhs_unsupported_opcode\":255") != std::string::npos);
+        assert(row_json.find("\"rhs_unsupported_opcode\":255") != std::string::npos);
+        assert(row_json.find("\"lhs_unsupported_vendor_extension\":true") != std::string::npos);
+        assert(row_json.find("\"rhs_unsupported_vendor_extension\":true") != std::string::npos);
+        assert(row_json.find("\"verdict\":\"UNKNOWN\"") != std::string::npos);
+        assert(row_json.find("\"solver_result\":\"unsupported_opcode\"") != std::string::npos);
+    }
+
+    {
+        std::vector<uint8_t> wide_expr = {
+            0x9e, // DW_OP_implicit_value
+            0x09,
+            0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x01, 0x02, 0x03,
+            0x9f  // DW_OP_stack_value
+        };
+        std::vector<uint8_t> zero_expr = {
+            0x30, // DW_OP_lit0
+            0x9f  // DW_OP_stack_value
+        };
+
+        std::string wide_expr_elf = makeSingleVariableLocationELF("dwarf_cli_wide_expr_lhs", "wide", wide_expr);
+        std::string zero_expr_elf = makeSingleVariableLocationELF("dwarf_cli_wide_expr_rhs", "wide", zero_expr);
+
+        std::string out_text;
+        int code_text = runAndCapture(
+            dwarf_dump + " compare-expr " + wide_expr_elf + " " + zero_expr_elf +
+                " --name=wide --allow-unknown --allow-missing --report-only",
+            "/tmp/dwarf_expr_wide_bytes_text.txt", out_text);
+        assert(code_text == 0);
+        assert(out_text.find("|DIFFERENT|") != std::string::npos);
+        assert(out_text.find("|z3|sat|") != std::string::npos
+               || out_text.find("|solver-unavailable|solver_unavailable|") != std::string::npos);
+
+        std::string out_json;
+        int code_json = runAndCapture(
+            dwarf_dump + " compare-expr " + wide_expr_elf + " " + zero_expr_elf +
+                " --name=wide --allow-unknown --allow-missing --report-only --format=json --schema-version=1",
+            "/tmp/dwarf_expr_wide_bytes_json.txt", out_json);
+        assert(code_json == 0);
+        std::string row_json = extractFirstObjectFromArrayKey(out_json, "comparisons");
+        assert(!row_json.empty());
+#if DWARF_HAS_Z3
+        assert(row_json.find("\"verdict\":\"DIFFERENT\"") != std::string::npos);
+        assert(row_json.find("\"solver_result\":\"sat\"") != std::string::npos);
+        assert(row_json.find("\"counterexample_witness\":\"") != std::string::npos);
+#else
+        assert(row_json.find("\"verdict\":\"UNKNOWN\"") != std::string::npos);
+        assert(row_json.find("\"solver_result\":\"solver_unavailable\"") != std::string::npos);
+#endif
+    }
+
+    {
+        std::vector<uint8_t> wide_load_expr = {
+            0x03, // DW_OP_addr
+            0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // 0x1000
+            0x94, // DW_OP_deref_size
+            0x09, // size = 9
+            0x9f  // DW_OP_stack_value
+        };
+        std::vector<uint8_t> zero_expr = {
+            0x30, // DW_OP_lit0
+            0x9f  // DW_OP_stack_value
+        };
+
+        std::string wide_load_elf = makeSingleVariableLocationELF("dwarf_cli_wide_load_lhs", "wide_load", wide_load_expr);
+        std::string zero_expr_elf = makeSingleVariableLocationELF("dwarf_cli_wide_load_rhs", "wide_load", zero_expr);
+
+        std::string out_text;
+        int code_text = runAndCapture(
+            dwarf_dump + " compare-expr " + wide_load_elf + " " + zero_expr_elf +
+                " --name=wide_load --allow-unknown --allow-missing --report-only",
+            "/tmp/dwarf_expr_wide_load_text.txt", out_text);
+        assert(code_text == 0);
+        assert(out_text.find("|DIFFERENT|") != std::string::npos);
+        assert(out_text.find("|z3|sat|") != std::string::npos
+               || out_text.find("|solver-unavailable|solver_unavailable|") != std::string::npos);
+
+        std::string out_json;
+        int code_json = runAndCapture(
+            dwarf_dump + " compare-expr " + wide_load_elf + " " + zero_expr_elf +
+                " --name=wide_load --allow-unknown --allow-missing --report-only --format=json --schema-version=1",
+            "/tmp/dwarf_expr_wide_load_json.txt", out_json);
+        assert(code_json == 0);
+        std::string row_json = extractFirstObjectFromArrayKey(out_json, "comparisons");
+        assert(!row_json.empty());
+#if DWARF_HAS_Z3
+        assert(row_json.find("\"verdict\":\"DIFFERENT\"") != std::string::npos);
+        assert(row_json.find("\"solver_result\":\"sat\"") != std::string::npos);
+        assert(row_json.find("\"counterexample_witness\":\"") != std::string::npos);
+#else
+        assert(row_json.find("\"verdict\":\"UNKNOWN\"") != std::string::npos);
+        assert(row_json.find("\"solver_result\":\"solver_unavailable\"") != std::string::npos);
+#endif
+    }
+
+    {
+        std::vector<uint8_t> wide_expr = {
+            0x9e, // DW_OP_implicit_value
+            0x09,
+            0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x01, 0x02, 0x03,
+            0x9f  // DW_OP_stack_value
+        };
+        std::vector<uint8_t> zero_expr = {
+            0x30, // DW_OP_lit0
+            0x9f  // DW_OP_stack_value
+        };
+
+        std::string wide_expr_elf = makeSingleVariableLocationELF("dwarf_cli_wide_expr_gate_lhs", "wide_gate", wide_expr);
+        std::string zero_expr_elf = makeSingleVariableLocationELF("dwarf_cli_wide_expr_gate_rhs", "wide_gate", zero_expr);
+
+        std::string out_text;
+        int code_text = runAndCapture(
+            dwarf_dump + " compare-expr " + wide_expr_elf + " " + zero_expr_elf +
+                " --name=wide_gate --allow-unknown --allow-missing --max-different=100000"
+                " --fail-on-solver-result=sat",
+            "/tmp/dwarf_expr_wide_bytes_fail_on_sat.txt", out_text);
+#if DWARF_HAS_Z3
+        assert(code_text == 2);
+        assert(out_text.find("disallowed solver_result encountered: sat") != std::string::npos);
+#else
+        assert(code_text == 0);
+        assert(out_text.find("solver_result=solver_unavailable") != std::string::npos ||
+               out_text.find("solver_unavailable") != std::string::npos);
+#endif
+
+        std::string out_json;
+        int code_json = runAndCapture(
+            dwarf_dump + " compare-expr " + wide_expr_elf + " " + zero_expr_elf +
+                " --name=wide_gate --allow-unknown --allow-missing --max-different=100000"
+                " --fail-on-solver-result=sat --format=json --schema-version=1",
+            "/tmp/dwarf_expr_wide_bytes_fail_on_sat.json", out_json);
+#if DWARF_HAS_Z3
+        assert(code_json == 2);
+        assert(out_json.find("\"trigger\":\"fail_on_solver_result\"") != std::string::npos);
+        assert(out_json.find("\"signature\":\"pass=0;trigger=fail_on_solver_result;detail=sat\"") != std::string::npos);
+#else
+        assert(code_json == 0);
+        assert(out_json.find("\"solver_result\":\"solver_unavailable\"") != std::string::npos);
+#endif
+    }
+
+    {
+        std::vector<uint8_t> wide_load_expr = {
+            0x03, // DW_OP_addr
+            0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // 0x1000
+            0x94, // DW_OP_deref_size
+            0x09, // size = 9
+            0x9f  // DW_OP_stack_value
+        };
+        std::vector<uint8_t> zero_expr = {
+            0x30, // DW_OP_lit0
+            0x9f  // DW_OP_stack_value
+        };
+
+        std::string wide_load_elf = makeSingleVariableLocationELF("dwarf_cli_wide_load_gate_lhs", "wide_load_gate", wide_load_expr);
+        std::string zero_expr_elf = makeSingleVariableLocationELF("dwarf_cli_wide_load_gate_rhs", "wide_load_gate", zero_expr);
+
+        std::string out_text;
+        int code_text = runAndCapture(
+            dwarf_dump + " compare-expr " + wide_load_elf + " " + zero_expr_elf +
+                " --name=wide_load_gate --allow-unknown --allow-missing --max-different=100000"
+                " --fail-on-solver-result=sat",
+            "/tmp/dwarf_expr_wide_load_fail_on_sat.txt", out_text);
+#if DWARF_HAS_Z3
+        assert(code_text == 2);
+        assert(out_text.find("disallowed solver_result encountered: sat") != std::string::npos);
+#else
+        assert(code_text == 0);
+        assert(out_text.find("solver_result=solver_unavailable") != std::string::npos ||
+               out_text.find("solver_unavailable") != std::string::npos);
+#endif
+
+        std::string out_json;
+        int code_json = runAndCapture(
+            dwarf_dump + " compare-expr " + wide_load_elf + " " + zero_expr_elf +
+                " --name=wide_load_gate --allow-unknown --allow-missing --max-different=100000"
+                " --fail-on-solver-result=sat --format=json --schema-version=1",
+            "/tmp/dwarf_expr_wide_load_fail_on_sat.json", out_json);
+#if DWARF_HAS_Z3
+        assert(code_json == 2);
+        assert(out_json.find("\"trigger\":\"fail_on_solver_result\"") != std::string::npos);
+        assert(out_json.find("\"signature\":\"pass=0;trigger=fail_on_solver_result;detail=sat\"") != std::string::npos);
+#else
+        assert(code_json == 0);
+        assert(out_json.find("\"solver_result\":\"solver_unavailable\"") != std::string::npos);
+#endif
     }
 
     {

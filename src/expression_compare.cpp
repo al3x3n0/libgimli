@@ -522,7 +522,7 @@ std::string CrossBinaryExpressionComparator::renderTextReport(
     }
     out << "\n";
 
-    out << "name|tag|lhs_present|rhs_present|lhs_offset|rhs_offset|verdict|verifier_backend|solver_result|reason|coverage_total|coverage_eq|coverage_diff|coverage_unknown|coverage_uncovered|reloc_issues\n";
+    out << "name|tag|lhs_present|rhs_present|lhs_offset|rhs_offset|verdict|verifier_backend|solver_result|reason|lhs_unsupported_opcode|rhs_unsupported_opcode|lhs_unsupported_vendor_extension|rhs_unsupported_vendor_extension|coverage_total|coverage_eq|coverage_diff|coverage_unknown|coverage_uncovered|reloc_issues\n";
     size_t rows = (max_rows == 0) ? comparisons.size() : std::min(max_rows, comparisons.size());
     for (size_t i = 0; i < rows; ++i) {
         const auto& c = comparisons[i];
@@ -541,6 +541,10 @@ std::string CrossBinaryExpressionComparator::renderTextReport(
             << c.verification.verifier_backend << "|"
             << c.verification.solver_result << "|"
             << c.verification.reason << "|"
+            << (c.verification.lhs_unsupported_opcode ? DwarfUtils::formatAddress(*c.verification.lhs_unsupported_opcode, false) : "") << "|"
+            << (c.verification.rhs_unsupported_opcode ? DwarfUtils::formatAddress(*c.verification.rhs_unsupported_opcode, false) : "") << "|"
+            << (c.verification.lhs_unsupported_vendor_extension ? "1" : "0") << "|"
+            << (c.verification.rhs_unsupported_vendor_extension ? "1" : "0") << "|"
             << c.coverage_total << "|"
             << c.coverage_equivalent << "|"
             << c.coverage_different << "|"
@@ -618,6 +622,14 @@ std::string CrossBinaryExpressionComparator::renderJsonReport(
             << "\"verifier_backend\":\"" << jsonEscape(c.verification.verifier_backend) << "\","
             << "\"solver_result\":\"" << jsonEscape(c.verification.solver_result) << "\","
             << "\"reason\":\"" << jsonEscape(c.verification.reason) << "\","
+            << "\"lhs_unsupported_opcode\":"
+            << (c.verification.lhs_unsupported_opcode ? std::to_string(*c.verification.lhs_unsupported_opcode) : "null") << ","
+            << "\"rhs_unsupported_opcode\":"
+            << (c.verification.rhs_unsupported_opcode ? std::to_string(*c.verification.rhs_unsupported_opcode) : "null") << ","
+            << "\"lhs_unsupported_vendor_extension\":"
+            << (c.verification.lhs_unsupported_vendor_extension ? "true" : "false") << ","
+            << "\"rhs_unsupported_vendor_extension\":"
+            << (c.verification.rhs_unsupported_vendor_extension ? "true" : "false") << ","
             << "\"counterexample_model\":\"" << jsonEscape(c.verification.counterexample_model) << "\","
             << "\"counterexample_witness\":\"" << jsonEscape(c.verification.counterexample_witness) << "\","
             << "\"range_aware\":" << (c.range_aware ? "true" : "false") << ","

@@ -91,6 +91,25 @@ struct SymbolicExpressionResult {
     std::vector<SymPiece> pieces;
 
     std::string error;
+    bool uninitialized = false;
+    std::optional<uint8_t> unsupported_opcode;
+    bool unsupported_vendor_extension = false;
+
+    SymbolicExpressionResult() = default;
+    SymbolicExpressionResult(Type t,
+                             SymExprPtr expr,
+                             std::vector<SymPiece> pcs,
+                             std::string err,
+                             bool uninit = false,
+                             std::optional<uint8_t> unsupported = std::nullopt,
+                             bool vendor_extension = false)
+        : type(t),
+          expression(std::move(expr)),
+          pieces(std::move(pcs)),
+          error(std::move(err)),
+          uninitialized(uninit),
+          unsupported_opcode(unsupported),
+          unsupported_vendor_extension(vendor_extension) {}
 };
 
 enum class SymStackValueKind {
@@ -119,6 +138,7 @@ private:
     std::vector<SymStackValueKind> stack_kinds_;
     std::vector<std::optional<std::vector<uint8_t>>> stack_implicit_bytes_;
     std::vector<SymPiece> pieces_;
+    bool uninitialized_taint_ = false;
 
     SymExprPtr pop();
     SymExprPtr top() const;

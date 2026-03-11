@@ -74,6 +74,16 @@ std::string SplitDwarfLoader::resolveDWOPath(const std::string& dwo_name, const 
         }
     }
 
+    // Some producers record an absolute-looking path but omit the leading slash in the string
+    // payload. Recover that case before falling back to search-path probing.
+    if (!dwo_name.empty() && dwo_name[0] != '/' && dwo_name.find('/') != std::string::npos) {
+        std::string rooted = "/" + dwo_name;
+        std::ifstream f(rooted);
+        if (f.good()) {
+            return rooted;
+        }
+    }
+
     // Try comp_dir + dwo_name
     if (!comp_dir.empty()) {
         std::string path = comp_dir;

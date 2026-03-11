@@ -351,6 +351,9 @@ std::shared_ptr<DIE> DIEParser::parseDIE(uint64_t& offset,
             case DwarfTag::DW_TAG_compile_unit:
             case DwarfTag::DW_TAG_partial_unit:
             case DwarfTag::DW_TAG_type_unit:
+            case DwarfTag::DW_TAG_skeleton_unit:
+            case DwarfTag::DW_TAG_split_compile_unit:
+            case DwarfTag::DW_TAG_split_type_unit:
                 return true;
             default:
                 return false;

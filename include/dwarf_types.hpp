@@ -39,6 +39,9 @@ enum class DwarfTag : uint16_t {
     DW_TAG_compile_unit = 0x11,
     DW_TAG_partial_unit = 0x3c,          // DWARF 5
     DW_TAG_type_unit = 0x41,             // DWARF 5
+    DW_TAG_skeleton_unit = 0x4a,         // DWARF 5
+    DW_TAG_split_compile_unit = 0x1b,    // DWARF 5
+    DW_TAG_split_type_unit = 0x43,       // DWARF 5
     DW_TAG_subprogram = 0x2e,
     DW_TAG_variable = 0x34,
     DW_TAG_formal_parameter = 0x05,

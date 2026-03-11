@@ -37,6 +37,10 @@ struct ExpressionVerificationResult {
     std::string solver_result;
     std::string counterexample_model;
     std::string counterexample_witness;
+    std::optional<uint8_t> lhs_unsupported_opcode;
+    std::optional<uint8_t> rhs_unsupported_opcode;
+    bool lhs_unsupported_vendor_extension = false;
+    bool rhs_unsupported_vendor_extension = false;
 };
 
 struct DIEExpressionSelectionOptions {

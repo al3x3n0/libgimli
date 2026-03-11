@@ -28,6 +28,12 @@ static uint64_t addSignedOffset(uint64_t base, int64_t offset) {
     return base - static_cast<uint64_t>(-offset);
 }
 
+static uint64_t alignOffsetUp(uint64_t off, uint64_t align) {
+    if (align <= 1) return off;
+    uint64_t rem = off % align;
+    return rem == 0 ? off : (off + (align - rem));
+}
+
 static uint64_t maskToBytes(uint64_t v, uint64_t byte_size) {
     if (byte_size == 0) return v;
     if (byte_size >= 8) return v;
@@ -77,6 +83,18 @@ static std::vector<uint8_t> encodeU64ToBytes(uint64_t v, size_t n, bool little_e
     return out;
 }
 
+static std::string unsupportedOpMessage(uint8_t opcode, uint64_t offset, bool subexpression) {
+    std::ostringstream oss;
+    oss << (subexpression ? "Unsupported operation in subexpression: " : "Unsupported operation: ")
+        << DwarfUtils::operationToString(static_cast<DwarfOp>(opcode))
+        << " (opcode 0x" << std::hex << static_cast<unsigned>(opcode) << std::dec << ")";
+    if (opcode >= 0xe0) {
+        oss << " [vendor/extension opcode]";
+    }
+    oss << " at offset " << offset;
+    return oss.str();
+}
+
 ExpressionEvaluator::ExpressionEvaluator(std::shared_ptr<MemoryContext> memory_context) 
     : memory_context_(memory_context) {
     if (!memory_context_) {
@@ -116,6 +134,7 @@ ExpressionResult ExpressionEvaluator::evaluate(const std::vector<uint8_t>& expre
     is_register_location_ = false;
     is_implicit_value_ = false;
     pending_implicit_bytes_.reset();
+    uninitialized_taint_ = false;
     execution_error_ = false;
     execution_error_message_.clear();
 
@@ -136,42 +155,60 @@ ExpressionResult ExpressionEvaluator::evaluate(const std::vector<uint8_t>& expre
         if (handler_it != op_handlers_.end()) {
             (this->*handler_it->second)(offset, expression);
             if (execution_error_) {
-                return ExpressionResult(ExpressionResult::INVALID, 0,
-                                        execution_error_message_ + " at offset " + std::to_string(op_off));
+                ExpressionResult r(ExpressionResult::INVALID, 0,
+                                   execution_error_message_ + " at offset " + std::to_string(op_off));
+                r.uninitialized = uninitialized_taint_;
+                return r;
             }
         } else {
-            return ExpressionResult(ExpressionResult::INVALID, 0,
-                                    std::string("Unsupported operation: ") +
-                                        DwarfUtils::operationToString(op) +
-                                        " at offset " + std::to_string(op_off) +
-                                        diagnosticContextSuffix());
+            ExpressionResult r(ExpressionResult::INVALID, 0,
+                               unsupportedOpMessage(opcode, op_off, /*subexpression=*/false) +
+                                   diagnosticContextSuffix());
+            r.uninitialized = uninitialized_taint_;
+            r.unsupported_opcode = opcode;
+            r.unsupported_vendor_extension = opcode >= 0xe0;
+            return r;
         }
     }
 
     // Check if we have multiple pieces
     if (!pieces_.empty()) {
-        return ExpressionResult(pieces_, "Composite location with " +
-                               std::to_string(pieces_.size()) + " pieces");
+        ExpressionResult r(pieces_, "Composite location with " +
+                                  std::to_string(pieces_.size()) + " pieces");
+        r.uninitialized = uninitialized_taint_;
+        if (r.uninitialized) r.description += " [uninitialized]";
+        return r;
     }
 
     if (stack_.empty()) {
-        return ExpressionResult(ExpressionResult::INVALID, 0, "Empty stack");
+        ExpressionResult r(ExpressionResult::INVALID, 0, "Empty stack");
+        r.uninitialized = uninitialized_taint_;
+        return r;
     }
 
     uint64_t result = stack_.top();
 
     if (is_register_location_) {
-        return ExpressionResult(ExpressionResult::REGISTER, result,
-                               "Register: " + std::to_string(result));
+        ExpressionResult r(ExpressionResult::REGISTER, result,
+                           "Register: " + std::to_string(result));
+        r.uninitialized = uninitialized_taint_;
+        if (r.uninitialized) r.description += " [uninitialized]";
+        return r;
     }
 
     if (is_implicit_value_) {
-        return ExpressionResult(ExpressionResult::VALUE, result,
-                               "Value: " + std::to_string(result));
+        ExpressionResult r(ExpressionResult::VALUE, result,
+                           "Value: " + std::to_string(result));
+        r.uninitialized = uninitialized_taint_;
+        if (r.uninitialized) r.description += " [uninitialized]";
+        return r;
     }
 
-    return ExpressionResult(ExpressionResult::ADDRESS, result, "Address: 0x" +
-                           DwarfUtils::formatAddress(result, true));
+    ExpressionResult r(ExpressionResult::ADDRESS, result, "Address: 0x" +
+                      DwarfUtils::formatAddress(result, true));
+    r.uninitialized = uninitialized_taint_;
+    if (r.uninitialized) r.description += " [uninitialized]";
+    return r;
 }
 
 bool ExpressionEvaluator::executeInPlace(const std::vector<uint8_t>& expression) {
@@ -207,8 +244,7 @@ bool ExpressionEvaluator::executeInPlace(const std::vector<uint8_t>& expression)
                 break;
             }
         } else {
-            setExecutionError(std::string("Unsupported operation in subexpression: ") +
-                              DwarfUtils::operationToString(op));
+            setExecutionError(unsupportedOpMessage(opcode, offset - 1, /*subexpression=*/true));
             ok = false;
             break;
         }
@@ -1177,13 +1213,25 @@ void ExpressionEvaluator::handleImplicitPointer(uint64_t& offset, const std::vec
     ExpressionEvaluator sub(memory_context_);
     sub.setContext(context_);
     ExpressionResult r = sub.evaluate(*proc, context_, pc_, registers_);
+    uninitialized_taint_ = uninitialized_taint_ || r.uninitialized;
 
-    if (r.type == ExpressionResult::ADDRESS) {
-        push(addSignedOffset(r.value, offset_val));
-        return;
+    switch (r.type) {
+        case ExpressionResult::ADDRESS:
+        case ExpressionResult::VALUE:
+            push(addSignedOffset(r.value, offset_val));
+            return;
+        case ExpressionResult::REGISTER:
+            if (r.value < registers_.size()) {
+                push(addSignedOffset(registers_[static_cast<size_t>(r.value)], offset_val));
+            } else {
+                push(0);
+            }
+            return;
+        default:
+            break;
     }
 
-    // If we can't derive an address, return 0 as an "unknown pointer".
+    // If we can't derive any referent value, return 0 as an "unknown pointer".
     push(0);
 }
 
@@ -1514,7 +1562,8 @@ void ExpressionEvaluator::handleGnuUninit(uint64_t& offset, const std::vector<ui
     DWARF_UNUSED(offset);
     DWARF_UNUSED(expression);
     // DW_OP_GNU_uninit indicates the value is uninitialized
-    // This is informational - doesn't change the stack
+    // This taints the current expression result without changing the stack.
+    uninitialized_taint_ = true;
 }
 
 void ExpressionEvaluator::handleGnuEncodedAddr(uint64_t& offset, const std::vector<uint8_t>& expression) {
@@ -1534,6 +1583,12 @@ void ExpressionEvaluator::handleGnuEncodedAddr(uint64_t& offset, const std::vect
     constexpr uint8_t kFmtMask = 0x0f;
     constexpr uint8_t kAppMask = 0x70;
     constexpr uint8_t kIndMask = 0x80;
+
+    if ((encoding & kAppMask) == 0x50) {
+        size_t align = pointerByteSize("DW_OP_GNU_encoded_addr(aligned)");
+        if (execution_error_) return;
+        offset = alignOffsetUp(offset, align);
+    }
 
     auto readEncoded = [&](uint8_t fmt) -> uint64_t {
         switch (fmt) {
@@ -1579,8 +1634,19 @@ void ExpressionEvaluator::handleGnuEncodedAddr(uint64_t& offset, const std::vect
         case 0x10: // pcrel
             addr = pc_ + raw;
             break;
+        case 0x20: // textrel
+            addr = context_.text_base + raw;
+            break;
+        case 0x30: // datarel
+            addr = context_.data_base + raw;
+            break;
+        case 0x40: // funcrel
+            addr = context_.function_base + raw;
+            break;
+        case 0x50: // aligned
+            break;
         default:
-            // Other bases (datarel/textrel/funcrel/aligned) need more context.
+            // Other bases need more stream/section context than the evaluator has.
             break;
     }
 
@@ -1600,35 +1666,8 @@ void ExpressionEvaluator::handleGnuEncodedAddr(uint64_t& offset, const std::vect
 
 void ExpressionEvaluator::handleGnuImplicitPointer(uint64_t& offset, const std::vector<uint8_t>& expression) {
     // DW_OP_GNU_implicit_pointer is the predecessor to DW_OP_implicit_pointer
-    // Same format: DIE offset (4 bytes in 32-bit, 8 in 64-bit) + SLEB128 offset
-    uint64_t die_offset = readOffsetSized(offset, expression);
-    if (execution_error_) return;
-    int64_t offset_val = readSLEB128(offset, expression);
-    if (execution_error_) return;
-
-    // GNU predecessor to DW_OP_implicit_pointer: same semantics.
-    uint64_t abs_die_offset = dwarfSectionOffsetBias(context_.cu_base_offset) + die_offset;
-
-    if (!context_.resolve_dwarf_procedure) {
-        push(addSignedOffset(abs_die_offset, offset_val));
-        return;
-    }
-
-    auto proc = context_.resolve_dwarf_procedure(abs_die_offset, pc_);
-    if (!proc) {
-        push(0);
-        return;
-    }
-
-    ExpressionEvaluator sub(memory_context_);
-    sub.setContext(context_);
-    ExpressionResult r = sub.evaluate(*proc, context_, pc_, registers_);
-    if (r.type == ExpressionResult::ADDRESS) {
-        push(addSignedOffset(r.value, offset_val));
-        return;
-    }
-
-    push(0);
+    // Same semantics as DW_OP_implicit_pointer.
+    handleImplicitPointer(offset, expression);
 }
 
 void ExpressionEvaluator::handleGnuEntryValue(uint64_t& offset, const std::vector<uint8_t>& expression) {
@@ -1689,6 +1728,7 @@ void ExpressionEvaluator::handleGnuParameterRef(uint64_t& offset, const std::vec
     ExpressionEvaluator sub(memory_context_);
     sub.setContext(context_);
     ExpressionResult r = sub.evaluate(*proc, context_, pc_, registers_);
+    uninitialized_taint_ = uninitialized_taint_ || r.uninitialized;
 
     switch (r.type) {
         case ExpressionResult::ADDRESS:

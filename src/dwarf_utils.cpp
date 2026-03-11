@@ -27,6 +27,11 @@ bool DwarfUtils::isLittleEndian() {
 std::string DwarfUtils::tagToString(DwarfTag tag) {
     switch (tag) {
         case DwarfTag::DW_TAG_compile_unit: return "DW_TAG_compile_unit";
+        case DwarfTag::DW_TAG_partial_unit: return "DW_TAG_partial_unit";
+        case DwarfTag::DW_TAG_type_unit: return "DW_TAG_type_unit";
+        case DwarfTag::DW_TAG_skeleton_unit: return "DW_TAG_skeleton_unit";
+        case DwarfTag::DW_TAG_split_compile_unit: return "DW_TAG_split_compile_unit";
+        case DwarfTag::DW_TAG_split_type_unit: return "DW_TAG_split_type_unit";
         case DwarfTag::DW_TAG_subprogram: return "DW_TAG_subprogram";
         case DwarfTag::DW_TAG_variable: return "DW_TAG_variable";
         case DwarfTag::DW_TAG_formal_parameter: return "DW_TAG_formal_parameter";
@@ -52,6 +57,11 @@ std::string DwarfUtils::tagToString(DwarfTag tag) {
 
 DwarfTag DwarfUtils::stringToTag(const std::string& str) {
     if (str == "DW_TAG_compile_unit") return DwarfTag::DW_TAG_compile_unit;
+    if (str == "DW_TAG_partial_unit") return DwarfTag::DW_TAG_partial_unit;
+    if (str == "DW_TAG_type_unit") return DwarfTag::DW_TAG_type_unit;
+    if (str == "DW_TAG_skeleton_unit") return DwarfTag::DW_TAG_skeleton_unit;
+    if (str == "DW_TAG_split_compile_unit") return DwarfTag::DW_TAG_split_compile_unit;
+    if (str == "DW_TAG_split_type_unit") return DwarfTag::DW_TAG_split_type_unit;
     if (str == "DW_TAG_subprogram") return DwarfTag::DW_TAG_subprogram;
     if (str == "DW_TAG_variable") return DwarfTag::DW_TAG_variable;
     if (str == "DW_TAG_formal_parameter") return DwarfTag::DW_TAG_formal_parameter;
@@ -821,38 +831,46 @@ size_t DwarfUtils::getOperationSize(DwarfOp op,
             if (offset >= max_offset) return 0;
             const uint8_t encoding = data[offset];
             const uint8_t format = static_cast<uint8_t>(encoding & 0x0f);
+            const uint8_t application = static_cast<uint8_t>(encoding & 0x70);
             const size_t value_off = offset + 1;
+            size_t aligned_value_off = value_off;
+            if (application == 0x50) {
+                const size_t align = (ctx.address_size == 8) ? 8u : 4u;
+                const size_t rem = value_off % align;
+                if (rem != 0) aligned_value_off += (align - rem);
+            }
+            const size_t pad = aligned_value_off - value_off;
             size_t payload = 0;
             switch (format) {
                 case 0x00: // DW_EH_PE_absptr
-                    payload = (max_offset > value_off)
-                        ? std::min<size_t>((ctx.address_size == 8) ? 8 : 4, max_offset - value_off)
+                    payload = (max_offset > aligned_value_off)
+                        ? std::min<size_t>((ctx.address_size == 8) ? 8 : 4, max_offset - aligned_value_off)
                         : 0;
                     break;
                 case 0x01: // DW_EH_PE_uleb128
                 case 0x09: // DW_EH_PE_sleb128
-                    payload = lebSize(data, value_off, max_offset);
+                    payload = lebSize(data, aligned_value_off, max_offset);
                     break;
                 case 0x02: // DW_EH_PE_udata2
                 case 0x0a: // DW_EH_PE_sdata2
-                    payload = (max_offset - value_off >= 2) ? 2 : (max_offset - value_off);
+                    payload = (max_offset - aligned_value_off >= 2) ? 2 : (max_offset - aligned_value_off);
                     break;
                 case 0x03: // DW_EH_PE_udata4
                 case 0x0b: // DW_EH_PE_sdata4
-                    payload = (max_offset - value_off >= 4) ? 4 : (max_offset - value_off);
+                    payload = (max_offset - aligned_value_off >= 4) ? 4 : (max_offset - aligned_value_off);
                     break;
                 case 0x04: // DW_EH_PE_udata8
                 case 0x0c: // DW_EH_PE_sdata8
-                    payload = (max_offset - value_off >= 8) ? 8 : (max_offset - value_off);
+                    payload = (max_offset - aligned_value_off >= 8) ? 8 : (max_offset - aligned_value_off);
                     break;
                 default:
                     // Unknown/unsupported encoding: conservative best-effort.
-                    payload = (max_offset > value_off)
-                        ? std::min<size_t>((ctx.address_size == 8) ? 8 : 4, max_offset - value_off)
+                    payload = (max_offset > aligned_value_off)
+                        ? std::min<size_t>((ctx.address_size == 8) ? 8 : 4, max_offset - aligned_value_off)
                         : 0;
                     break;
             }
-            return 1 + payload;
+            return 1 + pad + payload;
         }
 
         case DwarfOp::DW_OP_call_ref:
@@ -1203,7 +1221,12 @@ std::string DwarfUtils::operationToString(DwarfOp op) {
         case DwarfOp::DW_OP_GNU_parameter_ref: return "DW_OP_GNU_parameter_ref";
         case DwarfOp::DW_OP_GNU_addr_index: return "DW_OP_GNU_addr_index";
         case DwarfOp::DW_OP_GNU_const_index: return "DW_OP_GNU_const_index";
-        default: return "DW_OP_unknown";
+        default: {
+            std::ostringstream oss;
+            oss << "DW_OP_unknown_0x"
+                << std::hex << std::nouppercase << static_cast<unsigned>(static_cast<uint8_t>(op));
+            return oss.str();
+        }
     }
 }
 

@@ -5,6 +5,7 @@
 #include <iomanip>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 
 namespace dwarf {
 
@@ -499,19 +500,27 @@ std::shared_ptr<AttributeValue> AttributeParser::parseAttribute(DwarfForm form, 
                 szctx.ref_addr_uses_address_size = (dwarf_version_ == DwarfVersion::DWARF2);
                 const uint64_t end = currentDebugInfoEnd();
                 std::string skip_severity;
-                size_t n = DwarfUtils::getFormSize(form,
-                                                   debug_info_.data(),
-                                                   static_cast<size_t>(offset),
-                                                   static_cast<size_t>(end),
-                                                   szctx);
-                if (n == 0) {
-                    uint16_t fv = static_cast<uint16_t>(form);
-                    if ((fv & 0xff00u) == 0x1f00u) {
-                        // Heuristic: some unknown vendor forms mirror standard low-byte
-                        // payload encodings (for example block/string/data families).
-                        // Keep this intentionally narrow to avoid regressing existing
-                        // offset-sized fallback behavior for other 0x1fxx forms.
-                        const uint8_t low = static_cast<uint8_t>(fv & 0xffu);
+                std::function<size_t(uint16_t, uint64_t, int)> mirroredVendorFormSize =
+                    [&](uint16_t vendor_form, uint64_t form_offset, int depth) -> size_t {
+                        if (depth <= 0) return 0;
+                        if ((vendor_form & 0xff00u) != 0x1f00u) {
+                            return DwarfUtils::getFormSize(static_cast<DwarfForm>(vendor_form),
+                                                           debug_info_.data(),
+                                                           static_cast<size_t>(form_offset),
+                                                           static_cast<size_t>(end),
+                                                           szctx);
+                        }
+
+                        const uint8_t low = static_cast<uint8_t>(vendor_form & 0xffu);
+                        if (low == 0x16) {
+                            uint64_t nested_off = form_offset;
+                            uint64_t nested = DwarfUtils::readULEB128(debug_info_.data(), nested_off, end);
+                            size_t head = static_cast<size_t>(nested_off - form_offset);
+                            if (head == 0) return 0;
+                            size_t tail = mirroredVendorFormSize(static_cast<uint16_t>(nested), nested_off, depth - 1);
+                            return head + tail;
+                        }
+
                         switch (low) {
                             case 0x01: // addr
                             case 0x03: // block2
@@ -531,21 +540,29 @@ std::shared_ptr<AttributeValue> AttributeParser::parseAttribute(DwarfForm form, 
                             case 0x13: // ref4
                             case 0x14: // ref8
                             case 0x15: // ref_udata
-                            case 0x16: // indirect
                             case 0x18: // exprloc
                             case 0x19: // flag_present
                             case 0x1e: // data16
                             case 0x24: // ref_sup8
-                                n = DwarfUtils::getFormSize(static_cast<DwarfForm>(low),
-                                                            debug_info_.data(),
-                                                            static_cast<size_t>(offset),
-                                                            static_cast<size_t>(end),
-                                                            szctx);
-                                if (n != 0) skip_severity = "known_shape";
-                                break;
+                                return DwarfUtils::getFormSize(static_cast<DwarfForm>(low),
+                                                               debug_info_.data(),
+                                                               static_cast<size_t>(form_offset),
+                                                               static_cast<size_t>(end),
+                                                               szctx);
                             default:
-                                break;
+                                return 0;
                         }
+                    };
+                size_t n = DwarfUtils::getFormSize(form,
+                                                   debug_info_.data(),
+                                                   static_cast<size_t>(offset),
+                                                   static_cast<size_t>(end),
+                                                   szctx);
+                if (n == 0) {
+                    uint16_t fv = static_cast<uint16_t>(form);
+                    if ((fv & 0xff00u) == 0x1f00u) {
+                        n = mirroredVendorFormSize(fv, offset, 4);
+                        if (n != 0) skip_severity = "known_shape";
                     }
                     if (n == 0 && (fv & 0xff00u) == 0x1f00u) {
                         // Conservative vendor-form fallback: many unknown forms in

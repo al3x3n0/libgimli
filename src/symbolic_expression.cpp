@@ -40,6 +40,18 @@ bool hasDecodeError() {
     return g_decode_error;
 }
 
+std::string unsupportedOpMessage(uint8_t opcode, uint64_t offset) {
+    std::ostringstream oss;
+    oss << "unsupported op "
+        << DwarfUtils::operationToString(static_cast<DwarfOp>(opcode))
+        << " (opcode 0x" << std::hex << static_cast<unsigned>(opcode) << std::dec << ")";
+    if (opcode >= 0xe0) {
+        oss << " [vendor/extension opcode]";
+    }
+    oss << " at " << offset;
+    return oss.str();
+}
+
 const std::string& decodeErrorMessage() {
     return g_decode_error_message;
 }
@@ -50,6 +62,12 @@ static uint64_t dwarfSectionOffsetBias(uint64_t cu_base_offset) {
     constexpr uint64_t kBiasBits = (1ULL << 63) | (1ULL << 62);
     if ((cu_base_offset & kBiasBits) == 0) return 0;
     return cu_base_offset & ~kLow48Mask;
+}
+
+static uint64_t alignOffsetUp(uint64_t off, uint64_t align) {
+    if (align <= 1) return off;
+    uint64_t rem = off % align;
+    return rem == 0 ? off : (off + (align - rem));
 }
 
 static bool isConst(const SymExprPtr& e) {
@@ -634,6 +652,16 @@ static SymbolicExpressionResult mergeBranchResults(const SymExprPtr& cond,
                                                    const std::vector<uint64_t>& regs) {
     if (taken.type == SymbolicExpressionResult::Type::INVALID) return taken;
     if (fallthrough.type == SymbolicExpressionResult::Type::INVALID) return fallthrough;
+    const bool merged_uninitialized = taken.uninitialized || fallthrough.uninitialized;
+    auto applyMergedMetadata = [&](SymbolicExpressionResult& merged) {
+        if (taken.unsupported_opcode.has_value() &&
+            fallthrough.unsupported_opcode.has_value() &&
+            *taken.unsupported_opcode == *fallthrough.unsupported_opcode &&
+            taken.unsupported_vendor_extension == fallthrough.unsupported_vendor_extension) {
+            merged.unsupported_opcode = taken.unsupported_opcode;
+            merged.unsupported_vendor_extension = taken.unsupported_vendor_extension;
+        }
+    };
 
     if (taken.type != fallthrough.type) {
         auto asValueExpr = [address_size, &regs](const SymbolicExpressionResult& r) -> SymExprPtr {
@@ -658,31 +686,72 @@ static SymbolicExpressionResult mergeBranchResults(const SymExprPtr& cond,
             SymbolicExpressionResult merged;
             merged.type = SymbolicExpressionResult::Type::VALUE;
             merged.expression = SymExpr::makeITE(cond, tv, fv);
+            merged.uninitialized = merged_uninitialized;
+            applyMergedMetadata(merged);
             return merged;
         }
         return {SymbolicExpressionResult::Type::INVALID, nullptr, {}, "symbolic bra type mismatch"};
     }
 
     switch (taken.type) {
-        case SymbolicExpressionResult::Type::ADDRESS:
+        case SymbolicExpressionResult::Type::ADDRESS: {
+            if (!taken.expression || !fallthrough.expression) {
+                return {SymbolicExpressionResult::Type::INVALID, nullptr, {}, "symbolic bra missing expression"};
+            }
+            if (!symExprEquivalent(taken.expression, fallthrough.expression)) {
+                SymbolicExpressionResult merged;
+                merged.type = SymbolicExpressionResult::Type::VALUE;
+                merged.expression = SymExpr::makeITE(
+                    cond,
+                    SymExpr::makeLoad(taken.expression, address_size),
+                    SymExpr::makeLoad(fallthrough.expression, address_size));
+                merged.uninitialized = merged_uninitialized;
+                applyMergedMetadata(merged);
+                return merged;
+            }
+            SymbolicExpressionResult merged;
+            merged.type = SymbolicExpressionResult::Type::ADDRESS;
+            merged.expression = taken.expression;
+            merged.uninitialized = merged_uninitialized;
+            applyMergedMetadata(merged);
+            return merged;
+        }
         case SymbolicExpressionResult::Type::VALUE: {
             if (!taken.expression || !fallthrough.expression) {
                 return {SymbolicExpressionResult::Type::INVALID, nullptr, {}, "symbolic bra missing expression"};
             }
             SymbolicExpressionResult merged;
-            merged.type = taken.type;
+            merged.type = SymbolicExpressionResult::Type::VALUE;
             merged.expression = SymExpr::makeITE(cond, taken.expression, fallthrough.expression);
+            merged.uninitialized = merged_uninitialized;
+            applyMergedMetadata(merged);
             return merged;
         }
         case SymbolicExpressionResult::Type::REGISTER: {
-            // REGISTER result must remain a register-location descriptor.
             if (!taken.expression || !fallthrough.expression) {
                 return {SymbolicExpressionResult::Type::INVALID, nullptr, {}, "symbolic bra missing register expression"};
             }
             if (!symExprEquivalent(taken.expression, fallthrough.expression)) {
-                return {SymbolicExpressionResult::Type::INVALID, nullptr, {}, "symbolic bra register mismatch"};
+                auto asRegisterValueExpr = [&regs](const SymExprPtr& reg_expr) -> SymExprPtr {
+                    auto regnum_opt = asConst(reg_expr);
+                    if (!regnum_opt) return SymExpr::makeUnknown("reg?");
+                    if (*regnum_opt < regs.size()) return SymExpr::makeConst(regs[*regnum_opt]);
+                    return SymExpr::makeVar("reg" + std::to_string(*regnum_opt));
+                };
+                SymbolicExpressionResult merged;
+                merged.type = SymbolicExpressionResult::Type::VALUE;
+                merged.expression = SymExpr::makeITE(
+                    cond,
+                    asRegisterValueExpr(taken.expression),
+                    asRegisterValueExpr(fallthrough.expression));
+                merged.uninitialized = merged_uninitialized;
+                applyMergedMetadata(merged);
+                return merged;
             }
-            return taken;
+            SymbolicExpressionResult merged = taken;
+            merged.uninitialized = merged_uninitialized;
+            applyMergedMetadata(merged);
+            return merged;
         }
         case SymbolicExpressionResult::Type::COMPOSITE: {
             if (taken.pieces.size() != fallthrough.pieces.size()) {
@@ -690,6 +759,8 @@ static SymbolicExpressionResult mergeBranchResults(const SymExprPtr& cond,
             }
             SymbolicExpressionResult merged;
             merged.type = SymbolicExpressionResult::Type::COMPOSITE;
+            merged.uninitialized = merged_uninitialized;
+            applyMergedMetadata(merged);
             merged.pieces.reserve(taken.pieces.size());
 
             auto pieceAsValueExpr = [address_size, &regs](const SymPiece& p) -> SymExprPtr {
@@ -700,12 +771,24 @@ static SymbolicExpressionResult mergeBranchResults(const SymExprPtr& cond,
                             uint64_t load_size = p.byte_size;
                             if (load_size == 0) {
                                 if (p.bit_size != 0) {
-                                    load_size = (p.bit_size + 7) / 8;
+                                    load_size = (p.bit_offset + p.bit_size + 7) / 8;
                                 } else {
                                     load_size = address_size;
                                 }
                             }
-                            return SymExpr::makeLoad(p.location, load_size);
+                            SymExprPtr v = SymExpr::makeLoad(p.location, load_size);
+                            if (p.bit_size != 0) {
+                                if (p.bit_offset != 0) {
+                                    v = SymExpr::makeBinary(SymExpr::Kind::SHR, v,
+                                                            SymExpr::makeConst(p.bit_offset));
+                                }
+                                if (p.bit_size < 64) {
+                                    uint64_t mask = (1ULL << p.bit_size) - 1;
+                                    v = SymExpr::makeBinary(SymExpr::Kind::AND, v,
+                                                            SymExpr::makeConst(mask));
+                                }
+                            }
+                            return v;
                         }
                     case SymPiece::Kind::REGISTER: {
                         if (!p.location) return nullptr;
@@ -738,13 +821,38 @@ static SymbolicExpressionResult mergeBranchResults(const SymExprPtr& cond,
 
                 SymPiece mp = tp;
                 if (tp.kind == fp.kind) {
-                    if (tp.kind == SymPiece::Kind::MEMORY || tp.kind == SymPiece::Kind::REGISTER) {
+                    if (tp.kind == SymPiece::Kind::MEMORY) {
                         if (!tp.location || !fp.location) {
                             return {SymbolicExpressionResult::Type::INVALID, nullptr, {}, "symbolic bra composite missing location"};
                         }
-                        mp.location = symExprEquivalent(tp.location, fp.location)
-                                          ? tp.location
-                                          : SymExpr::makeITE(cond, tp.location, fp.location);
+                        if (symExprEquivalent(tp.location, fp.location)) {
+                            mp.location = tp.location;
+                        } else {
+                            auto tv = pieceAsValueExpr(tp);
+                            auto fv = pieceAsValueExpr(fp);
+                            if (!tv || !fv) {
+                                return {SymbolicExpressionResult::Type::INVALID, nullptr, {}, "symbolic bra composite kind mismatch"};
+                            }
+                            mp.kind = SymPiece::Kind::IMPLICIT;
+                            mp.implicit_bytes.clear();
+                            mp.location = SymExpr::makeITE(cond, tv, fv);
+                        }
+                    } else if (tp.kind == SymPiece::Kind::REGISTER) {
+                        if (!tp.location || !fp.location) {
+                            return {SymbolicExpressionResult::Type::INVALID, nullptr, {}, "symbolic bra composite missing location"};
+                        }
+                        if (symExprEquivalent(tp.location, fp.location)) {
+                            mp.location = tp.location;
+                        } else {
+                            auto tv = pieceAsValueExpr(tp);
+                            auto fv = pieceAsValueExpr(fp);
+                            if (!tv || !fv) {
+                                return {SymbolicExpressionResult::Type::INVALID, nullptr, {}, "symbolic bra composite kind mismatch"};
+                            }
+                            mp.kind = SymPiece::Kind::IMPLICIT;
+                            mp.implicit_bytes.clear();
+                            mp.location = SymExpr::makeITE(cond, tv, fv);
+                        }
                     } else if (tp.kind == SymPiece::Kind::IMPLICIT) {
                         if (!tp.location && !fp.location && tp.implicit_bytes == fp.implicit_bytes) {
                             mp.implicit_bytes = tp.implicit_bytes;
@@ -797,9 +905,11 @@ SymbolicExpressionResult SymbolicExpressionEvaluator::evaluate(const std::vector
     stack_kinds_.clear();
     stack_implicit_bytes_.clear();
     pieces_.clear();
+    uninitialized_taint_ = false;
     setTopKind(SymStackValueKind::ADDRESS);
 
     auto result = evaluateFromOffset(expr, 0);
+    result.uninitialized = result.uninitialized || uninitialized_taint_;
     appendDiagnosticContext(result);
     return result;
 }
@@ -845,7 +955,8 @@ SymbolicExpressionResult SymbolicExpressionEvaluator::evaluateFromOffset(const s
         // Literals.
         if (opb >= static_cast<uint8_t>(DwarfOp::DW_OP_lit0) &&
             opb <= static_cast<uint8_t>(DwarfOp::DW_OP_lit31)) {
-            push(SymExpr::makeConst(opb - static_cast<uint8_t>(DwarfOp::DW_OP_lit0)));
+            push(SymExpr::makeConst(opb - static_cast<uint8_t>(DwarfOp::DW_OP_lit0)),
+                 SymStackValueKind::VALUE);
             continue;
         }
 
@@ -935,19 +1046,19 @@ SymbolicExpressionResult SymbolicExpressionEvaluator::evaluateFromOffset(const s
             }
             case DwarfOp::DW_OP_addr: {
                 uint64_t a = readAddressSized(expr, off, ctx_.address_size);
-                push(SymExpr::makeConst(a));
+                push(SymExpr::makeConst(a), SymStackValueKind::ADDRESS);
                 break;
             }
-            case DwarfOp::DW_OP_const1u: push(SymExpr::makeConst(readU8(expr, off))); break;
-            case DwarfOp::DW_OP_const2u: push(SymExpr::makeConst(readU16(expr, off))); break;
-            case DwarfOp::DW_OP_const4u: push(SymExpr::makeConst(readU32(expr, off))); break;
-            case DwarfOp::DW_OP_const8u: push(SymExpr::makeConst(readU64(expr, off))); break;
-            case DwarfOp::DW_OP_const1s: push(SymExpr::makeConst(static_cast<uint64_t>(static_cast<int8_t>(readU8(expr, off))))); break;
-            case DwarfOp::DW_OP_const2s: push(SymExpr::makeConst(static_cast<uint64_t>(static_cast<int16_t>(readU16(expr, off))))); break;
-            case DwarfOp::DW_OP_const4s: push(SymExpr::makeConst(static_cast<uint64_t>(static_cast<int32_t>(readU32(expr, off))))); break;
-            case DwarfOp::DW_OP_const8s: push(SymExpr::makeConst(static_cast<uint64_t>(static_cast<int64_t>(readU64(expr, off))))); break;
-            case DwarfOp::DW_OP_constu: push(SymExpr::makeConst(readULEB(expr, off))); break;
-            case DwarfOp::DW_OP_consts: push(SymExpr::makeConst(static_cast<uint64_t>(readSLEB(expr, off)))); break;
+            case DwarfOp::DW_OP_const1u: push(SymExpr::makeConst(readU8(expr, off)), SymStackValueKind::VALUE); break;
+            case DwarfOp::DW_OP_const2u: push(SymExpr::makeConst(readU16(expr, off)), SymStackValueKind::VALUE); break;
+            case DwarfOp::DW_OP_const4u: push(SymExpr::makeConst(readU32(expr, off)), SymStackValueKind::VALUE); break;
+            case DwarfOp::DW_OP_const8u: push(SymExpr::makeConst(readU64(expr, off)), SymStackValueKind::VALUE); break;
+            case DwarfOp::DW_OP_const1s: push(SymExpr::makeConst(static_cast<uint64_t>(static_cast<int8_t>(readU8(expr, off)))), SymStackValueKind::VALUE); break;
+            case DwarfOp::DW_OP_const2s: push(SymExpr::makeConst(static_cast<uint64_t>(static_cast<int16_t>(readU16(expr, off)))), SymStackValueKind::VALUE); break;
+            case DwarfOp::DW_OP_const4s: push(SymExpr::makeConst(static_cast<uint64_t>(static_cast<int32_t>(readU32(expr, off)))), SymStackValueKind::VALUE); break;
+            case DwarfOp::DW_OP_const8s: push(SymExpr::makeConst(static_cast<uint64_t>(static_cast<int64_t>(readU64(expr, off)))), SymStackValueKind::VALUE); break;
+            case DwarfOp::DW_OP_constu: push(SymExpr::makeConst(readULEB(expr, off)), SymStackValueKind::VALUE); break;
+            case DwarfOp::DW_OP_consts: push(SymExpr::makeConst(static_cast<uint64_t>(readSLEB(expr, off))), SymStackValueKind::VALUE); break;
 
             case DwarfOp::DW_OP_dup: {
                 if (stack_.empty()) return stackUnderflow(1);
@@ -1275,7 +1386,7 @@ SymbolicExpressionResult SymbolicExpressionEvaluator::evaluateFromOffset(const s
                         }
                     }
                 }
-                pushWithImplicitBytes(v, bytes, SymStackValueKind::ADDRESS);
+                pushWithImplicitBytes(v, bytes, SymStackValueKind::VALUE);
                 break;
             }
             case DwarfOp::DW_OP_regval_type:
@@ -1415,10 +1526,18 @@ SymbolicExpressionResult SymbolicExpressionEvaluator::evaluateFromOffset(const s
                         sub_eval.call_depth_ = call_depth_ + 1;
                         sub_eval.branch_depth_ = branch_depth_;
                         auto sr = sub_eval.evaluate(*sub, ctx_, pc_, regs_);
-                        if (sr.type == SymbolicExpressionResult::Type::ADDRESS && sr.expression) {
+                        uninitialized_taint_ = uninitialized_taint_ || sr.uninitialized;
+                        if ((sr.type == SymbolicExpressionResult::Type::ADDRESS ||
+                             sr.type == SymbolicExpressionResult::Type::VALUE) &&
+                            sr.expression) {
                             base_ptr = sr.expression;
+                        } else if (sr.type == SymbolicExpressionResult::Type::REGISTER &&
+                                   sr.expression) {
+                            auto regnum_opt = asConst(sr.expression);
+                            base_ptr = regnum_opt ? regValueExpr(*regnum_opt)
+                                                  : SymExpr::makeUnknown("implicit_pointer(reg?)");
                         } else {
-                            base_ptr = SymExpr::makeUnknown("implicit_pointer(non_address)");
+                            base_ptr = SymExpr::makeUnknown("implicit_pointer(no_referent)");
                         }
                     } else {
                         base_ptr = SymExpr::makeUnknown("implicit_pointer(no_proc)");
@@ -1532,7 +1651,7 @@ SymbolicExpressionResult SymbolicExpressionEvaluator::evaluateFromOffset(const s
                 break;
             }
             case DwarfOp::DW_OP_push_object_address: {
-                push(objectAddrExpr());
+                push(objectAddrExpr(), SymStackValueKind::ADDRESS);
                 break;
             }
             case DwarfOp::DW_OP_form_tls_address:
@@ -1544,7 +1663,7 @@ SymbolicExpressionResult SymbolicExpressionEvaluator::evaluateFromOffset(const s
                 break;
             }
             case DwarfOp::DW_OP_GNU_uninit: {
-                // Informational marker only: value is uninitialized.
+                uninitialized_taint_ = true;
                 break;
             }
             case DwarfOp::DW_OP_GNU_encoded_addr: {
@@ -1558,6 +1677,13 @@ SymbolicExpressionResult SymbolicExpressionEvaluator::evaluateFromOffset(const s
                 constexpr uint8_t kAppMask = 0x70;
                 constexpr uint8_t kIndMask = 0x80;
                 uint8_t fmt = static_cast<uint8_t>(encoding & kFmtMask);
+
+                if ((encoding & kAppMask) == 0x50) {
+                    if (!requireAddressSize()) {
+                        return {SymbolicExpressionResult::Type::INVALID, nullptr, {}, "invalid address_size"};
+                    }
+                    off = alignOffsetUp(off, ctx_.address_size);
+                }
 
                 SymExprPtr raw;
                 switch (fmt) {
@@ -1595,7 +1721,7 @@ SymbolicExpressionResult SymbolicExpressionEvaluator::evaluateFromOffset(const s
                         break;
                     }
                     default:
-                        raw = SymExpr::makeUnknown("gnu_encoded_addr(fmt)");
+                        raw = SymExpr::makeConst(readAddressSized(expr, off, ctx_.address_size));
                         break;
                 }
 
@@ -1607,8 +1733,19 @@ SymbolicExpressionResult SymbolicExpressionEvaluator::evaluateFromOffset(const s
                     case 0x10: // pcrel
                         addr = SymExpr::makeBinary(SymExpr::Kind::ADD, SymExpr::makeConst(pc_), raw);
                         break;
+                    case 0x20: // textrel
+                        addr = SymExpr::makeBinary(SymExpr::Kind::ADD, SymExpr::makeConst(ctx_.text_base), raw);
+                        break;
+                    case 0x30: // datarel
+                        addr = SymExpr::makeBinary(SymExpr::Kind::ADD, SymExpr::makeConst(ctx_.data_base), raw);
+                        break;
+                    case 0x40: // funcrel
+                        addr = SymExpr::makeBinary(SymExpr::Kind::ADD, SymExpr::makeConst(ctx_.function_base), raw);
+                        break;
+                    case 0x50: // aligned
+                        break;
                     default:
-                        // Other application modes require external base context.
+                        // Other application modes require additional external base context.
                         break;
                 }
 
@@ -1650,6 +1787,7 @@ SymbolicExpressionResult SymbolicExpressionEvaluator::evaluateFromOffset(const s
                 sub_eval.call_depth_ = call_depth_ + 1;
                 sub_eval.branch_depth_ = branch_depth_;
                 SymbolicExpressionResult sr = sub_eval.evaluate(*sub, ctx_, pc_, regs_);
+                uninitialized_taint_ = uninitialized_taint_ || sr.uninitialized;
                 if (sr.type == SymbolicExpressionResult::Type::REGISTER) {
                     auto regnum_opt = asConst(sr.expression);
                     if (!regnum_opt) {
@@ -1677,14 +1815,9 @@ SymbolicExpressionResult SymbolicExpressionEvaluator::evaluateFromOffset(const s
                     if (hasDecodeError()) return decodeFailure();
                 }
 
-                std::string name;
-                switch (kind) {
-                    case 0x00: name = "wasm_local" + std::to_string(index); break;
-                    case 0x01: name = "wasm_global" + std::to_string(index); break;
-                    case 0x02: name = "wasm_stack" + std::to_string(index); break;
-                    default: name = "wasm_location_kind" + std::to_string(kind); break;
-                }
-                push(SymExpr::makeVar(name), SymStackValueKind::VALUE);
+                uint64_t encoded = (static_cast<uint64_t>(kind) << 56) |
+                                   (index & 0x00ffffffffffffffULL);
+                push(SymExpr::makeConst(encoded), SymStackValueKind::REGISTER);
                 break;
             }
             case DwarfOp::DW_OP_addrx:
@@ -1693,16 +1826,16 @@ SymbolicExpressionResult SymbolicExpressionEvaluator::evaluateFromOffset(const s
             case DwarfOp::DW_OP_GNU_const_index: {
                 uint64_t idx = readULEB(expr, off);
                 if (hasDecodeError()) return decodeFailure();
+                bool is_addr = (op == DwarfOp::DW_OP_addrx || op == DwarfOp::DW_OP_GNU_addr_index);
                 if (ctx_.debug_addr_table && idx < ctx_.debug_addr_table->size()) {
                     push(SymExpr::makeConst((*ctx_.debug_addr_table)[idx]));
                 } else {
-                    bool is_addr = (op == DwarfOp::DW_OP_addrx || op == DwarfOp::DW_OP_GNU_addr_index);
                     std::string n = is_addr ? "addrx(" : "constx(";
                     n += std::to_string(idx);
                     n += ")";
                     push(SymExpr::makeVar(n));
                 }
-                setTopKind(SymStackValueKind::ADDRESS);
+                setTopKind(is_addr ? SymStackValueKind::ADDRESS : SymStackValueKind::VALUE);
                 break;
             }
             case DwarfOp::DW_OP_entry_value:
@@ -1818,10 +1951,15 @@ SymbolicExpressionResult SymbolicExpressionEvaluator::evaluateFromOffset(const s
                 break;
 
             default:
-                return {SymbolicExpressionResult::Type::INVALID,
-                        nullptr,
-                        {},
-                        std::string("unsupported op ") + DwarfUtils::operationToString(op) + " at " + std::to_string(op_off)};
+                {
+                    SymbolicExpressionResult r;
+                    r.type = SymbolicExpressionResult::Type::INVALID;
+                    r.error = unsupportedOpMessage(static_cast<uint8_t>(op), op_off);
+                    r.unsupported_opcode = static_cast<uint8_t>(op);
+                    r.unsupported_vendor_extension = static_cast<uint8_t>(op) >= 0xe0;
+                    r.uninitialized = uninitialized_taint_;
+                    return r;
+                }
         }
 
         if (hasDecodeError()) {
@@ -1836,6 +1974,7 @@ SymbolicExpressionResult SymbolicExpressionEvaluator::evaluateFromOffset(const s
         SymbolicExpressionResult r;
         r.type = SymbolicExpressionResult::Type::COMPOSITE;
         r.pieces = std::move(pieces_);
+        r.uninitialized = uninitialized_taint_;
         return r;
     }
 
@@ -1856,6 +1995,7 @@ SymbolicExpressionResult SymbolicExpressionEvaluator::evaluateFromOffset(const s
             r.type = SymbolicExpressionResult::Type::ADDRESS;
             break;
     }
+    r.uninitialized = uninitialized_taint_;
     return r;
 }
 
@@ -1885,6 +2025,7 @@ SymbolicExpressionResult SymbolicExpressionEvaluator::evalEntryValueSubexpr(cons
         } else {
             out.expression = SymExpr::makeVar("entry_reg" + std::to_string(*regnum_opt));
         }
+        out.uninitialized = r.uninitialized;
         return out;
     }
     if (r.type == SymbolicExpressionResult::Type::ADDRESS) {
@@ -1893,6 +2034,7 @@ SymbolicExpressionResult SymbolicExpressionEvaluator::evalEntryValueSubexpr(cons
         out.type = SymbolicExpressionResult::Type::VALUE;
         out.expression = SymExpr::makeLoad(r.expression ? r.expression : SymExpr::makeUnknown("entry_addr"),
                                            ctx_.address_size);
+        out.uninitialized = r.uninitialized;
         return out;
     }
     if (r.type == SymbolicExpressionResult::Type::VALUE) {
@@ -1916,6 +2058,7 @@ bool SymbolicExpressionEvaluator::executeProcedureSubexprInPlace(const std::vect
     } else {
         pieces_ = std::move(sub.pieces_);
     }
+    uninitialized_taint_ = sub.uninitialized_taint_;
     return true;
 }
 
