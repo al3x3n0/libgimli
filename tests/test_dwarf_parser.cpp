@@ -16180,11 +16180,13 @@ void testTypePrinter() {
     member_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("value"));
     member_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x130));
     member_die->addAttribute(DwarfAttribute::DW_AT_data_member_location, std::make_shared<UnsignedAttributeValue>(8));
+    member_die->addAttribute(DwarfAttribute::DW_AT_accessibility, std::make_shared<UnsignedAttributeValue>(1));
     struct_die->addChild(member_die);
     auto signed_member_die = add_die(DwarfTag::DW_TAG_member, 0x1515);
     signed_member_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("tail"));
     signed_member_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x130));
     signed_member_die->addAttribute(DwarfAttribute::DW_AT_data_member_location, std::make_shared<SignedAttributeValue>(-4));
+    signed_member_die->addAttribute(DwarfAttribute::DW_AT_accessibility, std::make_shared<UnsignedAttributeValue>(2));
     struct_die->addChild(signed_member_die);
     auto expr_member_die = add_die(DwarfTag::DW_TAG_member, 0x1516);
     expr_member_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("payload"));
@@ -16194,6 +16196,8 @@ void testTypePrinter() {
         std::make_shared<LocationAttributeValue>(
             LocationAttributeValue::LocationType::EXPRESSION,
             std::vector<uint8_t>{static_cast<uint8_t>(DwarfOp::DW_OP_plus_uconst), 0x0c}));
+    expr_member_die->addAttribute(DwarfAttribute::DW_AT_accessibility, std::make_shared<UnsignedAttributeValue>(3));
+    expr_member_die->addAttribute(DwarfAttribute::DW_AT_external, std::make_shared<FlagAttributeValue>(true));
     struct_die->addChild(expr_member_die);
     auto expr_inherit_die = add_die(DwarfTag::DW_TAG_inheritance, 0x1517);
     expr_inherit_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x146));
@@ -16249,11 +16253,11 @@ void testTypePrinter() {
 
     std::string struct_text = printer.formatStructure(struct_die, true);
     assert(struct_text.find("struct Widget") != std::string::npos);
-    assert(struct_text.find("Alias value") != std::string::npos);
+    assert(struct_text.find("public Alias value") != std::string::npos);
     assert(struct_text.find("offset: 8") != std::string::npos);
-    assert(struct_text.find("Alias tail") != std::string::npos);
+    assert(struct_text.find("protected Alias tail") != std::string::npos);
     assert(struct_text.find("offset: -4") != std::string::npos);
-    assert(struct_text.find("Alias payload") != std::string::npos);
+    assert(struct_text.find("private static Alias payload") != std::string::npos);
     assert(struct_text.find("offset: 12") != std::string::npos);
     assert(struct_text.find("inherits from: public Widget /* offset: -8 */") != std::string::npos);
     assert(struct_text.find("inherits from: protected virtual Widget /* offset: -16 */") != std::string::npos);

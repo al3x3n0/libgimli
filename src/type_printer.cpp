@@ -261,6 +261,23 @@ std::string TypePrinter::formatStructure(const std::shared_ptr<DIE>& type_die,
         if (child->getTag() == DwarfTag::DW_TAG_member) {
             result += config_.indent;
 
+            auto access_attr = child->getAttribute(DwarfAttribute::DW_AT_accessibility);
+            if (auto access = std::dynamic_pointer_cast<UnsignedAttributeValue>(access_attr)) {
+                switch (access->getValue()) {
+                    case 1: result += "public "; break;
+                    case 2: result += "protected "; break;
+                    case 3: result += "private "; break;
+                    default: break;
+                }
+            }
+
+            auto external_attr = child->getAttribute(DwarfAttribute::DW_AT_external);
+            if (auto external = std::dynamic_pointer_cast<FlagAttributeValue>(external_attr)) {
+                if (external->getValue()) {
+                    result += "static ";
+                }
+            }
+
             // Get member type
             auto member_type_attr = child->getAttribute(DwarfAttribute::DW_AT_type);
             std::string member_decl;
