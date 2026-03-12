@@ -1016,9 +1016,14 @@ std::shared_ptr<Type> TypeSystem::resolveEnumType(std::shared_ptr<DIE> die) {
         if (child->getTag() == DwarfTag::DW_TAG_enumerator) {
             std::string enumerator_name = child->getName();
             auto const_attr = child->getAttribute(DwarfAttribute::DW_AT_const_value);
-            if (const_attr && const_attr->getType() == AttributeValueType::UNSIGNED) {
-                int64_t value = std::static_pointer_cast<UnsignedAttributeValue>(const_attr)->getValue();
-                enum_type->addEnumerator(enumerator_name, value);
+            if (const_attr) {
+                if (const_attr->getType() == AttributeValueType::UNSIGNED) {
+                    int64_t value = std::static_pointer_cast<UnsignedAttributeValue>(const_attr)->getValue();
+                    enum_type->addEnumerator(enumerator_name, value);
+                } else if (const_attr->getType() == AttributeValueType::SIGNED) {
+                    int64_t value = std::static_pointer_cast<SignedAttributeValue>(const_attr)->getValue();
+                    enum_type->addEnumerator(enumerator_name, value);
+                }
             }
         }
     }
