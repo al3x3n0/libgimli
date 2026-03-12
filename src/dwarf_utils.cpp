@@ -39,6 +39,7 @@ std::string DwarfUtils::tagToString(DwarfTag tag) {
         case DwarfTag::DW_TAG_unspecified_type: return "DW_TAG_unspecified_type";
         case DwarfTag::DW_TAG_string_type: return "DW_TAG_string_type";
         case DwarfTag::DW_TAG_set_type: return "DW_TAG_set_type";
+        case DwarfTag::DW_TAG_file_type: return "DW_TAG_file_type";
         case DwarfTag::DW_TAG_pointer_type: return "DW_TAG_pointer_type";
         case DwarfTag::DW_TAG_ptr_to_member_type: return "DW_TAG_ptr_to_member_type";
         case DwarfTag::DW_TAG_array_type: return "DW_TAG_array_type";
@@ -79,6 +80,7 @@ DwarfTag DwarfUtils::stringToTag(const std::string& str) {
     if (str == "DW_TAG_unspecified_type") return DwarfTag::DW_TAG_unspecified_type;
     if (str == "DW_TAG_string_type") return DwarfTag::DW_TAG_string_type;
     if (str == "DW_TAG_set_type") return DwarfTag::DW_TAG_set_type;
+    if (str == "DW_TAG_file_type") return DwarfTag::DW_TAG_file_type;
     if (str == "DW_TAG_pointer_type") return DwarfTag::DW_TAG_pointer_type;
     if (str == "DW_TAG_ptr_to_member_type") return DwarfTag::DW_TAG_ptr_to_member_type;
     if (str == "DW_TAG_array_type") return DwarfTag::DW_TAG_array_type;
@@ -517,6 +519,7 @@ bool DwarfUtils::isTypeTag(DwarfTag tag) {
         case DwarfTag::DW_TAG_unspecified_type:
         case DwarfTag::DW_TAG_string_type:
         case DwarfTag::DW_TAG_set_type:
+        case DwarfTag::DW_TAG_file_type:
         case DwarfTag::DW_TAG_pointer_type:
         case DwarfTag::DW_TAG_ptr_to_member_type:
         case DwarfTag::DW_TAG_array_type:

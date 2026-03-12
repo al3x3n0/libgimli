@@ -212,6 +212,28 @@ private:
     uint64_t size_;
 };
 
+class FileType : public Type {
+public:
+    FileType(const std::string& name,
+             std::shared_ptr<Type> element_type,
+             uint64_t size,
+             uint64_t element_count = 0);
+    std::string getName() const override;
+    uint64_t getSize() const override;
+    std::string getDescription() const override;
+    bool isComplete() const override;
+    std::shared_ptr<Type> resolve() override;
+
+    std::shared_ptr<Type> getElementType() const { return element_type_; }
+    uint64_t getElementCount() const { return element_count_; }
+
+private:
+    std::string name_;
+    std::shared_ptr<Type> element_type_;
+    uint64_t size_;
+    uint64_t element_count_;
+};
+
 // Function types
 class FunctionType : public Type {
 public:
@@ -302,6 +324,10 @@ public:
     std::shared_ptr<Type> createSetType(const std::string& name,
                                         std::shared_ptr<Type> element_type,
                                         uint64_t size);
+    std::shared_ptr<Type> createFileType(const std::string& name,
+                                         std::shared_ptr<Type> element_type,
+                                         uint64_t size,
+                                         uint64_t element_count = 0);
     std::shared_ptr<Type> createArrayType(std::shared_ptr<Type> element_type, 
                                           const std::vector<uint64_t>& dimensions);
     std::shared_ptr<Type> createFunctionType(std::shared_ptr<Type> return_type,
@@ -342,6 +368,7 @@ private:
     std::shared_ptr<Type> resolveMemberPointerType(std::shared_ptr<DIE> die);
     std::shared_ptr<Type> resolveStringType(std::shared_ptr<DIE> die);
     std::shared_ptr<Type> resolveSetType(std::shared_ptr<DIE> die);
+    std::shared_ptr<Type> resolveFileType(std::shared_ptr<DIE> die);
     std::shared_ptr<Type> resolveArrayType(std::shared_ptr<DIE> die);
     std::shared_ptr<Type> resolveCompositeType(std::shared_ptr<DIE> die);
     std::shared_ptr<Type> resolveEnumType(std::shared_ptr<DIE> die);

@@ -43,10 +43,12 @@ void testDwarfUtils() {
     assert(DwarfUtils::tagToString(DwarfTag::DW_TAG_subprogram) == "DW_TAG_subprogram");
     assert(DwarfUtils::tagToString(DwarfTag::DW_TAG_string_type) == "DW_TAG_string_type");
     assert(DwarfUtils::tagToString(DwarfTag::DW_TAG_set_type) == "DW_TAG_set_type");
+    assert(DwarfUtils::tagToString(DwarfTag::DW_TAG_file_type) == "DW_TAG_file_type");
     assert(DwarfUtils::tagToString(DwarfTag::DW_TAG_interface_type) == "DW_TAG_interface_type");
     assert(DwarfUtils::tagToString(DwarfTag::DW_TAG_ptr_to_member_type) == "DW_TAG_ptr_to_member_type");
     assert(DwarfUtils::stringToTag("DW_TAG_string_type") == DwarfTag::DW_TAG_string_type);
     assert(DwarfUtils::stringToTag("DW_TAG_set_type") == DwarfTag::DW_TAG_set_type);
+    assert(DwarfUtils::stringToTag("DW_TAG_file_type") == DwarfTag::DW_TAG_file_type);
     assert(DwarfUtils::stringToTag("DW_TAG_interface_type") == DwarfTag::DW_TAG_interface_type);
     assert(DwarfUtils::stringToTag("DW_TAG_ptr_to_member_type") == DwarfTag::DW_TAG_ptr_to_member_type);
 
@@ -432,6 +434,7 @@ void testDwarfUtils() {
     assert(DwarfUtils::isTypeTag(DwarfTag::DW_TAG_pointer_type));
     assert(DwarfUtils::isTypeTag(DwarfTag::DW_TAG_string_type));
     assert(DwarfUtils::isTypeTag(DwarfTag::DW_TAG_set_type));
+    assert(DwarfUtils::isTypeTag(DwarfTag::DW_TAG_file_type));
     assert(DwarfUtils::isTypeTag(DwarfTag::DW_TAG_interface_type));
     assert(DwarfUtils::isTypeTag(DwarfTag::DW_TAG_ptr_to_member_type));
     assert(!DwarfUtils::isTypeTag(DwarfTag::DW_TAG_subprogram));
@@ -15834,6 +15837,14 @@ void testTypeSystem() {
         set_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x10));
         set_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(32));
 
+        auto file_die = add_die(DwarfTag::DW_TAG_file_type, 0x1a);
+        file_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("IntFile"));
+        file_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x10));
+        file_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(64));
+        auto file_count = add_die(DwarfTag::DW_TAG_subrange_type, 0x1b);
+        file_count->addAttribute(DwarfAttribute::DW_AT_count, std::make_shared<UnsignedAttributeValue>(4));
+        file_die->addChild(file_count);
+
         auto const_die = add_die(DwarfTag::DW_TAG_const_type, 0x20);
         const_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x10));
 
@@ -15924,6 +15935,14 @@ void testTypeSystem() {
         assert(resolved_set->getElementType());
         assert(resolved_set->getElementType()->getName() == "int");
 
+        auto resolved_file = std::dynamic_pointer_cast<FileType>(resolving_system.resolveType(file_die));
+        assert(resolved_file);
+        assert(resolved_file->getName() == "IntFile");
+        assert(resolved_file->getSize() == 64);
+        assert(resolved_file->getElementCount() == 4);
+        assert(resolved_file->getElementType());
+        assert(resolved_file->getElementType()->getName() == "int");
+
         auto resolved_ref = std::dynamic_pointer_cast<ModifiedType>(resolving_system.resolveType(ref_die));
         assert(resolved_ref);
         assert(resolved_ref->getKind() == ModifiedTypeKind::REFERENCE);
@@ -16011,6 +16030,11 @@ void testTypePrinter() {
     set_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x100));
     set_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(32));
 
+    auto file_die = add_die(DwarfTag::DW_TAG_file_type, 0x10a);
+    file_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("IntFile"));
+    file_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x100));
+    file_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(64));
+
     auto const_die = add_die(DwarfTag::DW_TAG_const_type, 0x110);
     const_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x100));
 
@@ -16071,6 +16095,7 @@ void testTypePrinter() {
     assert(printer.formatType(unspecified_die) == "decltype(auto)");
     assert(printer.formatType(string_die) == "utf8_string");
     assert(printer.formatType(set_die) == "IntSet");
+    assert(printer.formatType(file_die) == "IntFile");
     assert(printer.formatType(rref_die) == "Alias&&");
     assert(printer.formatType(atomic_die) == "_Atomic(Alias)");
     assert(printer.formatType(interface_die) == "interface Runnable");

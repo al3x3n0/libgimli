@@ -81,6 +81,7 @@ void DwarfExtractor::extractTypes() {
         DwarfTag::DW_TAG_array_type,
         DwarfTag::DW_TAG_string_type,
         DwarfTag::DW_TAG_set_type,
+        DwarfTag::DW_TAG_file_type,
         DwarfTag::DW_TAG_pointer_type,
         DwarfTag::DW_TAG_ptr_to_member_type,
         DwarfTag::DW_TAG_reference_type,

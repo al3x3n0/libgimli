@@ -441,6 +441,9 @@ std::string TypePrinter::formatTypeInternal(const std::shared_ptr<DIE>& type_die
         case DwarfTag::DW_TAG_set_type:
             return formatSetType(type_die, var_name);
 
+        case DwarfTag::DW_TAG_file_type:
+            return formatFileType(type_die, var_name);
+
         case DwarfTag::DW_TAG_pointer_type:
             return formatPointerType(type_die, var_name);
 
@@ -614,6 +617,33 @@ std::string TypePrinter::formatSetType(const std::shared_ptr<DIE>& die,
             name = "set<" + formatType(element_type) + ">";
         } else {
             name = "set";
+        }
+    }
+    return var_name.empty() ? name : name + " " + var_name;
+}
+
+std::string TypePrinter::formatFileType(const std::shared_ptr<DIE>& die,
+                                        const std::string& var_name) const {
+    std::string name = die->getName();
+    if (name.empty()) {
+        auto element_type = getReferencedType(die);
+        name = "file";
+        if (element_type) {
+            name += "<" + formatType(element_type) + ">";
+        }
+        for (const auto& child : die->getChildren()) {
+            if (child->getTag() == DwarfTag::DW_TAG_subrange_type) {
+                auto count_attr = child->getAttribute(DwarfAttribute::DW_AT_count);
+                if (count_attr) {
+                    auto uint_attr = std::dynamic_pointer_cast<UnsignedAttributeValue>(count_attr);
+                    if (uint_attr) {
+                        std::stringstream ss;
+                        ss << name << "[" << uint_attr->getValue() << "]";
+                        name = ss.str();
+                    }
+                }
+                break;
+            }
         }
     }
     return var_name.empty() ? name : name + " " + var_name;

@@ -154,6 +154,8 @@ private:
                                  const std::string& var_name) const;
     std::string formatSetType(const std::shared_ptr<DIE>& die,
                               const std::string& var_name) const;
+    std::string formatFileType(const std::shared_ptr<DIE>& die,
+                               const std::string& var_name) const;
     std::string formatArrayType(const std::shared_ptr<DIE>& die,
                                const std::string& var_name) const;
     std::string formatConstType(const std::shared_ptr<DIE>& die,

@@ -285,6 +285,54 @@ std::shared_ptr<Type> SetType::resolve() {
     return std::static_pointer_cast<Type>(shared_from_this());
 }
 
+// FileType implementation
+FileType::FileType(const std::string& name,
+                   std::shared_ptr<Type> element_type,
+                   uint64_t size,
+                   uint64_t element_count)
+    : name_(name),
+      element_type_(std::move(element_type)),
+      size_(size),
+      element_count_(element_count) {
+}
+
+std::string FileType::getName() const {
+    if (!name_.empty()) {
+        return name_;
+    }
+    std::string base = "file";
+    if (element_type_) {
+        base += "<" + element_type_->getName() + ">";
+    }
+    if (element_count_ != 0) {
+        std::stringstream ss;
+        ss << base << "[" << element_count_ << "]";
+        return ss.str();
+    }
+    return base;
+}
+
+uint64_t FileType::getSize() const {
+    return size_;
+}
+
+std::string FileType::getDescription() const {
+    std::stringstream ss;
+    ss << getName();
+    if (size_ != 0) {
+        ss << " (" << size_ << " bytes)";
+    }
+    return ss.str();
+}
+
+bool FileType::isComplete() const {
+    return true;
+}
+
+std::shared_ptr<Type> FileType::resolve() {
+    return std::static_pointer_cast<Type>(shared_from_this());
+}
+
 // FunctionType implementation
 FunctionType::FunctionType(std::shared_ptr<Type> return_type, 
                            const std::vector<std::shared_ptr<Type>>& parameter_types,
@@ -479,6 +527,16 @@ std::shared_ptr<Type> TypeSystem::createSetType(const std::string& name,
     return type;
 }
 
+std::shared_ptr<Type> TypeSystem::createFileType(const std::string& name,
+                                                 std::shared_ptr<Type> element_type,
+                                                 uint64_t size,
+                                                 uint64_t element_count) {
+    auto type = std::make_shared<FileType>(name, std::move(element_type), size, element_count);
+    type->setDwarfTag(DwarfTag::DW_TAG_file_type);
+    all_types_.push_back(type);
+    return type;
+}
+
 std::shared_ptr<Type> TypeSystem::createArrayType(std::shared_ptr<Type> element_type, 
                                                   const std::vector<uint64_t>& dimensions) {
     auto type = std::make_shared<ArrayType>(element_type, dimensions);
@@ -580,6 +638,9 @@ std::shared_ptr<Type> TypeSystem::resolveType(std::shared_ptr<DIE> die) {
             break;
         case DwarfTag::DW_TAG_set_type:
             type = resolveSetType(die);
+            break;
+        case DwarfTag::DW_TAG_file_type:
+            type = resolveFileType(die);
             break;
         case DwarfTag::DW_TAG_pointer_type:
             type = resolvePointerType(die);
@@ -759,6 +820,21 @@ std::shared_ptr<Type> TypeSystem::resolveSetType(std::shared_ptr<DIE> die) {
     auto element_die = getTypeReference(die);
     std::shared_ptr<Type> resolved_element = element_die ? resolveType(element_die) : nullptr;
     return createSetType(getTypeName(die), resolved_element, getTypeSize(die));
+}
+
+std::shared_ptr<Type> TypeSystem::resolveFileType(std::shared_ptr<DIE> die) {
+    auto element_die = getTypeReference(die);
+    std::shared_ptr<Type> resolved_element = element_die ? resolveType(element_die) : nullptr;
+
+    uint64_t element_count = 0;
+    for (const auto& child : die->getChildren()) {
+        if (child->getTag() == DwarfTag::DW_TAG_subrange_type) {
+            element_count = getSubrangeCount(child);
+            break;
+        }
+    }
+
+    return createFileType(getTypeName(die), resolved_element, getTypeSize(die), element_count);
 }
 
 std::shared_ptr<Type> TypeSystem::resolveArrayType(std::shared_ptr<DIE> die) {
