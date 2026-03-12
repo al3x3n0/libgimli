@@ -65,6 +65,8 @@ std::string ModifiedType::getName() const {
             return underlying_name + " restrict";
         case ModifiedTypeKind::REFERENCE:
             return underlying_name + "&";
+        case ModifiedTypeKind::RVALUE_REFERENCE:
+            return underlying_name + "&&";
     }
     return underlying_name;
 }
@@ -311,6 +313,15 @@ std::shared_ptr<Type> TypeSystem::createReferenceType(std::shared_ptr<Type> refe
     return type;
 }
 
+std::shared_ptr<Type> TypeSystem::createRvalueReferenceType(std::shared_ptr<Type> referee_type) {
+    auto type = std::make_shared<ModifiedType>(ModifiedTypeKind::RVALUE_REFERENCE,
+                                               std::move(referee_type),
+                                               pointer_size_bytes_);
+    type->setDwarfTag(DwarfTag::DW_TAG_rvalue_reference_type);
+    all_types_.push_back(type);
+    return type;
+}
+
 std::shared_ptr<Type> TypeSystem::createArrayType(std::shared_ptr<Type> element_type, 
                                                   const std::vector<uint64_t>& dimensions) {
     auto type = std::make_shared<ArrayType>(element_type, dimensions);
@@ -348,6 +359,9 @@ std::shared_ptr<Type> TypeSystem::createModifiedType(ModifiedTypeKind kind,
             break;
         case ModifiedTypeKind::REFERENCE:
             type->setDwarfTag(DwarfTag::DW_TAG_reference_type);
+            break;
+        case ModifiedTypeKind::RVALUE_REFERENCE:
+            type->setDwarfTag(DwarfTag::DW_TAG_rvalue_reference_type);
             break;
     }
     all_types_.push_back(type);
@@ -401,6 +415,9 @@ std::shared_ptr<Type> TypeSystem::resolveType(std::shared_ptr<DIE> die) {
             break;
         case DwarfTag::DW_TAG_reference_type:
             type = resolveModifiedType(die, ModifiedTypeKind::REFERENCE);
+            break;
+        case DwarfTag::DW_TAG_rvalue_reference_type:
+            type = resolveModifiedType(die, ModifiedTypeKind::RVALUE_REFERENCE);
             break;
         case DwarfTag::DW_TAG_array_type:
             type = resolveArrayType(die);
@@ -726,7 +743,10 @@ std::shared_ptr<Type> TypeSystem::resolveTypedefType(std::shared_ptr<DIE> die) {
 std::shared_ptr<Type> TypeSystem::resolveModifiedType(std::shared_ptr<DIE> die, ModifiedTypeKind kind) {
     auto underlying_die = getTypeReference(die);
     std::shared_ptr<Type> resolved_underlying = underlying_die ? resolveType(underlying_die) : nullptr;
-    const uint64_t size = (kind == ModifiedTypeKind::REFERENCE) ? pointer_size_bytes_ : getTypeSize(die);
+    const uint64_t size = (kind == ModifiedTypeKind::REFERENCE ||
+                           kind == ModifiedTypeKind::RVALUE_REFERENCE)
+                              ? pointer_size_bytes_
+                              : getTypeSize(die);
     return createModifiedType(kind, resolved_underlying, size, getTypeName(die));
 }
 

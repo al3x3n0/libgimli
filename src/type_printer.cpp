@@ -431,6 +431,15 @@ std::string TypePrinter::formatTypeInternal(const std::shared_ptr<DIE>& type_die
         case DwarfTag::DW_TAG_reference_type:
             return formatReferenceType(type_die, var_name);
 
+        case DwarfTag::DW_TAG_rvalue_reference_type: {
+            auto referee = getReferencedType(type_die);
+            std::string referee_str = formatType(referee);
+            if (var_name.empty()) {
+                return referee_str + "&&";
+            }
+            return referee_str + " &&" + var_name;
+        }
+
         case DwarfTag::DW_TAG_array_type:
             return formatArrayType(type_die, var_name);
 

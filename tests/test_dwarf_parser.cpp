@@ -15819,6 +15819,9 @@ void testTypeSystem() {
         auto ref_die = add_die(DwarfTag::DW_TAG_reference_type, 0x40);
         ref_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x30));
 
+        auto rref_die = add_die(DwarfTag::DW_TAG_rvalue_reference_type, 0x45);
+        rref_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x30));
+
         auto elem_die = add_die(DwarfTag::DW_TAG_array_type, 0x50);
         elem_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x10));
         auto subrange = add_die(DwarfTag::DW_TAG_subrange_type, 0x51);
@@ -15870,6 +15873,12 @@ void testTypeSystem() {
         assert(resolved_ref->getKind() == ModifiedTypeKind::REFERENCE);
         assert(resolved_ref->getSize() == 8);
         assert(resolved_ref->getName() == "MyInt&");
+
+        auto resolved_rref = std::dynamic_pointer_cast<ModifiedType>(resolving_system.resolveType(rref_die));
+        assert(resolved_rref);
+        assert(resolved_rref->getKind() == ModifiedTypeKind::RVALUE_REFERENCE);
+        assert(resolved_rref->getSize() == 8);
+        assert(resolved_rref->getName() == "MyInt&&");
 
         auto resolved_array = std::dynamic_pointer_cast<ArrayType>(resolving_system.resolveType(elem_die));
         assert(resolved_array);
@@ -15925,6 +15934,9 @@ void testTypePrinter() {
     typedef_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("Alias"));
     typedef_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x120));
 
+    auto rref_die = add_die(DwarfTag::DW_TAG_rvalue_reference_type, 0x140);
+    rref_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x130));
+
     auto func_die = add_die(DwarfTag::DW_TAG_subroutine_type, 0x140);
     func_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x100));
     auto param_die = add_die(DwarfTag::DW_TAG_formal_parameter, 0x141);
@@ -15949,6 +15961,7 @@ void testTypePrinter() {
     assert(printer.formatType(const_die) == "const int");
     assert(printer.formatType(ptr_die) == "const int*");
     assert(printer.formatType(typedef_die) == "Alias");
+    assert(printer.formatType(rref_die) == "Alias&&");
     assert(printer.formatTypedef(typedef_die) == "typedef const int* Alias");
     assert(printer.formatType(func_die) == "int (*)(Alias, ...)");
 

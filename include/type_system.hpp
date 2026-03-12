@@ -42,7 +42,8 @@ enum class ModifiedTypeKind {
     CONST,
     VOLATILE,
     RESTRICT,
-    REFERENCE
+    REFERENCE,
+    RVALUE_REFERENCE
 };
 
 // Forward declaration
@@ -232,6 +233,7 @@ public:
                                               const std::string& name = "");
     std::shared_ptr<Type> createPointerType(std::shared_ptr<Type> pointee_type);
     std::shared_ptr<Type> createReferenceType(std::shared_ptr<Type> referee_type);
+    std::shared_ptr<Type> createRvalueReferenceType(std::shared_ptr<Type> referee_type);
     std::shared_ptr<Type> createArrayType(std::shared_ptr<Type> element_type, 
                                           const std::vector<uint64_t>& dimensions);
     std::shared_ptr<Type> createFunctionType(std::shared_ptr<Type> return_type,
