@@ -784,6 +784,15 @@ std::string TypePrinter::formatSubroutineType(const std::shared_ptr<DIE>& die,
 
     for (const auto& child : die->getChildren()) {
         if (child->getTag() == DwarfTag::DW_TAG_formal_parameter) {
+            auto variable_parameter_attr = child->getAttribute(DwarfAttribute::DW_AT_variable_parameter);
+            if (variable_parameter_attr) {
+                auto flag = std::dynamic_pointer_cast<FlagAttributeValue>(variable_parameter_attr);
+                if (flag && flag->getValue()) {
+                    has_varargs = true;
+                    continue;
+                }
+            }
+
             if (!first) {
                 params += ", ";
             }

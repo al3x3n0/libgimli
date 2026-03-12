@@ -15940,6 +15940,16 @@ void testTypeSystem() {
         auto variadic_die = add_die(DwarfTag::DW_TAG_unspecified_parameters, 0x82);
         func_die->addChild(variadic_die);
 
+        auto flag_variadic_func_die = add_die(DwarfTag::DW_TAG_subroutine_type, 0x83);
+        flag_variadic_func_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x10));
+        auto fixed_param_die = add_die(DwarfTag::DW_TAG_formal_parameter, 0x84);
+        fixed_param_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("prefix"));
+        fixed_param_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x30));
+        flag_variadic_func_die->addChild(fixed_param_die);
+        auto variable_param_die = add_die(DwarfTag::DW_TAG_formal_parameter, 0x85);
+        variable_param_die->addAttribute(DwarfAttribute::DW_AT_variable_parameter, std::make_shared<FlagAttributeValue>(true));
+        flag_variadic_func_die->addChild(variable_param_die);
+
         auto resolved_typedef = std::dynamic_pointer_cast<ModifiedType>(resolving_system.resolveType(typedef_die));
         assert(resolved_typedef);
         assert(resolved_typedef->getKind() == ModifiedTypeKind::TYPEDEF);
@@ -16042,6 +16052,13 @@ void testTypeSystem() {
         assert(resolved_func->getParameters().size() == 1);
         assert(resolved_func->getParameters()[0].name == "value");
         assert(resolved_func->getParameters()[0].type->getName() == "MyInt");
+
+        auto resolved_flag_variadic_func = std::dynamic_pointer_cast<FunctionType>(
+            resolving_system.resolveType(flag_variadic_func_die));
+        assert(resolved_flag_variadic_func);
+        assert(resolved_flag_variadic_func->isVariadic());
+        assert(resolved_flag_variadic_func->getParameters().size() == 1);
+        assert(resolved_flag_variadic_func->getParameters()[0].name == "prefix");
     }
     
     std::cout << "TypeSystem tests passed!" << std::endl;
@@ -16117,6 +16134,15 @@ void testTypePrinter() {
     func_die->addChild(param_die);
     func_die->addChild(add_die(DwarfTag::DW_TAG_unspecified_parameters, 0x14a));
 
+    auto flag_variadic_func_die = add_die(DwarfTag::DW_TAG_subroutine_type, 0x14b);
+    flag_variadic_func_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x100));
+    auto fixed_param_die = add_die(DwarfTag::DW_TAG_formal_parameter, 0x14c);
+    fixed_param_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x130));
+    flag_variadic_func_die->addChild(fixed_param_die);
+    auto variable_param_die = add_die(DwarfTag::DW_TAG_formal_parameter, 0x14d);
+    variable_param_die->addAttribute(DwarfAttribute::DW_AT_variable_parameter, std::make_shared<FlagAttributeValue>(true));
+    flag_variadic_func_die->addChild(variable_param_die);
+
     auto struct_die = add_die(DwarfTag::DW_TAG_structure_type, 0x150);
     struct_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("Widget"));
     struct_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(16));
@@ -16164,6 +16190,7 @@ void testTypePrinter() {
     assert(printer.formatType(array_die) == "int[-2..2]");
     assert(printer.formatTypedef(typedef_die) == "typedef const int* Alias");
     assert(printer.formatType(func_die) == "int (*)(Alias, ...)");
+    assert(printer.formatType(flag_variadic_func_die) == "int (*)(Alias, ...)");
 
     std::string struct_text = printer.formatStructure(struct_die, true);
     assert(struct_text.find("struct Widget") != std::string::npos);

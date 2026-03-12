@@ -1066,6 +1066,13 @@ std::shared_ptr<Type> TypeSystem::resolveFunctionType(std::shared_ptr<DIE> die) 
 
     for (const auto& child : die->getChildren()) {
         if (child->getTag() == DwarfTag::DW_TAG_formal_parameter) {
+            auto variable_parameter_attr = child->getAttribute(DwarfAttribute::DW_AT_variable_parameter);
+            if (variable_parameter_attr && variable_parameter_attr->getType() == AttributeValueType::FLAG &&
+                std::static_pointer_cast<FlagAttributeValue>(variable_parameter_attr)->getValue()) {
+                is_variadic = true;
+                continue;
+            }
+
             auto param_type = getTypeReference(child);
             std::shared_ptr<Type> resolved_param = param_type ? resolveType(param_type) : nullptr;
             if (resolved_param) {
