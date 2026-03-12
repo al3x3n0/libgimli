@@ -407,8 +407,12 @@ std::shared_ptr<Type> FileType::resolve() {
 // FunctionType implementation
 FunctionType::FunctionType(std::shared_ptr<Type> return_type, 
                            const std::vector<std::shared_ptr<Type>>& parameter_types,
-                           bool is_variadic)
-    : return_type_(std::move(return_type)), parameter_types_(parameter_types), is_variadic_(is_variadic) {
+                           bool is_variadic,
+                           bool is_prototyped)
+    : return_type_(std::move(return_type)),
+      parameter_types_(parameter_types),
+      is_variadic_(is_variadic),
+      is_prototyped_(is_prototyped) {
     parameters_.reserve(parameter_types_.size());
     for (const auto& parameter_type : parameter_types_) {
         parameters_.push_back({"", parameter_type});
@@ -417,8 +421,12 @@ FunctionType::FunctionType(std::shared_ptr<Type> return_type,
 
 FunctionType::FunctionType(std::shared_ptr<Type> return_type,
                            const std::vector<FunctionParameter>& parameters,
-                           bool is_variadic)
-    : return_type_(std::move(return_type)), parameters_(parameters), is_variadic_(is_variadic) {
+                           bool is_variadic,
+                           bool is_prototyped)
+    : return_type_(std::move(return_type)),
+      parameters_(parameters),
+      is_variadic_(is_variadic),
+      is_prototyped_(is_prototyped) {
     parameter_types_.reserve(parameters_.size());
     for (const auto& parameter : parameters_) {
         parameter_types_.push_back(parameter.type);
@@ -445,7 +453,7 @@ uint64_t FunctionType::getSize() const {
 }
 
 std::string FunctionType::getDescription() const {
-    return getName();
+    return getName() + (is_prototyped_ ? " [prototyped]" : "");
 }
 
 bool FunctionType::isComplete() const {
@@ -643,8 +651,9 @@ std::shared_ptr<Type> TypeSystem::createArrayType(std::shared_ptr<Type> element_
 
 std::shared_ptr<Type> TypeSystem::createFunctionType(std::shared_ptr<Type> return_type,
                                                      const std::vector<std::shared_ptr<Type>>& parameter_types,
-                                                     bool is_variadic) {
-    auto type = std::make_shared<FunctionType>(return_type, parameter_types, is_variadic);
+                                                     bool is_variadic,
+                                                     bool is_prototyped) {
+    auto type = std::make_shared<FunctionType>(return_type, parameter_types, is_variadic, is_prototyped);
     type->setDwarfTag(DwarfTag::DW_TAG_subroutine_type);
     all_types_.push_back(type);
     return type;
@@ -652,8 +661,9 @@ std::shared_ptr<Type> TypeSystem::createFunctionType(std::shared_ptr<Type> retur
 
 std::shared_ptr<Type> TypeSystem::createFunctionType(std::shared_ptr<Type> return_type,
                                                      const std::vector<FunctionParameter>& parameters,
-                                                     bool is_variadic) {
-    auto type = std::make_shared<FunctionType>(std::move(return_type), parameters, is_variadic);
+                                                     bool is_variadic,
+                                                     bool is_prototyped) {
+    auto type = std::make_shared<FunctionType>(std::move(return_type), parameters, is_variadic, is_prototyped);
     type->setDwarfTag(DwarfTag::DW_TAG_subroutine_type);
     all_types_.push_back(type);
     return type;
@@ -1115,6 +1125,12 @@ std::shared_ptr<Type> TypeSystem::resolveFunctionType(std::shared_ptr<DIE> die) 
     
     std::vector<FunctionParameter> parameters;
     bool is_variadic = false;
+    bool is_prototyped = false;
+
+    auto prototyped_attr = die->getAttribute(DwarfAttribute::DW_AT_prototyped);
+    if (prototyped_attr && prototyped_attr->getType() == AttributeValueType::FLAG) {
+        is_prototyped = std::static_pointer_cast<FlagAttributeValue>(prototyped_attr)->getValue();
+    }
 
     for (const auto& child : die->getChildren()) {
         if (child->getTag() == DwarfTag::DW_TAG_formal_parameter) {
@@ -1135,7 +1151,7 @@ std::shared_ptr<Type> TypeSystem::resolveFunctionType(std::shared_ptr<DIE> die) 
         }
     }
 
-    return createFunctionType(resolved_return, parameters, is_variadic);
+    return createFunctionType(resolved_return, parameters, is_variadic, is_prototyped);
 }
 
 std::shared_ptr<Type> TypeSystem::resolveTypedefType(std::shared_ptr<DIE> die) {
