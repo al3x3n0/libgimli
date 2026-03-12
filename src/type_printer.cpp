@@ -255,6 +255,14 @@ std::string TypePrinter::formatFunction(const std::shared_ptr<DIE>& func_die) co
 
     for (const auto& child : func_die->getChildren()) {
         if (child->getTag() == DwarfTag::DW_TAG_formal_parameter) {
+            auto variable_parameter_attr = child->getAttribute(DwarfAttribute::DW_AT_variable_parameter);
+            if (auto flag = std::dynamic_pointer_cast<FlagAttributeValue>(variable_parameter_attr)) {
+                if (flag->getValue()) {
+                    has_unspecified_params = true;
+                    continue;
+                }
+            }
+
             if (!first) {
                 result += ", ";
             }

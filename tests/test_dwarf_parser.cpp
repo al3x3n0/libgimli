@@ -16495,6 +16495,7 @@ void testTypePrinter() {
     assert(printer.formatType(flag_variadic_func_die) == "int (*)(Alias prefix, ...)");
     assert(printer.formatFunction(func_die) ==
            "int <anonymous>(/* object_pointer, artificial */ Alias self, ...) [prototyped] [calling_convention=5] [declaration]");
+    assert(printer.formatFunction(flag_variadic_func_die) == "int <anonymous>(Alias prefix, ...)");
 
     std::string struct_text = printer.formatStructure(struct_die, true);
     assert(struct_text.find("struct Widget") != std::string::npos);
