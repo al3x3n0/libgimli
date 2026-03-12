@@ -16270,7 +16270,7 @@ void testTypePrinter() {
 
     auto string_die = add_die(DwarfTag::DW_TAG_string_type, 0x108);
     string_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("utf8_string"));
-    string_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x100));
+    string_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<TypeAttributeValue>(0x100));
     string_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(16));
     string_die->addAttribute(DwarfAttribute::DW_AT_string_length, std::make_shared<UnsignedAttributeValue>(4));
 
@@ -16286,7 +16286,7 @@ void testTypePrinter() {
 
     auto set_die = add_die(DwarfTag::DW_TAG_set_type, 0x109);
     set_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("IntSet"));
-    set_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x100));
+    set_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<TypeAttributeValue>(0x100));
     set_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(32));
 
     auto file_die = add_die(DwarfTag::DW_TAG_file_type, 0x10a);
@@ -16323,12 +16323,12 @@ void testTypePrinter() {
     interface_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("Runnable"));
 
     auto member_ptr_die = add_die(DwarfTag::DW_TAG_ptr_to_member_type, 0x147);
-    member_ptr_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x130));
-    member_ptr_die->addAttribute(DwarfAttribute::DW_AT_containing_type, std::make_shared<ReferenceAttributeValue>(0x146));
+    member_ptr_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<TypeAttributeValue>(0x130));
+    member_ptr_die->addAttribute(DwarfAttribute::DW_AT_containing_type, std::make_shared<TypeAttributeValue>(0x146));
 
     auto enum_die = add_die(DwarfTag::DW_TAG_enumeration_type, 0x1475);
     enum_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("ScopedColor"));
-    enum_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x100));
+    enum_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<TypeAttributeValue>(0x100));
     enum_die->addAttribute(DwarfAttribute::DW_AT_enum_class, std::make_shared<FlagAttributeValue>(true));
     auto negative_enum_value_die = add_die(DwarfTag::DW_TAG_enumerator, 0x1476);
     negative_enum_value_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("NEGATIVE"));
@@ -16344,23 +16344,23 @@ void testTypePrinter() {
     enum_die->addChild(expr_enum_value_die);
 
     auto func_die = add_die(DwarfTag::DW_TAG_subroutine_type, 0x148);
-    func_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x100));
+    func_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<TypeAttributeValue>(0x100));
     func_die->addAttribute(DwarfAttribute::DW_AT_prototyped, std::make_shared<FlagAttributeValue>(true));
     func_die->addAttribute(DwarfAttribute::DW_AT_calling_convention, std::make_shared<UnsignedAttributeValue>(5));
     func_die->addAttribute(DwarfAttribute::DW_AT_declaration, std::make_shared<FlagAttributeValue>(true));
     auto param_die = add_die(DwarfTag::DW_TAG_formal_parameter, 0x149);
     param_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("self"));
-    param_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x130));
+    param_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<TypeAttributeValue>(0x130));
     param_die->addAttribute(DwarfAttribute::DW_AT_object_pointer, std::make_shared<FlagAttributeValue>(true));
     param_die->addAttribute(DwarfAttribute::DW_AT_artificial, std::make_shared<FlagAttributeValue>(true));
     func_die->addChild(param_die);
     func_die->addChild(add_die(DwarfTag::DW_TAG_unspecified_parameters, 0x14a));
 
     auto flag_variadic_func_die = add_die(DwarfTag::DW_TAG_subroutine_type, 0x14b);
-    flag_variadic_func_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x100));
+    flag_variadic_func_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<TypeAttributeValue>(0x100));
     auto fixed_param_die = add_die(DwarfTag::DW_TAG_formal_parameter, 0x14c);
     fixed_param_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("prefix"));
-    fixed_param_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x130));
+    fixed_param_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<TypeAttributeValue>(0x130));
     flag_variadic_func_die->addChild(fixed_param_die);
     auto variable_param_die = add_die(DwarfTag::DW_TAG_formal_parameter, 0x14d);
     variable_param_die->addAttribute(DwarfAttribute::DW_AT_variable_parameter, std::make_shared<FlagAttributeValue>(true));
@@ -16371,7 +16371,7 @@ void testTypePrinter() {
     struct_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(16));
     auto member_die = add_die(DwarfTag::DW_TAG_member, 0x151);
     member_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("value"));
-    member_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x130));
+    member_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<TypeAttributeValue>(0x130));
     member_die->addAttribute(DwarfAttribute::DW_AT_data_member_location, std::make_shared<UnsignedAttributeValue>(8));
     member_die->addAttribute(DwarfAttribute::DW_AT_bit_size, std::make_shared<UnsignedAttributeValue>(3));
     member_die->addAttribute(DwarfAttribute::DW_AT_data_bit_offset, std::make_shared<UnsignedAttributeValue>(1));
@@ -16379,13 +16379,13 @@ void testTypePrinter() {
     struct_die->addChild(member_die);
     auto signed_member_die = add_die(DwarfTag::DW_TAG_member, 0x1515);
     signed_member_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("tail"));
-    signed_member_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x130));
+    signed_member_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<TypeAttributeValue>(0x130));
     signed_member_die->addAttribute(DwarfAttribute::DW_AT_data_member_location, std::make_shared<SignedAttributeValue>(-4));
     signed_member_die->addAttribute(DwarfAttribute::DW_AT_accessibility, std::make_shared<UnsignedAttributeValue>(2));
     struct_die->addChild(signed_member_die);
     auto expr_member_die = add_die(DwarfTag::DW_TAG_member, 0x1516);
     expr_member_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("payload"));
-    expr_member_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x130));
+    expr_member_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<TypeAttributeValue>(0x130));
     expr_member_die->addAttribute(
         DwarfAttribute::DW_AT_data_member_location,
         std::make_shared<LocationAttributeValue>(
@@ -16396,13 +16396,13 @@ void testTypePrinter() {
     struct_die->addChild(expr_member_die);
     auto legacy_bitfield_die = add_die(DwarfTag::DW_TAG_member, 0x15165);
     legacy_bitfield_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("legacy_bits"));
-    legacy_bitfield_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x130));
+    legacy_bitfield_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<TypeAttributeValue>(0x130));
     legacy_bitfield_die->addAttribute(DwarfAttribute::DW_AT_data_member_location, std::make_shared<UnsignedAttributeValue>(4));
     legacy_bitfield_die->addAttribute(DwarfAttribute::DW_AT_bit_size, std::make_shared<UnsignedAttributeValue>(5));
     legacy_bitfield_die->addAttribute(DwarfAttribute::DW_AT_bit_offset, std::make_shared<UnsignedAttributeValue>(9));
     struct_die->addChild(legacy_bitfield_die);
     auto expr_inherit_die = add_die(DwarfTag::DW_TAG_inheritance, 0x1517);
-    expr_inherit_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x146));
+    expr_inherit_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<TypeAttributeValue>(0x146));
     expr_inherit_die->addAttribute(
         DwarfAttribute::DW_AT_data_member_location,
         std::make_shared<LocationAttributeValue>(
@@ -16411,7 +16411,7 @@ void testTypePrinter() {
     expr_inherit_die->addAttribute(DwarfAttribute::DW_AT_accessibility, std::make_shared<UnsignedAttributeValue>(1));
     struct_die->addChild(expr_inherit_die);
     auto inherit_die = add_die(DwarfTag::DW_TAG_inheritance, 0x1518);
-    inherit_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x146));
+    inherit_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<TypeAttributeValue>(0x146));
     inherit_die->addAttribute(DwarfAttribute::DW_AT_data_member_location, std::make_shared<SignedAttributeValue>(-16));
     inherit_die->addAttribute(DwarfAttribute::DW_AT_virtuality, std::make_shared<UnsignedAttributeValue>(1));
     inherit_die->addAttribute(DwarfAttribute::DW_AT_accessibility, std::make_shared<UnsignedAttributeValue>(2));
@@ -16421,7 +16421,7 @@ void testTypePrinter() {
     interface_decl_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("Runnable"));
     auto iface_member_die = add_die(DwarfTag::DW_TAG_member, 0x153);
     iface_member_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("state"));
-    iface_member_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x130));
+    iface_member_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<TypeAttributeValue>(0x130));
     interface_decl_die->addChild(iface_member_die);
 
     auto array_die = add_die(DwarfTag::DW_TAG_array_type, 0x154);

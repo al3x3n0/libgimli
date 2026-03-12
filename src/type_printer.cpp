@@ -355,16 +355,14 @@ std::string TypePrinter::formatStructure(const std::shared_ptr<DIE>& type_die,
             // Get member type
             auto member_type_attr = child->getAttribute(DwarfAttribute::DW_AT_type);
             std::string member_decl;
-            if (member_type_attr) {
-                auto ref = std::dynamic_pointer_cast<ReferenceAttributeValue>(member_type_attr);
-                if (ref) {
-                    auto member_type = die_lookup_(ref->getOffset());
-                    std::string member_name = child->getName();
-                    if (member_name.empty()) {
-                        member_name = "<anonymous>";
-                    }
-                    member_decl = formatTypeInternal(member_type, member_name);
+            uint64_t member_type_offset = getTypeOffset(member_type_attr);
+            if (member_type_offset != 0) {
+                auto member_type = die_lookup_(member_type_offset);
+                std::string member_name = child->getName();
+                if (member_name.empty()) {
+                    member_name = "<anonymous>";
                 }
+                member_decl = formatTypeInternal(member_type, member_name);
             }
             if (member_decl.empty()) {
                 member_decl = "void " + child->getName();
@@ -400,11 +398,10 @@ std::string TypePrinter::formatStructure(const std::shared_ptr<DIE>& type_die,
         } else if (child->getTag() == DwarfTag::DW_TAG_inheritance) {
             // Handle inheritance (base classes)
             auto base_type_attr = child->getAttribute(DwarfAttribute::DW_AT_type);
-            if (base_type_attr) {
-                auto ref = std::dynamic_pointer_cast<ReferenceAttributeValue>(base_type_attr);
-                if (ref) {
+            uint64_t base_type_offset = getTypeOffset(base_type_attr);
+            if (base_type_offset != 0) {
                     result += config_.indent + "/* inherits from: ";
-                    auto base_type = die_lookup_(ref->getOffset());
+                    auto base_type = die_lookup_(base_type_offset);
 
                     auto access_attr = child->getAttribute(DwarfAttribute::DW_AT_accessibility);
                     if (auto access = std::dynamic_pointer_cast<UnsignedAttributeValue>(access_attr)) {
@@ -435,7 +432,6 @@ std::string TypePrinter::formatStructure(const std::shared_ptr<DIE>& type_die,
                     }
 
                     result += " */\n";
-                }
             }
         }
     }
@@ -478,12 +474,10 @@ std::string TypePrinter::formatEnum(const std::shared_ptr<DIE>& enum_die,
 
     // Underlying type
     auto type_attr = enum_die->getAttribute(DwarfAttribute::DW_AT_type);
-    if (type_attr) {
-        auto ref = std::dynamic_pointer_cast<ReferenceAttributeValue>(type_attr);
-        if (ref) {
-            auto underlying_type = die_lookup_(ref->getOffset());
-            result += " : " + formatType(underlying_type);
-        }
+    uint64_t underlying_type_offset = getTypeOffset(type_attr);
+    if (underlying_type_offset != 0) {
+        auto underlying_type = die_lookup_(underlying_type_offset);
+        result += " : " + formatType(underlying_type);
     }
 
     if (!include_values) {
@@ -528,12 +522,12 @@ std::string TypePrinter::formatTypedef(const std::shared_ptr<DIE>& typedef_die) 
         return "typedef void " + alias_name;
     }
 
-    auto ref = std::dynamic_pointer_cast<ReferenceAttributeValue>(type_attr);
-    if (!ref) {
+    uint64_t underlying_type_offset = getTypeOffset(type_attr);
+    if (underlying_type_offset == 0) {
         return "typedef void " + alias_name;
     }
 
-    auto underlying_type = die_lookup_(ref->getOffset());
+    auto underlying_type = die_lookup_(underlying_type_offset);
     std::string underlying = formatType(underlying_type);
 
     return "typedef " + underlying + " " + alias_name;
@@ -1015,18 +1009,14 @@ std::string TypePrinter::formatSubroutineType(const std::shared_ptr<DIE>& die,
 
             params += formatFormalParameterPrefix(child);
             auto param_type_attr = child->getAttribute(DwarfAttribute::DW_AT_type);
-            if (param_type_attr) {
-                auto ref = std::dynamic_pointer_cast<ReferenceAttributeValue>(param_type_attr);
-                if (ref) {
-                    auto param_type = die_lookup_(ref->getOffset());
-                    std::string param_name = child->getName();
-                    if (config_.show_function_params && !param_name.empty()) {
-                        params += formatTypeInternal(param_type, param_name);
-                    } else {
-                        params += formatType(param_type);
-                    }
+            uint64_t param_type_offset = getTypeOffset(param_type_attr);
+            if (param_type_offset != 0) {
+                auto param_type = die_lookup_(param_type_offset);
+                std::string param_name = child->getName();
+                if (config_.show_function_params && !param_name.empty()) {
+                    params += formatTypeInternal(param_type, param_name);
                 } else {
-                    params += "void";
+                    params += formatType(param_type);
                 }
             } else {
                 params += "void";
@@ -1061,12 +1051,10 @@ std::string TypePrinter::formatPtrToMemberType(const std::shared_ptr<DIE>& die,
 
     auto containing_attr = die->getAttribute(DwarfAttribute::DW_AT_containing_type);
     std::string class_name = "";
-    if (containing_attr) {
-        auto ref = std::dynamic_pointer_cast<ReferenceAttributeValue>(containing_attr);
-        if (ref) {
-            auto class_die = die_lookup_(ref->getOffset());
-            class_name = class_die ? class_die->getName() : "";
-        }
+    uint64_t containing_offset = getTypeOffset(containing_attr);
+    if (containing_offset != 0) {
+        auto class_die = die_lookup_(containing_offset);
+        class_name = class_die ? class_die->getName() : "";
     }
 
     std::string member_str = formatType(member_type);
