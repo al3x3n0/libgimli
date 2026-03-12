@@ -100,6 +100,35 @@ std::string formatFormalParameterPrefix(const std::shared_ptr<DIE>& param_die) {
     return prefix;
 }
 
+std::string formatSubroutineMetadataSuffix(const std::shared_ptr<DIE>& die) {
+    if (!die) {
+        return "";
+    }
+
+    std::string suffix;
+
+    auto prototyped_attr = die->getAttribute(DwarfAttribute::DW_AT_prototyped);
+    if (auto flag = std::dynamic_pointer_cast<FlagAttributeValue>(prototyped_attr)) {
+        if (flag->getValue()) {
+            suffix += " [prototyped]";
+        }
+    }
+
+    auto calling_convention_attr = die->getAttribute(DwarfAttribute::DW_AT_calling_convention);
+    if (auto cc = std::dynamic_pointer_cast<UnsignedAttributeValue>(calling_convention_attr)) {
+        suffix += " [calling_convention=" + std::to_string(cc->getValue()) + "]";
+    }
+
+    auto declaration_attr = die->getAttribute(DwarfAttribute::DW_AT_declaration);
+    if (auto flag = std::dynamic_pointer_cast<FlagAttributeValue>(declaration_attr)) {
+        if (flag->getValue()) {
+            suffix += " [declaration]";
+        }
+    }
+
+    return suffix;
+}
+
 } // namespace
 
 // RecursionGuard implementation
@@ -258,6 +287,7 @@ std::string TypePrinter::formatFunction(const std::shared_ptr<DIE>& func_die) co
     }
 
     result += ")";
+    result += formatSubroutineMetadataSuffix(func_die);
     return result;
 }
 
@@ -1001,6 +1031,7 @@ std::string TypePrinter::formatSubroutineType(const std::shared_ptr<DIE>& die,
     }
 
     params += ")";
+    params += formatSubroutineMetadataSuffix(die);
 
     // Function pointer: return_type (*name)(params)
     if (var_name.empty()) {

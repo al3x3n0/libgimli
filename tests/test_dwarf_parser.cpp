@@ -16345,6 +16345,9 @@ void testTypePrinter() {
 
     auto func_die = add_die(DwarfTag::DW_TAG_subroutine_type, 0x148);
     func_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x100));
+    func_die->addAttribute(DwarfAttribute::DW_AT_prototyped, std::make_shared<FlagAttributeValue>(true));
+    func_die->addAttribute(DwarfAttribute::DW_AT_calling_convention, std::make_shared<UnsignedAttributeValue>(5));
+    func_die->addAttribute(DwarfAttribute::DW_AT_declaration, std::make_shared<FlagAttributeValue>(true));
     auto param_die = add_die(DwarfTag::DW_TAG_formal_parameter, 0x149);
     param_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x130));
     param_die->addAttribute(DwarfAttribute::DW_AT_object_pointer, std::make_shared<FlagAttributeValue>(true));
@@ -16485,9 +16488,11 @@ void testTypePrinter() {
     assert(printer.formatType(expr_stride_array_die) == "int[3] [byte_stride=24] [bit_stride=64]");
     assert(printer.formatType(expr_bound_array_die) == "int[-1..3]");
     assert(printer.formatTypedef(typedef_die) == "typedef const int* Alias");
-    assert(printer.formatType(func_die) == "int (*)(/* object_pointer, artificial */ Alias, ...)");
+    assert(printer.formatType(func_die) ==
+           "int (*)(/* object_pointer, artificial */ Alias, ...) [prototyped] [calling_convention=5] [declaration]");
     assert(printer.formatType(flag_variadic_func_die) == "int (*)(Alias, ...)");
-    assert(printer.formatFunction(func_die) == "int <anonymous>(/* object_pointer, artificial */ Alias, ...)");
+    assert(printer.formatFunction(func_die) ==
+           "int <anonymous>(/* object_pointer, artificial */ Alias, ...) [prototyped] [calling_convention=5] [declaration]");
 
     std::string struct_text = printer.formatStructure(struct_die, true);
     assert(struct_text.find("struct Widget") != std::string::npos);
