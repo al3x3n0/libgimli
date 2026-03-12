@@ -241,6 +241,43 @@ std::shared_ptr<Type> FunctionType::resolve() {
     return std::static_pointer_cast<Type>(shared_from_this());
 }
 
+// MemberPointerType implementation
+MemberPointerType::MemberPointerType(std::shared_ptr<Type> member_type,
+                                     std::shared_ptr<Type> containing_type,
+                                     uint64_t size)
+    : member_type_(std::move(member_type)),
+      containing_type_(std::move(containing_type)),
+      size_(size) {
+}
+
+std::string MemberPointerType::getName() const {
+    const std::string member_name = member_type_ ? member_type_->getName() : "void";
+    const std::string containing_name = containing_type_ ? containing_type_->getName() : "<unknown>";
+    return member_name + " " + containing_name + "::*";
+}
+
+uint64_t MemberPointerType::getSize() const {
+    return size_;
+}
+
+std::string MemberPointerType::getDescription() const {
+    std::stringstream ss;
+    ss << getName();
+    if (size_ != 0) {
+        ss << " (" << size_ << " bytes)";
+    }
+    return ss.str();
+}
+
+bool MemberPointerType::isComplete() const {
+    return member_type_ && containing_type_ &&
+           member_type_->isComplete() && containing_type_->isComplete();
+}
+
+std::shared_ptr<Type> MemberPointerType::resolve() {
+    return std::static_pointer_cast<Type>(shared_from_this());
+}
+
 // EnumType implementation
 EnumType::EnumType(const std::string& name, std::shared_ptr<Type> underlying_type)
     : name_(name), underlying_type_(underlying_type) {
@@ -328,6 +365,16 @@ std::shared_ptr<Type> TypeSystem::createAtomicType(std::shared_ptr<Type> value_t
     auto type = std::make_shared<ModifiedType>(ModifiedTypeKind::ATOMIC,
                                                std::move(value_type));
     type->setDwarfTag(DwarfTag::DW_TAG_atomic_type);
+    all_types_.push_back(type);
+    return type;
+}
+
+std::shared_ptr<Type> TypeSystem::createMemberPointerType(std::shared_ptr<Type> member_type,
+                                                          std::shared_ptr<Type> containing_type) {
+    auto type = std::make_shared<MemberPointerType>(std::move(member_type),
+                                                    std::move(containing_type),
+                                                    pointer_size_bytes_);
+    type->setDwarfTag(DwarfTag::DW_TAG_ptr_to_member_type);
     all_types_.push_back(type);
     return type;
 }
@@ -425,6 +472,9 @@ std::shared_ptr<Type> TypeSystem::resolveType(std::shared_ptr<DIE> die) {
             break;
         case DwarfTag::DW_TAG_pointer_type:
             type = resolvePointerType(die);
+            break;
+        case DwarfTag::DW_TAG_ptr_to_member_type:
+            type = resolveMemberPointerType(die);
             break;
         case DwarfTag::DW_TAG_reference_type:
             type = resolveModifiedType(die, ModifiedTypeKind::REFERENCE);
@@ -569,6 +619,22 @@ std::shared_ptr<Type> TypeSystem::resolvePointerType(std::shared_ptr<DIE> die) {
     } else {
         return createPrimitiveType(PrimitiveType::Kind::POINTER, size, name);
     }
+}
+
+std::shared_ptr<Type> TypeSystem::resolveMemberPointerType(std::shared_ptr<DIE> die) {
+    auto member_die = getTypeReference(die);
+    std::shared_ptr<Type> resolved_member = member_die ? resolveType(member_die) : nullptr;
+
+    std::shared_ptr<Type> resolved_containing;
+    auto containing_attr = die->getAttribute(DwarfAttribute::DW_AT_containing_type);
+    if (containing_attr && containing_attr->getType() == AttributeValueType::REFERENCE) {
+        auto ref = std::static_pointer_cast<ReferenceAttributeValue>(containing_attr);
+        if (die_lookup_) {
+            resolved_containing = resolveType(die_lookup_(ref->getOffset()));
+        }
+    }
+
+    return createMemberPointerType(resolved_member, resolved_containing);
 }
 
 std::shared_ptr<Type> TypeSystem::resolveArrayType(std::shared_ptr<DIE> die) {

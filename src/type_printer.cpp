@@ -428,6 +428,9 @@ std::string TypePrinter::formatTypeInternal(const std::shared_ptr<DIE>& type_die
         case DwarfTag::DW_TAG_pointer_type:
             return formatPointerType(type_die, var_name);
 
+        case DwarfTag::DW_TAG_ptr_to_member_type:
+            return formatPtrToMemberType(type_die, var_name);
+
         case DwarfTag::DW_TAG_reference_type:
             return formatReferenceType(type_die, var_name);
 
