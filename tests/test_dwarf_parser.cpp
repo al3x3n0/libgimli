@@ -15812,6 +15812,11 @@ void testTypeSystem() {
         auto unspecified_die = add_die(DwarfTag::DW_TAG_unspecified_type, 0x15);
         unspecified_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("decltype(auto)"));
 
+        auto string_die = add_die(DwarfTag::DW_TAG_string_type, 0x18);
+        string_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("utf8_string"));
+        string_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x10));
+        string_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(16));
+
         auto const_die = add_die(DwarfTag::DW_TAG_const_type, 0x20);
         const_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x10));
 
@@ -15887,6 +15892,13 @@ void testTypeSystem() {
         assert(resolved_unspecified->getKind() == PrimitiveType::Kind::VOID);
         assert(resolved_unspecified->getName() == "decltype(auto)");
         assert(resolved_unspecified->getSize() == 0);
+
+        auto resolved_string = std::dynamic_pointer_cast<StringType>(resolving_system.resolveType(string_die));
+        assert(resolved_string);
+        assert(resolved_string->getName() == "utf8_string");
+        assert(resolved_string->getSize() == 16);
+        assert(resolved_string->getCharacterType());
+        assert(resolved_string->getCharacterType()->getName() == "int");
 
         auto resolved_ref = std::dynamic_pointer_cast<ModifiedType>(resolving_system.resolveType(ref_die));
         assert(resolved_ref);
@@ -15965,6 +15977,11 @@ void testTypePrinter() {
     auto unspecified_die = add_die(DwarfTag::DW_TAG_unspecified_type, 0x105);
     unspecified_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("decltype(auto)"));
 
+    auto string_die = add_die(DwarfTag::DW_TAG_string_type, 0x108);
+    string_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("utf8_string"));
+    string_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x100));
+    string_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(16));
+
     auto const_die = add_die(DwarfTag::DW_TAG_const_type, 0x110);
     const_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x100));
 
@@ -16016,6 +16033,7 @@ void testTypePrinter() {
     assert(printer.formatType(ptr_die) == "const int*");
     assert(printer.formatType(typedef_die) == "Alias");
     assert(printer.formatType(unspecified_die) == "decltype(auto)");
+    assert(printer.formatType(string_die) == "utf8_string");
     assert(printer.formatType(rref_die) == "Alias&&");
     assert(printer.formatType(atomic_die) == "_Atomic(Alias)");
     assert(printer.formatType(interface_die) == "interface Runnable");

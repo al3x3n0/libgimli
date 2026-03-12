@@ -150,6 +150,8 @@ private:
                                   const std::string& var_name) const;
     std::string formatReferenceType(const std::shared_ptr<DIE>& die,
                                     const std::string& var_name) const;
+    std::string formatStringType(const std::shared_ptr<DIE>& die,
+                                 const std::string& var_name) const;
     std::string formatArrayType(const std::shared_ptr<DIE>& die,
                                const std::string& var_name) const;
     std::string formatConstType(const std::shared_ptr<DIE>& die,

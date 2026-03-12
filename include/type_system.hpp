@@ -174,6 +174,25 @@ private:
     std::vector<uint64_t> dimensions_;
 };
 
+class StringType : public Type {
+public:
+    StringType(const std::string& name,
+               std::shared_ptr<Type> character_type,
+               uint64_t size);
+    std::string getName() const override;
+    uint64_t getSize() const override;
+    std::string getDescription() const override;
+    bool isComplete() const override;
+    std::shared_ptr<Type> resolve() override;
+
+    std::shared_ptr<Type> getCharacterType() const { return character_type_; }
+
+private:
+    std::string name_;
+    std::shared_ptr<Type> character_type_;
+    uint64_t size_;
+};
+
 // Function types
 class FunctionType : public Type {
 public:
@@ -258,6 +277,9 @@ public:
     std::shared_ptr<Type> createAtomicType(std::shared_ptr<Type> value_type);
     std::shared_ptr<Type> createMemberPointerType(std::shared_ptr<Type> member_type,
                                                   std::shared_ptr<Type> containing_type);
+    std::shared_ptr<Type> createStringType(const std::string& name,
+                                           std::shared_ptr<Type> character_type,
+                                           uint64_t size);
     std::shared_ptr<Type> createArrayType(std::shared_ptr<Type> element_type, 
                                           const std::vector<uint64_t>& dimensions);
     std::shared_ptr<Type> createFunctionType(std::shared_ptr<Type> return_type,
@@ -296,6 +318,7 @@ private:
     std::shared_ptr<Type> resolvePrimitiveType(std::shared_ptr<DIE> die);
     std::shared_ptr<Type> resolvePointerType(std::shared_ptr<DIE> die);
     std::shared_ptr<Type> resolveMemberPointerType(std::shared_ptr<DIE> die);
+    std::shared_ptr<Type> resolveStringType(std::shared_ptr<DIE> die);
     std::shared_ptr<Type> resolveArrayType(std::shared_ptr<DIE> die);
     std::shared_ptr<Type> resolveCompositeType(std::shared_ptr<DIE> die);
     std::shared_ptr<Type> resolveEnumType(std::shared_ptr<DIE> die);

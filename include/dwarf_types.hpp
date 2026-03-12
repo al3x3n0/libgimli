@@ -47,6 +47,7 @@ enum class DwarfTag : uint16_t {
     DW_TAG_formal_parameter = 0x05,
     DW_TAG_base_type = 0x24,
     DW_TAG_unspecified_type = 0x3b,
+    DW_TAG_string_type = 0x12,
     DW_TAG_pointer_type = 0x0f,
     DW_TAG_ptr_to_member_type = 0x1f,
     DW_TAG_array_type = 0x01,
