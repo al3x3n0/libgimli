@@ -253,11 +253,13 @@ public:
     FunctionType(std::shared_ptr<Type> return_type, 
                  const std::vector<std::shared_ptr<Type>>& parameter_types,
                  bool is_variadic = false,
-                 bool is_prototyped = false);
+                 bool is_prototyped = false,
+                 uint64_t calling_convention = 0);
     FunctionType(std::shared_ptr<Type> return_type,
                  const std::vector<FunctionParameter>& parameters,
                  bool is_variadic = false,
-                 bool is_prototyped = false);
+                 bool is_prototyped = false,
+                 uint64_t calling_convention = 0);
     std::string getName() const override;
     uint64_t getSize() const override;
     std::string getDescription() const override;
@@ -269,6 +271,7 @@ public:
     const std::vector<FunctionParameter>& getParameters() const { return parameters_; }
     bool isVariadic() const { return is_variadic_; }
     bool isPrototyped() const { return is_prototyped_; }
+    uint64_t getCallingConvention() const { return calling_convention_; }
     
 private:
     std::shared_ptr<Type> return_type_;
@@ -276,6 +279,7 @@ private:
     std::vector<FunctionParameter> parameters_;
     bool is_variadic_;
     bool is_prototyped_;
+    uint64_t calling_convention_;
 };
 
 class MemberPointerType : public Type {
@@ -359,11 +363,13 @@ public:
     std::shared_ptr<Type> createFunctionType(std::shared_ptr<Type> return_type,
                                              const std::vector<std::shared_ptr<Type>>& parameter_types,
                                              bool is_variadic = false,
-                                             bool is_prototyped = false);
+                                             bool is_prototyped = false,
+                                             uint64_t calling_convention = 0);
     std::shared_ptr<Type> createFunctionType(std::shared_ptr<Type> return_type,
                                              const std::vector<FunctionParameter>& parameters,
                                              bool is_variadic = false,
-                                             bool is_prototyped = false);
+                                             bool is_prototyped = false,
+                                             uint64_t calling_convention = 0);
     std::shared_ptr<Type> createModifiedType(ModifiedTypeKind kind,
                                              std::shared_ptr<Type> underlying_type,
                                              uint64_t size = 0,
