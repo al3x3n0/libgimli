@@ -1343,27 +1343,16 @@ std::shared_ptr<DIE> TypeSystem::getTypeReference(std::shared_ptr<DIE> die) cons
 uint64_t TypeSystem::getSubrangeCount(std::shared_ptr<DIE> die) const {
     if (!die) return 1;
 
-    auto count_attr = die->getAttribute(DwarfAttribute::DW_AT_count);
-    if (count_attr && count_attr->getType() == AttributeValueType::UNSIGNED) {
-        return std::static_pointer_cast<UnsignedAttributeValue>(count_attr)->getValue();
+    if (auto decoded_count = decodeConstantOffsetAttribute(die->getAttribute(DwarfAttribute::DW_AT_count))) {
+        if (*decoded_count >= 0) {
+            return static_cast<uint64_t>(*decoded_count);
+        }
     }
 
-    int64_t lower = 0;
-    auto lower_attr = die->getAttribute(DwarfAttribute::DW_AT_lower_bound);
-    if (auto u = std::dynamic_pointer_cast<UnsignedAttributeValue>(lower_attr)) {
-        lower = static_cast<int64_t>(u->getValue());
-    } else if (auto s = std::dynamic_pointer_cast<SignedAttributeValue>(lower_attr)) {
-        lower = s->getValue();
-    }
+    int64_t lower = getSubrangeLowerBound(die);
 
-    auto upper_attr = die->getAttribute(DwarfAttribute::DW_AT_upper_bound);
-    if (auto u = std::dynamic_pointer_cast<UnsignedAttributeValue>(upper_attr)) {
-        int64_t upper = static_cast<int64_t>(u->getValue());
-        return upper >= lower ? static_cast<uint64_t>(upper - lower + 1) : 1;
-    }
-    if (auto s = std::dynamic_pointer_cast<SignedAttributeValue>(upper_attr)) {
-        int64_t upper = s->getValue();
-        return upper >= lower ? static_cast<uint64_t>(upper - lower + 1) : 1;
+    if (auto upper = decodeConstantOffsetAttribute(die->getAttribute(DwarfAttribute::DW_AT_upper_bound))) {
+        return *upper >= lower ? static_cast<uint64_t>(*upper - lower + 1) : 1;
     }
 
     return 1;
@@ -1372,12 +1361,8 @@ uint64_t TypeSystem::getSubrangeCount(std::shared_ptr<DIE> die) const {
 int64_t TypeSystem::getSubrangeLowerBound(std::shared_ptr<DIE> die) const {
     if (!die) return 0;
 
-    auto lower_attr = die->getAttribute(DwarfAttribute::DW_AT_lower_bound);
-    if (auto u = std::dynamic_pointer_cast<UnsignedAttributeValue>(lower_attr)) {
-        return static_cast<int64_t>(u->getValue());
-    }
-    if (auto s = std::dynamic_pointer_cast<SignedAttributeValue>(lower_attr)) {
-        return s->getValue();
+    if (auto lower = decodeConstantOffsetAttribute(die->getAttribute(DwarfAttribute::DW_AT_lower_bound))) {
+        return *lower;
     }
 
     return 0;

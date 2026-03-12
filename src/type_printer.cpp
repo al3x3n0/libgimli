@@ -1135,35 +1135,24 @@ std::vector<TypePrinter::PrintedArrayBound> TypePrinter::getArrayBounds(const st
     for (const auto& child : die->getChildren()) {
         if (child->getTag() == DwarfTag::DW_TAG_subrange_type) {
             int64_t lower = 0;
-            auto lower_attr = child->getAttribute(DwarfAttribute::DW_AT_lower_bound);
-            if (auto uint_val = std::dynamic_pointer_cast<UnsignedAttributeValue>(lower_attr)) {
-                lower = static_cast<int64_t>(uint_val->getValue());
-            } else if (auto int_val = std::dynamic_pointer_cast<SignedAttributeValue>(lower_attr)) {
-                lower = int_val->getValue();
+            if (auto decoded_lower = decodeConstantOffsetAttribute(
+                    child->getAttribute(DwarfAttribute::DW_AT_lower_bound))) {
+                lower = *decoded_lower;
             }
 
             // Try upper_bound first (0 to upper_bound inclusive = upper_bound+1 elements)
-            auto upper_attr = child->getAttribute(DwarfAttribute::DW_AT_upper_bound);
-            if (upper_attr) {
-                auto uint_val = std::dynamic_pointer_cast<UnsignedAttributeValue>(upper_attr);
-                auto int_val = std::dynamic_pointer_cast<SignedAttributeValue>(upper_attr);
-                if (uint_val) {
-                    int64_t upper = static_cast<int64_t>(uint_val->getValue());
-                    bounds.push_back({lower, upper >= lower ? static_cast<uint64_t>(upper - lower + 1) : 0});
-                } else if (int_val) {
-                    int64_t upper = int_val->getValue();
-                    bounds.push_back({lower, upper >= lower ? static_cast<uint64_t>(upper - lower + 1) : 0});
-                }
+            if (auto decoded_upper = decodeConstantOffsetAttribute(
+                    child->getAttribute(DwarfAttribute::DW_AT_upper_bound))) {
+                bounds.push_back({lower, *decoded_upper >= lower
+                                             ? static_cast<uint64_t>(*decoded_upper - lower + 1)
+                                             : 0});
                 continue;
             }
 
             // Try count
-            auto count_attr = child->getAttribute(DwarfAttribute::DW_AT_count);
-            if (count_attr) {
-                auto uint_val = std::dynamic_pointer_cast<UnsignedAttributeValue>(count_attr);
-                if (uint_val) {
-                    bounds.push_back({lower, uint_val->getValue()});
-                }
+            if (auto decoded_count = decodeConstantOffsetAttribute(
+                    child->getAttribute(DwarfAttribute::DW_AT_count))) {
+                bounds.push_back({lower, *decoded_count >= 0 ? static_cast<uint64_t>(*decoded_count) : 0});
                 continue;
             }
 
