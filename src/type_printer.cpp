@@ -229,6 +229,13 @@ std::string TypePrinter::formatStructure(const std::shared_ptr<DIE>& type_die,
                         std::ostringstream oss;
                         oss << " /* offset: " << uint_attr->getValue() << " */";
                         result += oss.str();
+                    } else {
+                        auto signed_attr = std::dynamic_pointer_cast<SignedAttributeValue>(loc_attr);
+                        if (signed_attr) {
+                            std::ostringstream oss;
+                            oss << " /* offset: " << signed_attr->getValue() << " */";
+                            result += oss.str();
+                        }
                     }
                 }
             }

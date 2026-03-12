@@ -939,8 +939,13 @@ std::shared_ptr<Type> TypeSystem::resolveCompositeType(std::shared_ptr<DIE> die)
             if (resolved_member_type) {
                 Member member{member_name, resolved_member_type, 0, 0, 0, false, false, false, false};
                 auto offset_attr = child->getAttribute(DwarfAttribute::DW_AT_data_member_location);
-                if (offset_attr && offset_attr->getType() == AttributeValueType::UNSIGNED) {
-                    member.offset = std::static_pointer_cast<UnsignedAttributeValue>(offset_attr)->getValue();
+                if (offset_attr) {
+                    if (offset_attr->getType() == AttributeValueType::UNSIGNED) {
+                        member.offset = std::static_pointer_cast<UnsignedAttributeValue>(offset_attr)->getValue();
+                    } else if (offset_attr->getType() == AttributeValueType::SIGNED) {
+                        member.offset = static_cast<uint64_t>(
+                            std::static_pointer_cast<SignedAttributeValue>(offset_attr)->getValue());
+                    }
                 }
 
                 auto bit_size_attr = child->getAttribute(DwarfAttribute::DW_AT_bit_size);
@@ -977,8 +982,13 @@ std::shared_ptr<Type> TypeSystem::resolveCompositeType(std::shared_ptr<DIE> die)
             if (base_composite) {
                 BaseClass base{base_composite, 0, false, false, false, false};
                 auto offset_attr = child->getAttribute(DwarfAttribute::DW_AT_data_member_location);
-                if (offset_attr && offset_attr->getType() == AttributeValueType::UNSIGNED) {
-                    base.offset = std::static_pointer_cast<UnsignedAttributeValue>(offset_attr)->getValue();
+                if (offset_attr) {
+                    if (offset_attr->getType() == AttributeValueType::UNSIGNED) {
+                        base.offset = std::static_pointer_cast<UnsignedAttributeValue>(offset_attr)->getValue();
+                    } else if (offset_attr->getType() == AttributeValueType::SIGNED) {
+                        base.offset = static_cast<uint64_t>(
+                            std::static_pointer_cast<SignedAttributeValue>(offset_attr)->getValue());
+                    }
                 }
                 auto virtuality_attr = child->getAttribute(DwarfAttribute::DW_AT_virtuality);
                 if (virtuality_attr && virtuality_attr->getType() == AttributeValueType::UNSIGNED) {
