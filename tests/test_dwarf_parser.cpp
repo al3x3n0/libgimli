@@ -15776,6 +15776,14 @@ void testTypeSystem() {
     auto func_type_ptr = std::dynamic_pointer_cast<FunctionType>(func_type);
     assert(func_type_ptr->getParameterTypes().size() == 1);
     assert(!func_type_ptr->isVariadic());
+
+    std::vector<FunctionParameter> named_params = {{"value", int_type}};
+    auto named_func_type = type_system.createFunctionType(int_type, named_params, true);
+    auto named_func_type_ptr = std::dynamic_pointer_cast<FunctionType>(named_func_type);
+    assert(named_func_type_ptr->getParameters().size() == 1);
+    assert(named_func_type_ptr->getParameters()[0].name == "value");
+    assert(named_func_type_ptr->getParameters()[0].type == int_type);
+    assert(named_func_type_ptr->isVariadic());
     
     // Test composite type creation
     auto struct_type = std::dynamic_pointer_cast<CompositeType>(
@@ -15903,6 +15911,7 @@ void testTypeSystem() {
         auto func_die = add_die(DwarfTag::DW_TAG_subroutine_type, 0x80);
         func_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x10));
         auto param_die = add_die(DwarfTag::DW_TAG_formal_parameter, 0x81);
+        param_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("value"));
         param_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x30));
         func_die->addChild(param_die);
         auto variadic_die = add_die(DwarfTag::DW_TAG_unspecified_parameters, 0x82);
@@ -15996,6 +16005,9 @@ void testTypeSystem() {
         assert(resolved_func->isVariadic());
         assert(resolved_func->getParameterTypes().size() == 1);
         assert(resolved_func->getParameterTypes()[0]->getName() == "MyInt");
+        assert(resolved_func->getParameters().size() == 1);
+        assert(resolved_func->getParameters()[0].name == "value");
+        assert(resolved_func->getParameters()[0].type->getName() == "MyInt");
     }
     
     std::cout << "TypeSystem tests passed!" << std::endl;

@@ -42,6 +42,11 @@ struct ArrayBound {
     uint64_t count;
 };
 
+struct FunctionParameter {
+    std::string name;
+    std::shared_ptr<Type> type;
+};
+
 enum class ModifiedTypeKind {
     TYPEDEF,
     CONST,
@@ -248,6 +253,9 @@ public:
     FunctionType(std::shared_ptr<Type> return_type, 
                  const std::vector<std::shared_ptr<Type>>& parameter_types,
                  bool is_variadic = false);
+    FunctionType(std::shared_ptr<Type> return_type,
+                 const std::vector<FunctionParameter>& parameters,
+                 bool is_variadic = false);
     std::string getName() const override;
     uint64_t getSize() const override;
     std::string getDescription() const override;
@@ -256,11 +264,13 @@ public:
     
     std::shared_ptr<Type> getReturnType() const { return return_type_; }
     const std::vector<std::shared_ptr<Type>>& getParameterTypes() const { return parameter_types_; }
+    const std::vector<FunctionParameter>& getParameters() const { return parameters_; }
     bool isVariadic() const { return is_variadic_; }
     
 private:
     std::shared_ptr<Type> return_type_;
     std::vector<std::shared_ptr<Type>> parameter_types_;
+    std::vector<FunctionParameter> parameters_;
     bool is_variadic_;
 };
 
@@ -342,6 +352,9 @@ public:
                                           const std::vector<ArrayBound>& bounds);
     std::shared_ptr<Type> createFunctionType(std::shared_ptr<Type> return_type,
                                              const std::vector<std::shared_ptr<Type>>& parameter_types,
+                                             bool is_variadic = false);
+    std::shared_ptr<Type> createFunctionType(std::shared_ptr<Type> return_type,
+                                             const std::vector<FunctionParameter>& parameters,
                                              bool is_variadic = false);
     std::shared_ptr<Type> createModifiedType(ModifiedTypeKind kind,
                                              std::shared_ptr<Type> underlying_type,
