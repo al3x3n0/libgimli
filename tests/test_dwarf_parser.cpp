@@ -15776,6 +15776,11 @@ void testTypeSystem() {
     assert(strided_array_type_ptr->getBitStride() == 128);
     assert(strided_array_type_ptr->getDescription().find("[byte_stride=16]") != std::string::npos);
     assert(strided_array_type_ptr->getDescription().find("[bit_stride=128]") != std::string::npos);
+
+    auto bounded_string_type = std::dynamic_pointer_cast<StringType>(
+        type_system.createStringType("CountedString", int_type, 16, 4));
+    assert(bounded_string_type->getLength() == 4);
+    assert(bounded_string_type->getDescription().find("[length=4]") != std::string::npos);
     
     // Test function type creation
     std::vector<std::shared_ptr<Type>> param_types = {int_type};
@@ -15868,6 +15873,7 @@ void testTypeSystem() {
         string_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("utf8_string"));
         string_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x10));
         string_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(16));
+        string_die->addAttribute(DwarfAttribute::DW_AT_string_length, std::make_shared<UnsignedAttributeValue>(4));
 
         auto set_die = add_die(DwarfTag::DW_TAG_set_type, 0x19);
         set_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("IntSet"));
@@ -16023,6 +16029,7 @@ void testTypeSystem() {
         assert(resolved_string);
         assert(resolved_string->getName() == "utf8_string");
         assert(resolved_string->getSize() == 16);
+        assert(resolved_string->getLength() == 4);
         assert(resolved_string->getCharacterType());
         assert(resolved_string->getCharacterType()->getName() == "int");
 

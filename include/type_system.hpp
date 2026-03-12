@@ -200,7 +200,8 @@ class StringType : public Type {
 public:
     StringType(const std::string& name,
                std::shared_ptr<Type> character_type,
-               uint64_t size);
+               uint64_t size,
+               uint64_t length = 0);
     std::string getName() const override;
     uint64_t getSize() const override;
     std::string getDescription() const override;
@@ -208,11 +209,13 @@ public:
     std::shared_ptr<Type> resolve() override;
 
     std::shared_ptr<Type> getCharacterType() const { return character_type_; }
+    uint64_t getLength() const { return length_; }
 
 private:
     std::string name_;
     std::shared_ptr<Type> character_type_;
     uint64_t size_;
+    uint64_t length_;
 };
 
 class SetType : public Type {
@@ -361,7 +364,8 @@ public:
                                                   std::shared_ptr<Type> containing_type);
     std::shared_ptr<Type> createStringType(const std::string& name,
                                            std::shared_ptr<Type> character_type,
-                                           uint64_t size);
+                                           uint64_t size,
+                                           uint64_t length = 0);
     std::shared_ptr<Type> createSetType(const std::string& name,
                                         std::shared_ptr<Type> element_type,
                                         uint64_t size);

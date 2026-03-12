@@ -289,8 +289,9 @@ uint64_t ArrayType::getElementCount() const {
 // StringType implementation
 StringType::StringType(const std::string& name,
                        std::shared_ptr<Type> character_type,
-                       uint64_t size)
-    : name_(name), character_type_(std::move(character_type)), size_(size) {
+                       uint64_t size,
+                       uint64_t length)
+    : name_(name), character_type_(std::move(character_type)), size_(size), length_(length) {
 }
 
 std::string StringType::getName() const {
@@ -318,6 +319,9 @@ std::string StringType::getDescription() const {
     ss << getName();
     if (size_ != 0) {
         ss << " (" << size_ << " bytes)";
+    }
+    if (length_ != 0) {
+        ss << " [length=" << length_ << "]";
     }
     return ss.str();
 }
@@ -639,8 +643,9 @@ std::shared_ptr<Type> TypeSystem::createMemberPointerType(std::shared_ptr<Type> 
 
 std::shared_ptr<Type> TypeSystem::createStringType(const std::string& name,
                                                    std::shared_ptr<Type> character_type,
-                                                   uint64_t size) {
-    auto type = std::make_shared<StringType>(name, std::move(character_type), size);
+                                                   uint64_t size,
+                                                   uint64_t length) {
+    auto type = std::make_shared<StringType>(name, std::move(character_type), size, length);
     type->setDwarfTag(DwarfTag::DW_TAG_string_type);
     all_types_.push_back(type);
     return type;
@@ -969,7 +974,12 @@ std::shared_ptr<Type> TypeSystem::resolveMemberPointerType(std::shared_ptr<DIE> 
 std::shared_ptr<Type> TypeSystem::resolveStringType(std::shared_ptr<DIE> die) {
     auto char_die = getTypeReference(die);
     std::shared_ptr<Type> resolved_char = char_die ? resolveType(char_die) : nullptr;
-    return createStringType(getTypeName(die), resolved_char, getTypeSize(die));
+    uint64_t length = 0;
+    auto length_attr = die->getAttribute(DwarfAttribute::DW_AT_string_length);
+    if (length_attr && length_attr->getType() == AttributeValueType::UNSIGNED) {
+        length = std::static_pointer_cast<UnsignedAttributeValue>(length_attr)->getValue();
+    }
+    return createStringType(getTypeName(die), resolved_char, getTypeSize(die), length);
 }
 
 std::shared_ptr<Type> TypeSystem::resolveSetType(std::shared_ptr<DIE> die) {
