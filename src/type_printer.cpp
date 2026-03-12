@@ -1011,7 +1011,12 @@ std::string TypePrinter::formatSubroutineType(const std::shared_ptr<DIE>& die,
                 auto ref = std::dynamic_pointer_cast<ReferenceAttributeValue>(param_type_attr);
                 if (ref) {
                     auto param_type = die_lookup_(ref->getOffset());
-                    params += formatType(param_type);
+                    std::string param_name = child->getName();
+                    if (config_.show_function_params && !param_name.empty()) {
+                        params += formatTypeInternal(param_type, param_name);
+                    } else {
+                        params += formatType(param_type);
+                    }
                 } else {
                     params += "void";
                 }

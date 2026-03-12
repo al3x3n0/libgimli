@@ -16349,6 +16349,7 @@ void testTypePrinter() {
     func_die->addAttribute(DwarfAttribute::DW_AT_calling_convention, std::make_shared<UnsignedAttributeValue>(5));
     func_die->addAttribute(DwarfAttribute::DW_AT_declaration, std::make_shared<FlagAttributeValue>(true));
     auto param_die = add_die(DwarfTag::DW_TAG_formal_parameter, 0x149);
+    param_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("self"));
     param_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x130));
     param_die->addAttribute(DwarfAttribute::DW_AT_object_pointer, std::make_shared<FlagAttributeValue>(true));
     param_die->addAttribute(DwarfAttribute::DW_AT_artificial, std::make_shared<FlagAttributeValue>(true));
@@ -16358,6 +16359,7 @@ void testTypePrinter() {
     auto flag_variadic_func_die = add_die(DwarfTag::DW_TAG_subroutine_type, 0x14b);
     flag_variadic_func_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x100));
     auto fixed_param_die = add_die(DwarfTag::DW_TAG_formal_parameter, 0x14c);
+    fixed_param_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("prefix"));
     fixed_param_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x130));
     flag_variadic_func_die->addChild(fixed_param_die);
     auto variable_param_die = add_die(DwarfTag::DW_TAG_formal_parameter, 0x14d);
@@ -16489,10 +16491,10 @@ void testTypePrinter() {
     assert(printer.formatType(expr_bound_array_die) == "int[-1..3]");
     assert(printer.formatTypedef(typedef_die) == "typedef const int* Alias");
     assert(printer.formatType(func_die) ==
-           "int (*)(/* object_pointer, artificial */ Alias, ...) [prototyped] [calling_convention=5] [declaration]");
-    assert(printer.formatType(flag_variadic_func_die) == "int (*)(Alias, ...)");
+           "int (*)(/* object_pointer, artificial */ Alias self, ...) [prototyped] [calling_convention=5] [declaration]");
+    assert(printer.formatType(flag_variadic_func_die) == "int (*)(Alias prefix, ...)");
     assert(printer.formatFunction(func_die) ==
-           "int <anonymous>(/* object_pointer, artificial */ Alias, ...) [prototyped] [calling_convention=5] [declaration]");
+           "int <anonymous>(/* object_pointer, artificial */ Alias self, ...) [prototyped] [calling_convention=5] [declaration]");
 
     std::string struct_text = printer.formatStructure(struct_die, true);
     assert(struct_text.find("struct Widget") != std::string::npos);
