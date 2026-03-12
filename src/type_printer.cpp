@@ -1,11 +1,71 @@
 #include "type_printer.hpp"
 #include "attribute_parser.hpp"
 #include "demangler.hpp"
+#include "dwarf_utils.hpp"
 
+#include <optional>
 #include <sstream>
 #include <iomanip>
 
 namespace dwarf {
+namespace {
+
+std::optional<int64_t> decodeConstantOffsetExpression(const std::vector<uint8_t>& expr) {
+    if (expr.empty()) {
+        return std::nullopt;
+    }
+
+    uint64_t offset = 0;
+    const auto* data = expr.data();
+    const size_t size = expr.size();
+    DwarfOp op = static_cast<DwarfOp>(data[offset++]);
+
+    switch (op) {
+        case DwarfOp::DW_OP_plus_uconst:
+        case DwarfOp::DW_OP_constu:
+            return static_cast<int64_t>(DwarfUtils::readULEB128(data, offset, size));
+        case DwarfOp::DW_OP_consts:
+            return DwarfUtils::readSLEB128(data, offset, size);
+        default:
+            break;
+    }
+
+    const uint8_t raw = static_cast<uint8_t>(op);
+    if (raw >= static_cast<uint8_t>(DwarfOp::DW_OP_lit0) &&
+        raw <= static_cast<uint8_t>(DwarfOp::DW_OP_lit31)) {
+        return static_cast<int64_t>(raw - static_cast<uint8_t>(DwarfOp::DW_OP_lit0));
+    }
+
+    return std::nullopt;
+}
+
+std::optional<int64_t> decodeConstantOffsetAttribute(const std::shared_ptr<AttributeValue>& attr) {
+    if (!attr) {
+        return std::nullopt;
+    }
+
+    if (auto u = std::dynamic_pointer_cast<UnsignedAttributeValue>(attr)) {
+        return static_cast<int64_t>(u->getValue());
+    }
+    if (auto s = std::dynamic_pointer_cast<SignedAttributeValue>(attr)) {
+        return s->getValue();
+    }
+    if (auto block = std::dynamic_pointer_cast<BlockAttributeValue>(attr)) {
+        return decodeConstantOffsetExpression(block->getData());
+    }
+    if (auto expr = std::dynamic_pointer_cast<ExpressionAttributeValue>(attr)) {
+        return decodeConstantOffsetExpression(expr->getExpression());
+    }
+    if (auto loc = std::dynamic_pointer_cast<LocationAttributeValue>(attr)) {
+        if (loc->getLocationType() == LocationAttributeValue::LocationType::EXPRESSION) {
+            return decodeConstantOffsetExpression(loc->getData());
+        }
+    }
+
+    return std::nullopt;
+}
+
+} // namespace
 
 // RecursionGuard implementation
 TypePrinter::RecursionGuard::RecursionGuard(const TypePrinter* printer, uint64_t offset)
@@ -222,21 +282,11 @@ std::string TypePrinter::formatStructure(const std::shared_ptr<DIE>& type_die,
 
             // Show offset if configured
             if (config_.show_offsets) {
-                auto loc_attr = child->getAttribute(DwarfAttribute::DW_AT_data_member_location);
-                if (loc_attr) {
-                    auto uint_attr = std::dynamic_pointer_cast<UnsignedAttributeValue>(loc_attr);
-                    if (uint_attr) {
-                        std::ostringstream oss;
-                        oss << " /* offset: " << uint_attr->getValue() << " */";
-                        result += oss.str();
-                    } else {
-                        auto signed_attr = std::dynamic_pointer_cast<SignedAttributeValue>(loc_attr);
-                        if (signed_attr) {
-                            std::ostringstream oss;
-                            oss << " /* offset: " << signed_attr->getValue() << " */";
-                            result += oss.str();
-                        }
-                    }
+                if (auto offset = decodeConstantOffsetAttribute(
+                        child->getAttribute(DwarfAttribute::DW_AT_data_member_location))) {
+                    std::ostringstream oss;
+                    oss << " /* offset: " << *offset << " */";
+                    result += oss.str();
                 }
             }
 

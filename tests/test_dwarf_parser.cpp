@@ -15924,6 +15924,16 @@ void testTypeSystem() {
         signed_member_die->addAttribute(DwarfAttribute::DW_AT_data_member_location, std::make_shared<SignedAttributeValue>(-4));
         struct_die->addChild(signed_member_die);
 
+        auto expr_member_die = add_die(DwarfTag::DW_TAG_member, 0x74);
+        expr_member_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("payload"));
+        expr_member_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x10));
+        expr_member_die->addAttribute(
+            DwarfAttribute::DW_AT_data_member_location,
+            std::make_shared<LocationAttributeValue>(
+                LocationAttributeValue::LocationType::EXPRESSION,
+                std::vector<uint8_t>{static_cast<uint8_t>(DwarfOp::DW_OP_plus_uconst), 0x0c}));
+        struct_die->addChild(expr_member_die);
+
         auto inherit_die = add_die(DwarfTag::DW_TAG_inheritance, 0x72);
         inherit_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x60));
         inherit_die->addAttribute(DwarfAttribute::DW_AT_data_member_location, std::make_shared<SignedAttributeValue>(-16));
@@ -16033,12 +16043,14 @@ void testTypeSystem() {
 
         auto resolved_struct = std::dynamic_pointer_cast<CompositeType>(resolving_system.resolveType(struct_die));
         assert(resolved_struct);
-        assert(resolved_struct->getMembers().size() == 2);
+        assert(resolved_struct->getMembers().size() == 3);
         assert(resolved_struct->getMembers()[0].bit_size == 3);
         assert(resolved_struct->getMembers()[0].bit_offset == 1);
         assert(resolved_struct->getMembers()[0].is_public);
         assert(resolved_struct->getMembers()[1].name == "tail");
         assert(static_cast<int64_t>(resolved_struct->getMembers()[1].offset) == -4);
+        assert(resolved_struct->getMembers()[2].name == "payload");
+        assert(resolved_struct->getMembers()[2].offset == 12);
         assert(resolved_struct->getBaseClasses().size() == 1);
         assert(resolved_struct->getBaseClasses()[0].is_virtual);
         assert(resolved_struct->getBaseClasses()[0].is_protected);
@@ -16161,6 +16173,15 @@ void testTypePrinter() {
     signed_member_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x130));
     signed_member_die->addAttribute(DwarfAttribute::DW_AT_data_member_location, std::make_shared<SignedAttributeValue>(-4));
     struct_die->addChild(signed_member_die);
+    auto expr_member_die = add_die(DwarfTag::DW_TAG_member, 0x1516);
+    expr_member_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("payload"));
+    expr_member_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x130));
+    expr_member_die->addAttribute(
+        DwarfAttribute::DW_AT_data_member_location,
+        std::make_shared<LocationAttributeValue>(
+            LocationAttributeValue::LocationType::EXPRESSION,
+            std::vector<uint8_t>{static_cast<uint8_t>(DwarfOp::DW_OP_plus_uconst), 0x0c}));
+    struct_die->addChild(expr_member_die);
 
     auto interface_decl_die = add_die(DwarfTag::DW_TAG_interface_type, 0x152);
     interface_decl_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("Runnable"));
@@ -16204,6 +16225,8 @@ void testTypePrinter() {
     assert(struct_text.find("offset: 8") != std::string::npos);
     assert(struct_text.find("Alias tail") != std::string::npos);
     assert(struct_text.find("offset: -4") != std::string::npos);
+    assert(struct_text.find("Alias payload") != std::string::npos);
+    assert(struct_text.find("offset: 12") != std::string::npos);
 
     std::string interface_text = printer.formatStructure(interface_decl_die, true);
     assert(interface_text.find("interface Runnable") != std::string::npos);

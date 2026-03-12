@@ -3,9 +3,68 @@
 #include "die_parser.hpp"
 #include "dwarf_utils.hpp"
 #include <iostream>
+#include <optional>
 #include <sstream>
 
 namespace dwarf {
+namespace {
+
+std::optional<int64_t> decodeConstantOffsetExpression(const std::vector<uint8_t>& expr) {
+    if (expr.empty()) {
+        return std::nullopt;
+    }
+
+    uint64_t offset = 0;
+    const auto* data = expr.data();
+    const size_t size = expr.size();
+    DwarfOp op = static_cast<DwarfOp>(data[offset++]);
+
+    switch (op) {
+        case DwarfOp::DW_OP_plus_uconst:
+        case DwarfOp::DW_OP_constu:
+            return static_cast<int64_t>(DwarfUtils::readULEB128(data, offset, size));
+        case DwarfOp::DW_OP_consts:
+            return DwarfUtils::readSLEB128(data, offset, size);
+        default:
+            break;
+    }
+
+    const uint8_t raw = static_cast<uint8_t>(op);
+    if (raw >= static_cast<uint8_t>(DwarfOp::DW_OP_lit0) &&
+        raw <= static_cast<uint8_t>(DwarfOp::DW_OP_lit31)) {
+        return static_cast<int64_t>(raw - static_cast<uint8_t>(DwarfOp::DW_OP_lit0));
+    }
+
+    return std::nullopt;
+}
+
+std::optional<int64_t> decodeConstantOffsetAttribute(const std::shared_ptr<AttributeValue>& attr) {
+    if (!attr) {
+        return std::nullopt;
+    }
+
+    if (auto u = std::dynamic_pointer_cast<UnsignedAttributeValue>(attr)) {
+        return static_cast<int64_t>(u->getValue());
+    }
+    if (auto s = std::dynamic_pointer_cast<SignedAttributeValue>(attr)) {
+        return s->getValue();
+    }
+    if (auto block = std::dynamic_pointer_cast<BlockAttributeValue>(attr)) {
+        return decodeConstantOffsetExpression(block->getData());
+    }
+    if (auto expr = std::dynamic_pointer_cast<ExpressionAttributeValue>(attr)) {
+        return decodeConstantOffsetExpression(expr->getExpression());
+    }
+    if (auto loc = std::dynamic_pointer_cast<LocationAttributeValue>(attr)) {
+        if (loc->getLocationType() == LocationAttributeValue::LocationType::EXPRESSION) {
+            return decodeConstantOffsetExpression(loc->getData());
+        }
+    }
+
+    return std::nullopt;
+}
+
+} // namespace
 
 // PrimitiveType implementation
 PrimitiveType::PrimitiveType(Kind kind, uint64_t size, const std::string& name)
@@ -938,14 +997,9 @@ std::shared_ptr<Type> TypeSystem::resolveCompositeType(std::shared_ptr<DIE> die)
             
             if (resolved_member_type) {
                 Member member{member_name, resolved_member_type, 0, 0, 0, false, false, false, false};
-                auto offset_attr = child->getAttribute(DwarfAttribute::DW_AT_data_member_location);
-                if (offset_attr) {
-                    if (offset_attr->getType() == AttributeValueType::UNSIGNED) {
-                        member.offset = std::static_pointer_cast<UnsignedAttributeValue>(offset_attr)->getValue();
-                    } else if (offset_attr->getType() == AttributeValueType::SIGNED) {
-                        member.offset = static_cast<uint64_t>(
-                            std::static_pointer_cast<SignedAttributeValue>(offset_attr)->getValue());
-                    }
+                if (auto offset = decodeConstantOffsetAttribute(
+                        child->getAttribute(DwarfAttribute::DW_AT_data_member_location))) {
+                    member.offset = static_cast<uint64_t>(*offset);
                 }
 
                 auto bit_size_attr = child->getAttribute(DwarfAttribute::DW_AT_bit_size);
@@ -981,14 +1035,9 @@ std::shared_ptr<Type> TypeSystem::resolveCompositeType(std::shared_ptr<DIE> die)
             auto base_composite = std::dynamic_pointer_cast<CompositeType>(base_type);
             if (base_composite) {
                 BaseClass base{base_composite, 0, false, false, false, false};
-                auto offset_attr = child->getAttribute(DwarfAttribute::DW_AT_data_member_location);
-                if (offset_attr) {
-                    if (offset_attr->getType() == AttributeValueType::UNSIGNED) {
-                        base.offset = std::static_pointer_cast<UnsignedAttributeValue>(offset_attr)->getValue();
-                    } else if (offset_attr->getType() == AttributeValueType::SIGNED) {
-                        base.offset = static_cast<uint64_t>(
-                            std::static_pointer_cast<SignedAttributeValue>(offset_attr)->getValue());
-                    }
+                if (auto offset = decodeConstantOffsetAttribute(
+                        child->getAttribute(DwarfAttribute::DW_AT_data_member_location))) {
+                    base.offset = static_cast<uint64_t>(*offset);
                 }
                 auto virtuality_attr = child->getAttribute(DwarfAttribute::DW_AT_virtuality);
                 if (virtuality_attr && virtuality_attr->getType() == AttributeValueType::UNSIGNED) {
