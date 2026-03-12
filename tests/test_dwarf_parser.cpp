@@ -15803,6 +15803,7 @@ void testTypeSystem() {
         type_system.createEnumType("Color", int_type));
     assert(enum_type->getName() == "Color");
     assert(enum_type->getSize() == 4);
+    assert(!enum_type->isScoped());
     
     enum_type->addEnumerator("RED", 0);
     enum_type->addEnumerator("GREEN", 1);
@@ -15813,6 +15814,11 @@ void testTypeSystem() {
     assert(enum_type->getEnumeratorName(1) == "GREEN");
     assert(enum_type->getEnumeratorName(2) == "BLUE");
     assert(enum_type->getEnumeratorName(-1) == "NEGATIVE");
+
+    auto scoped_enum_type = std::dynamic_pointer_cast<EnumType>(
+        type_system.createEnumType("ScopedColor", int_type, true));
+    assert(scoped_enum_type->isScoped());
+    assert(scoped_enum_type->getDescription().find("enum class ScopedColor") == 0);
 
     // Test DIE-driven type resolution preserves wrappers and richer metadata.
     {
@@ -15878,6 +15884,7 @@ void testTypeSystem() {
         auto enum_die = add_die(DwarfTag::DW_TAG_enumeration_type, 0x48);
         enum_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("SignedEnum"));
         enum_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x10));
+        enum_die->addAttribute(DwarfAttribute::DW_AT_enum_class, std::make_shared<FlagAttributeValue>(true));
         auto negative_enum_die = add_die(DwarfTag::DW_TAG_enumerator, 0x49);
         negative_enum_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("NEGATIVE"));
         negative_enum_die->addAttribute(DwarfAttribute::DW_AT_const_value, std::make_shared<SignedAttributeValue>(-7));
@@ -15990,6 +15997,7 @@ void testTypeSystem() {
         auto resolved_enum = std::dynamic_pointer_cast<EnumType>(resolving_system.resolveType(enum_die));
         assert(resolved_enum);
         assert(resolved_enum->getName() == "SignedEnum");
+        assert(resolved_enum->isScoped());
         assert(resolved_enum->getEnumerators().size() == 1);
         assert(resolved_enum->getEnumerators()[0].value == -7);
         assert(resolved_enum->getEnumeratorName(-7) == "NEGATIVE");

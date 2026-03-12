@@ -302,7 +302,7 @@ public:
         int64_t value;
     };
     
-    EnumType(const std::string& name, std::shared_ptr<Type> underlying_type);
+    EnumType(const std::string& name, std::shared_ptr<Type> underlying_type, bool is_scoped = false);
     std::string getName() const override;
     uint64_t getSize() const override;
     std::string getDescription() const override;
@@ -312,11 +312,13 @@ public:
     void addEnumerator(const std::string& name, int64_t value);
     const std::vector<Enumerator>& getEnumerators() const { return enumerators_; }
     std::shared_ptr<Type> getUnderlyingType() const { return underlying_type_; }
+    bool isScoped() const { return is_scoped_; }
     std::string getEnumeratorName(int64_t value) const;
     
 private:
     std::string name_;
     std::shared_ptr<Type> underlying_type_;
+    bool is_scoped_;
     std::vector<Enumerator> enumerators_;
 };
 
@@ -363,7 +365,8 @@ public:
     std::shared_ptr<Type> createCompositeType(CompositeType::Kind kind, const std::string& name,
                                               uint64_t size = 0);
     std::shared_ptr<Type> createEnumType(const std::string& name, 
-                                         std::shared_ptr<Type> underlying_type);
+                                         std::shared_ptr<Type> underlying_type,
+                                         bool is_scoped = false);
     
     // Type resolution
     std::shared_ptr<Type> resolveType(std::shared_ptr<DIE> die);

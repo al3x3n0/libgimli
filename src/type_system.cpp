@@ -435,8 +435,8 @@ std::shared_ptr<Type> MemberPointerType::resolve() {
 }
 
 // EnumType implementation
-EnumType::EnumType(const std::string& name, std::shared_ptr<Type> underlying_type)
-    : name_(name), underlying_type_(underlying_type) {
+EnumType::EnumType(const std::string& name, std::shared_ptr<Type> underlying_type, bool is_scoped)
+    : name_(name), underlying_type_(underlying_type), is_scoped_(is_scoped) {
 }
 
 std::string EnumType::getName() const {
@@ -449,6 +449,9 @@ uint64_t EnumType::getSize() const {
 
 std::string EnumType::getDescription() const {
     std::stringstream ss;
+    if (is_scoped_) {
+        ss << "enum class ";
+    }
     ss << name_ << " (" << getSize() << " bytes)";
     if (!enumerators_.empty()) {
         ss << " with " << enumerators_.size() << " values";
@@ -651,8 +654,9 @@ std::shared_ptr<Type> TypeSystem::createCompositeType(CompositeType::Kind kind, 
 }
 
 std::shared_ptr<Type> TypeSystem::createEnumType(const std::string& name, 
-                                                 std::shared_ptr<Type> underlying_type) {
-    auto type = std::make_shared<EnumType>(name, underlying_type);
+                                                 std::shared_ptr<Type> underlying_type,
+                                                 bool is_scoped) {
+    auto type = std::make_shared<EnumType>(name, underlying_type, is_scoped);
     type->setDwarfTag(DwarfTag::DW_TAG_enumeration_type);
     all_types_.push_back(type);
     return type;
@@ -1008,8 +1012,14 @@ std::shared_ptr<Type> TypeSystem::resolveEnumType(std::shared_ptr<DIE> die) {
         resolved_underlying = createPrimitiveType(PrimitiveType::Kind::INTEGER, size, "int");
     }
     
-    auto enum_type = std::make_shared<EnumType>(name, resolved_underlying);
-    all_types_.push_back(enum_type);
+    bool is_scoped = false;
+    auto enum_class_attr = die->getAttribute(DwarfAttribute::DW_AT_enum_class);
+    if (enum_class_attr && enum_class_attr->getType() == AttributeValueType::FLAG) {
+        is_scoped = std::static_pointer_cast<FlagAttributeValue>(enum_class_attr)->getValue();
+    }
+
+    auto enum_type = std::dynamic_pointer_cast<EnumType>(
+        createEnumType(name, resolved_underlying, is_scoped));
     
     // Parse enumerators
     for (const auto& child : die->getChildren()) {
