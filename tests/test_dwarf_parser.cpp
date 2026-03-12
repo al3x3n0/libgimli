@@ -15843,6 +15843,10 @@ void testTypeSystem() {
         base_struct_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("Base"));
         base_struct_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(4));
 
+        auto interface_die = add_die(DwarfTag::DW_TAG_interface_type, 0x68);
+        interface_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("Runnable"));
+        interface_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(8));
+
         auto struct_die = add_die(DwarfTag::DW_TAG_structure_type, 0x70);
         struct_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("Widget"));
         struct_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(16));
@@ -15914,6 +15918,11 @@ void testTypeSystem() {
         assert(resolved_array->getDimensions().size() == 1);
         assert(resolved_array->getDimensions()[0] == 5);
 
+        auto resolved_interface = std::dynamic_pointer_cast<CompositeType>(resolving_system.resolveType(interface_die));
+        assert(resolved_interface);
+        assert(resolved_interface->getKind() == CompositeType::Kind::INTERFACE);
+        assert(resolved_interface->getName() == "Runnable");
+
         auto resolved_struct = std::dynamic_pointer_cast<CompositeType>(resolving_system.resolveType(struct_die));
         assert(resolved_struct);
         assert(resolved_struct->getMembers().size() == 1);
@@ -15975,6 +15984,9 @@ void testTypePrinter() {
     auto class_die = add_die(DwarfTag::DW_TAG_class_type, 0x146);
     class_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("Widget"));
 
+    auto interface_die = add_die(DwarfTag::DW_TAG_interface_type, 0x1465);
+    interface_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("Runnable"));
+
     auto member_ptr_die = add_die(DwarfTag::DW_TAG_ptr_to_member_type, 0x147);
     member_ptr_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x130));
     member_ptr_die->addAttribute(DwarfAttribute::DW_AT_containing_type, std::make_shared<ReferenceAttributeValue>(0x146));
@@ -16006,6 +16018,7 @@ void testTypePrinter() {
     assert(printer.formatType(unspecified_die) == "decltype(auto)");
     assert(printer.formatType(rref_die) == "Alias&&");
     assert(printer.formatType(atomic_die) == "_Atomic(Alias)");
+    assert(printer.formatType(interface_die) == "interface Runnable");
     assert(printer.formatType(member_ptr_die) == "Alias Widget::*");
     assert(printer.formatTypedef(typedef_die) == "typedef const int* Alias");
     assert(printer.formatType(func_die) == "int (*)(Alias, ...)");

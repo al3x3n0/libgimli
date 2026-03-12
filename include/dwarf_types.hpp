@@ -62,6 +62,7 @@ enum class DwarfTag : uint16_t {
     DW_TAG_atomic_type = 0x47,
     DW_TAG_subrange_type = 0x21,
     DW_TAG_class_type = 0x02,
+    DW_TAG_interface_type = 0x38,
     DW_TAG_subroutine_type = 0x15,
     DW_TAG_enumerator = 0x4a,
     DW_TAG_member = 0x0d,

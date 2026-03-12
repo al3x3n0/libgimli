@@ -439,8 +439,10 @@ std::shared_ptr<Type> TypeSystem::createCompositeType(CompositeType::Kind kind, 
             type->setDwarfTag(DwarfTag::DW_TAG_union_type);
             break;
         case CompositeType::Kind::CLASS:
-        case CompositeType::Kind::INTERFACE:
             type->setDwarfTag(DwarfTag::DW_TAG_class_type);
+            break;
+        case CompositeType::Kind::INTERFACE:
+            type->setDwarfTag(DwarfTag::DW_TAG_interface_type);
             break;
     }
     all_types_.push_back(type);
@@ -494,6 +496,7 @@ std::shared_ptr<Type> TypeSystem::resolveType(std::shared_ptr<DIE> die) {
         case DwarfTag::DW_TAG_structure_type:
         case DwarfTag::DW_TAG_union_type:
         case DwarfTag::DW_TAG_class_type:
+        case DwarfTag::DW_TAG_interface_type:
             type = resolveCompositeType(die);
             break;
         case DwarfTag::DW_TAG_enumeration_type:
@@ -678,6 +681,8 @@ std::shared_ptr<Type> TypeSystem::resolveCompositeType(std::shared_ptr<DIE> die)
         kind = CompositeType::Kind::UNION;
     } else if (die->getTag() == DwarfTag::DW_TAG_class_type) {
         kind = CompositeType::Kind::CLASS;
+    } else if (die->getTag() == DwarfTag::DW_TAG_interface_type) {
+        kind = CompositeType::Kind::INTERFACE;
     }
     
     auto composite_type = std::make_shared<CompositeType>(kind, name, size);

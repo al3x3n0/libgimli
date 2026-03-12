@@ -488,6 +488,9 @@ std::string TypePrinter::formatTypeInternal(const std::shared_ptr<DIE>& type_die
         case DwarfTag::DW_TAG_class_type:
             return formatClassType(type_die) + (var_name.empty() ? "" : " " + var_name);
 
+        case DwarfTag::DW_TAG_interface_type:
+            return formatInterfaceType(type_die) + (var_name.empty() ? "" : " " + var_name);
+
         case DwarfTag::DW_TAG_enumeration_type:
             return formatEnumType(type_die) + (var_name.empty() ? "" : " " + var_name);
 
@@ -669,6 +672,14 @@ std::string TypePrinter::formatClassType(const std::shared_ptr<DIE>& die) const 
     }
     // For classes, just use the name without "class" prefix (C++ style)
     return name;
+}
+
+std::string TypePrinter::formatInterfaceType(const std::shared_ptr<DIE>& die) const {
+    std::string name = die->getName();
+    if (name.empty()) {
+        return "interface <anonymous>";
+    }
+    return "interface " + name;
 }
 
 std::string TypePrinter::formatEnumType(const std::shared_ptr<DIE>& die) const {

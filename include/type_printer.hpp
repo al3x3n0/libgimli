@@ -162,6 +162,7 @@ private:
     std::string formatStructType(const std::shared_ptr<DIE>& die) const;
     std::string formatUnionType(const std::shared_ptr<DIE>& die) const;
     std::string formatClassType(const std::shared_ptr<DIE>& die) const;
+    std::string formatInterfaceType(const std::shared_ptr<DIE>& die) const;
     std::string formatEnumType(const std::shared_ptr<DIE>& die) const;
     std::string formatSubroutineType(const std::shared_ptr<DIE>& die,
                                      const std::string& var_name) const;
