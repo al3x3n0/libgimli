@@ -16110,7 +16110,7 @@ void testTypePrinter() {
     assert(printer.formatType(atomic_die) == "_Atomic(Alias)");
     assert(printer.formatType(interface_die) == "interface Runnable");
     assert(printer.formatType(member_ptr_die) == "Alias Widget::*");
-    assert(printer.formatType(array_die) == "int[5]");
+    assert(printer.formatType(array_die) == "int[-2..2]");
     assert(printer.formatTypedef(typedef_die) == "typedef const int* Alias");
     assert(printer.formatType(func_die) == "int (*)(Alias, ...)");
 

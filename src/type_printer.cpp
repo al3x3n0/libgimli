@@ -654,8 +654,8 @@ std::string TypePrinter::formatArrayType(const std::shared_ptr<DIE>& die,
     auto element_type = getReferencedType(die);
     std::string element_str = formatType(element_type);
 
-    auto dimensions = getArrayDimensions(die);
-    std::string suffix = formatArraySuffix(dimensions);
+    auto bounds = getArrayBounds(die);
+    std::string suffix = formatArraySuffix(bounds);
 
     if (var_name.empty()) {
         return element_str + suffix;
@@ -944,8 +944,8 @@ std::string TypePrinter::getBaseTypeName(uint8_t encoding, uint64_t byte_size) c
     }
 }
 
-std::vector<uint64_t> TypePrinter::getArrayDimensions(const std::shared_ptr<DIE>& die) const {
-    std::vector<uint64_t> dimensions;
+std::vector<TypePrinter::PrintedArrayBound> TypePrinter::getArrayBounds(const std::shared_ptr<DIE>& die) const {
+    std::vector<PrintedArrayBound> bounds;
 
     for (const auto& child : die->getChildren()) {
         if (child->getTag() == DwarfTag::DW_TAG_subrange_type) {
@@ -964,10 +964,10 @@ std::vector<uint64_t> TypePrinter::getArrayDimensions(const std::shared_ptr<DIE>
                 auto int_val = std::dynamic_pointer_cast<SignedAttributeValue>(upper_attr);
                 if (uint_val) {
                     int64_t upper = static_cast<int64_t>(uint_val->getValue());
-                    dimensions.push_back(upper >= lower ? static_cast<uint64_t>(upper - lower + 1) : 0);
+                    bounds.push_back({lower, upper >= lower ? static_cast<uint64_t>(upper - lower + 1) : 0});
                 } else if (int_val) {
                     int64_t upper = int_val->getValue();
-                    dimensions.push_back(upper >= lower ? static_cast<uint64_t>(upper - lower + 1) : 0);
+                    bounds.push_back({lower, upper >= lower ? static_cast<uint64_t>(upper - lower + 1) : 0});
                 }
                 continue;
             }
@@ -977,27 +977,34 @@ std::vector<uint64_t> TypePrinter::getArrayDimensions(const std::shared_ptr<DIE>
             if (count_attr) {
                 auto uint_val = std::dynamic_pointer_cast<UnsignedAttributeValue>(count_attr);
                 if (uint_val) {
-                    dimensions.push_back(uint_val->getValue());
+                    bounds.push_back({lower, uint_val->getValue()});
                 }
                 continue;
             }
 
             // Unknown size (VLA)
-            dimensions.push_back(0);
+            bounds.push_back({lower, 0});
         }
     }
 
-    return dimensions;
+    return bounds;
 }
 
-std::string TypePrinter::formatArraySuffix(const std::vector<uint64_t>& dimensions) const {
+std::string TypePrinter::formatArraySuffix(const std::vector<PrintedArrayBound>& bounds) const {
     std::string suffix;
-    for (uint64_t dim : dimensions) {
-        if (dim == 0) {
+    for (const auto& bound : bounds) {
+        if (bound.count == 0) {
             suffix += "[]";
-        } else {
-            suffix += "[" + std::to_string(dim) + "]";
+            continue;
         }
+
+        if (bound.lower_bound == 0) {
+            suffix += "[" + std::to_string(bound.count) + "]";
+            continue;
+        }
+
+        int64_t upper = bound.lower_bound + static_cast<int64_t>(bound.count) - 1;
+        suffix += "[" + std::to_string(bound.lower_bound) + ".." + std::to_string(upper) + "]";
     }
     return suffix;
 }

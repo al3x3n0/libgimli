@@ -135,6 +135,11 @@ public:
     const TypePrinterConfig& getConfig() const { return config_; }
 
 private:
+    struct PrintedArrayBound {
+        int64_t lower_bound;
+        uint64_t count;
+    };
+
     DIELookup die_lookup_;
     TypePrinterConfig config_;
     mutable int recursion_depth_ = 0;
@@ -179,8 +184,8 @@ private:
     std::shared_ptr<DIE> getReferencedType(const std::shared_ptr<DIE>& die) const;
     std::string getTypeName(const std::shared_ptr<DIE>& die) const;
     std::string getBaseTypeName(uint8_t encoding, uint64_t byte_size) const;
-    std::vector<uint64_t> getArrayDimensions(const std::shared_ptr<DIE>& die) const;
-    std::string formatArraySuffix(const std::vector<uint64_t>& dimensions) const;
+    std::vector<PrintedArrayBound> getArrayBounds(const std::shared_ptr<DIE>& die) const;
+    std::string formatArraySuffix(const std::vector<PrintedArrayBound>& bounds) const;
 
     // Recursion guard
     class RecursionGuard {
