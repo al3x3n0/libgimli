@@ -16173,6 +16173,7 @@ void testTypePrinter() {
     string_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("utf8_string"));
     string_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x100));
     string_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(16));
+    string_die->addAttribute(DwarfAttribute::DW_AT_string_length, std::make_shared<UnsignedAttributeValue>(4));
 
     auto set_die = add_die(DwarfTag::DW_TAG_set_type, 0x109);
     set_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("IntSet"));
@@ -16300,7 +16301,7 @@ void testTypePrinter() {
     assert(printer.formatType(ptr_die) == "const int*");
     assert(printer.formatType(typedef_die) == "Alias");
     assert(printer.formatType(unspecified_die) == "decltype(auto)");
-    assert(printer.formatType(string_die) == "utf8_string");
+    assert(printer.formatType(string_die) == "utf8_string [length=4]");
     assert(printer.formatType(set_die) == "IntSet");
     assert(printer.formatType(file_die) == "IntFile");
     assert(printer.formatType(rref_die) == "Alias&&");

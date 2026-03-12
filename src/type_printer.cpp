@@ -743,6 +743,12 @@ std::string TypePrinter::formatStringType(const std::shared_ptr<DIE>& die,
             name = "string";
         }
     }
+
+    auto length_attr = die->getAttribute(DwarfAttribute::DW_AT_string_length);
+    if (auto length = std::dynamic_pointer_cast<UnsignedAttributeValue>(length_attr)) {
+        name += " [length=" + std::to_string(length->getValue()) + "]";
+    }
+
     return var_name.empty() ? name : name + " " + var_name;
 }
 
