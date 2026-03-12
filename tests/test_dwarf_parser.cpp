@@ -15769,7 +15769,7 @@ void testTypeSystem() {
     
     // Test function type creation
     std::vector<std::shared_ptr<Type>> param_types = {int_type};
-    auto func_type = type_system.createFunctionType(int_type, param_types, false, false, 0);
+    auto func_type = type_system.createFunctionType(int_type, param_types, false, false, 0, false);
     assert(func_type->getName() == "int(int)");
     // Note: These methods don't exist on the base Type class
     // We need to cast to FunctionType to access them
@@ -15778,9 +15778,10 @@ void testTypeSystem() {
     assert(!func_type_ptr->isVariadic());
     assert(!func_type_ptr->isPrototyped());
     assert(func_type_ptr->getCallingConvention() == 0);
+    assert(!func_type_ptr->isDeclaration());
 
     std::vector<FunctionParameter> named_params = {{"value", int_type, true, true}};
-    auto named_func_type = type_system.createFunctionType(int_type, named_params, true, true, 2);
+    auto named_func_type = type_system.createFunctionType(int_type, named_params, true, true, 2, true);
     auto named_func_type_ptr = std::dynamic_pointer_cast<FunctionType>(named_func_type);
     assert(named_func_type_ptr->getParameters().size() == 1);
     assert(named_func_type_ptr->getParameters()[0].name == "value");
@@ -15790,8 +15791,10 @@ void testTypeSystem() {
     assert(named_func_type_ptr->isVariadic());
     assert(named_func_type_ptr->isPrototyped());
     assert(named_func_type_ptr->getCallingConvention() == 2);
+    assert(named_func_type_ptr->isDeclaration());
     assert(named_func_type_ptr->getDescription().find("[prototyped]") != std::string::npos);
     assert(named_func_type_ptr->getDescription().find("[calling_convention=2]") != std::string::npos);
+    assert(named_func_type_ptr->getDescription().find("[declaration]") != std::string::npos);
     
     // Test composite type creation
     auto struct_type = std::dynamic_pointer_cast<CompositeType>(
@@ -15971,6 +15974,7 @@ void testTypeSystem() {
         func_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x10));
         func_die->addAttribute(DwarfAttribute::DW_AT_prototyped, std::make_shared<FlagAttributeValue>(true));
         func_die->addAttribute(DwarfAttribute::DW_AT_calling_convention, std::make_shared<UnsignedAttributeValue>(5));
+        func_die->addAttribute(DwarfAttribute::DW_AT_declaration, std::make_shared<FlagAttributeValue>(true));
         auto param_die = add_die(DwarfTag::DW_TAG_formal_parameter, 0x81);
         param_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("value"));
         param_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x30));
@@ -16097,6 +16101,7 @@ void testTypeSystem() {
         assert(resolved_func->isVariadic());
         assert(resolved_func->isPrototyped());
         assert(resolved_func->getCallingConvention() == 5);
+        assert(resolved_func->isDeclaration());
         assert(resolved_func->getParameterTypes().size() == 1);
         assert(resolved_func->getParameterTypes()[0]->getName() == "MyInt");
         assert(resolved_func->getParameters().size() == 1);
@@ -16111,6 +16116,7 @@ void testTypeSystem() {
         assert(resolved_flag_variadic_func->isVariadic());
         assert(!resolved_flag_variadic_func->isPrototyped());
         assert(resolved_flag_variadic_func->getCallingConvention() == 0);
+        assert(!resolved_flag_variadic_func->isDeclaration());
         assert(resolved_flag_variadic_func->getParameters().size() == 1);
         assert(resolved_flag_variadic_func->getParameters()[0].name == "prefix");
         assert(!resolved_flag_variadic_func->getParameters()[0].is_object_pointer);
