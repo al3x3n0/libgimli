@@ -16127,6 +16127,11 @@ void testTypePrinter() {
     member_ptr_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x130));
     member_ptr_die->addAttribute(DwarfAttribute::DW_AT_containing_type, std::make_shared<ReferenceAttributeValue>(0x146));
 
+    auto enum_die = add_die(DwarfTag::DW_TAG_enumeration_type, 0x1475);
+    enum_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("ScopedColor"));
+    enum_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x100));
+    enum_die->addAttribute(DwarfAttribute::DW_AT_enum_class, std::make_shared<FlagAttributeValue>(true));
+
     auto func_die = add_die(DwarfTag::DW_TAG_subroutine_type, 0x148);
     func_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x100));
     auto param_die = add_die(DwarfTag::DW_TAG_formal_parameter, 0x149);
@@ -16187,6 +16192,7 @@ void testTypePrinter() {
     assert(printer.formatType(atomic_die) == "_Atomic(Alias)");
     assert(printer.formatType(interface_die) == "interface Runnable");
     assert(printer.formatType(member_ptr_die) == "Alias Widget::*");
+    assert(printer.formatType(enum_die) == "enum class ScopedColor");
     assert(printer.formatType(array_die) == "int[-2..2]");
     assert(printer.formatTypedef(typedef_die) == "typedef const int* Alias");
     assert(printer.formatType(func_die) == "int (*)(Alias, ...)");

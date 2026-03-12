@@ -764,11 +764,24 @@ std::string TypePrinter::formatInterfaceType(const std::shared_ptr<DIE>& die) co
 }
 
 std::string TypePrinter::formatEnumType(const std::shared_ptr<DIE>& die) const {
-    std::string name = die->getName();
-    if (name.empty()) {
+    if (!die || die->getTag() != DwarfTag::DW_TAG_enumeration_type) {
         return "enum <anonymous>";
     }
-    return "enum " + name;
+
+    bool is_scoped = false;
+    auto enum_class_attr = die->getAttribute(DwarfAttribute::DW_AT_enum_class);
+    if (enum_class_attr) {
+        auto flag = std::dynamic_pointer_cast<FlagAttributeValue>(enum_class_attr);
+        if (flag && flag->getValue()) {
+            is_scoped = true;
+        }
+    }
+
+    std::string name = die->getName();
+    if (name.empty()) {
+        return is_scoped ? "enum class <anonymous>" : "enum <anonymous>";
+    }
+    return (is_scoped ? "enum class " : "enum ") + name;
 }
 
 std::string TypePrinter::formatSubroutineType(const std::shared_ptr<DIE>& die,
