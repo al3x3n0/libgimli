@@ -436,6 +436,9 @@ std::string TypePrinter::formatTypeInternal(const std::shared_ptr<DIE>& type_die
         case DwarfTag::DW_TAG_string_type:
             return formatStringType(type_die, var_name);
 
+        case DwarfTag::DW_TAG_set_type:
+            return formatSetType(type_die, var_name);
+
         case DwarfTag::DW_TAG_pointer_type:
             return formatPointerType(type_die, var_name);
 
@@ -595,6 +598,20 @@ std::string TypePrinter::formatStringType(const std::shared_ptr<DIE>& die,
             name = ss.str();
         } else {
             name = "string";
+        }
+    }
+    return var_name.empty() ? name : name + " " + var_name;
+}
+
+std::string TypePrinter::formatSetType(const std::shared_ptr<DIE>& die,
+                                       const std::string& var_name) const {
+    std::string name = die->getName();
+    if (name.empty()) {
+        auto element_type = getReferencedType(die);
+        if (element_type) {
+            name = "set<" + formatType(element_type) + ">";
+        } else {
+            name = "set";
         }
     }
     return var_name.empty() ? name : name + " " + var_name;

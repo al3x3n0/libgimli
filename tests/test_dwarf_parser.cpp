@@ -15817,6 +15817,11 @@ void testTypeSystem() {
         string_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x10));
         string_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(16));
 
+        auto set_die = add_die(DwarfTag::DW_TAG_set_type, 0x19);
+        set_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("IntSet"));
+        set_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x10));
+        set_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(32));
+
         auto const_die = add_die(DwarfTag::DW_TAG_const_type, 0x20);
         const_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x10));
 
@@ -15900,6 +15905,13 @@ void testTypeSystem() {
         assert(resolved_string->getCharacterType());
         assert(resolved_string->getCharacterType()->getName() == "int");
 
+        auto resolved_set = std::dynamic_pointer_cast<SetType>(resolving_system.resolveType(set_die));
+        assert(resolved_set);
+        assert(resolved_set->getName() == "IntSet");
+        assert(resolved_set->getSize() == 32);
+        assert(resolved_set->getElementType());
+        assert(resolved_set->getElementType()->getName() == "int");
+
         auto resolved_ref = std::dynamic_pointer_cast<ModifiedType>(resolving_system.resolveType(ref_die));
         assert(resolved_ref);
         assert(resolved_ref->getKind() == ModifiedTypeKind::REFERENCE);
@@ -15982,6 +15994,11 @@ void testTypePrinter() {
     string_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x100));
     string_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(16));
 
+    auto set_die = add_die(DwarfTag::DW_TAG_set_type, 0x109);
+    set_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("IntSet"));
+    set_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x100));
+    set_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(32));
+
     auto const_die = add_die(DwarfTag::DW_TAG_const_type, 0x110);
     const_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x100));
 
@@ -16034,6 +16051,7 @@ void testTypePrinter() {
     assert(printer.formatType(typedef_die) == "Alias");
     assert(printer.formatType(unspecified_die) == "decltype(auto)");
     assert(printer.formatType(string_die) == "utf8_string");
+    assert(printer.formatType(set_die) == "IntSet");
     assert(printer.formatType(rref_die) == "Alias&&");
     assert(printer.formatType(atomic_die) == "_Atomic(Alias)");
     assert(printer.formatType(interface_die) == "interface Runnable");

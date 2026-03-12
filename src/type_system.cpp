@@ -247,6 +247,44 @@ std::shared_ptr<Type> StringType::resolve() {
     return std::static_pointer_cast<Type>(shared_from_this());
 }
 
+// SetType implementation
+SetType::SetType(const std::string& name,
+                 std::shared_ptr<Type> element_type,
+                 uint64_t size)
+    : name_(name), element_type_(std::move(element_type)), size_(size) {
+}
+
+std::string SetType::getName() const {
+    if (!name_.empty()) {
+        return name_;
+    }
+    if (element_type_) {
+        return "set<" + element_type_->getName() + ">";
+    }
+    return "set";
+}
+
+uint64_t SetType::getSize() const {
+    return size_;
+}
+
+std::string SetType::getDescription() const {
+    std::stringstream ss;
+    ss << getName();
+    if (size_ != 0) {
+        ss << " (" << size_ << " bytes)";
+    }
+    return ss.str();
+}
+
+bool SetType::isComplete() const {
+    return true;
+}
+
+std::shared_ptr<Type> SetType::resolve() {
+    return std::static_pointer_cast<Type>(shared_from_this());
+}
+
 // FunctionType implementation
 FunctionType::FunctionType(std::shared_ptr<Type> return_type, 
                            const std::vector<std::shared_ptr<Type>>& parameter_types,
@@ -432,6 +470,15 @@ std::shared_ptr<Type> TypeSystem::createStringType(const std::string& name,
     return type;
 }
 
+std::shared_ptr<Type> TypeSystem::createSetType(const std::string& name,
+                                                std::shared_ptr<Type> element_type,
+                                                uint64_t size) {
+    auto type = std::make_shared<SetType>(name, std::move(element_type), size);
+    type->setDwarfTag(DwarfTag::DW_TAG_set_type);
+    all_types_.push_back(type);
+    return type;
+}
+
 std::shared_ptr<Type> TypeSystem::createArrayType(std::shared_ptr<Type> element_type, 
                                                   const std::vector<uint64_t>& dimensions) {
     auto type = std::make_shared<ArrayType>(element_type, dimensions);
@@ -530,6 +577,9 @@ std::shared_ptr<Type> TypeSystem::resolveType(std::shared_ptr<DIE> die) {
             break;
         case DwarfTag::DW_TAG_string_type:
             type = resolveStringType(die);
+            break;
+        case DwarfTag::DW_TAG_set_type:
+            type = resolveSetType(die);
             break;
         case DwarfTag::DW_TAG_pointer_type:
             type = resolvePointerType(die);
@@ -703,6 +753,12 @@ std::shared_ptr<Type> TypeSystem::resolveStringType(std::shared_ptr<DIE> die) {
     auto char_die = getTypeReference(die);
     std::shared_ptr<Type> resolved_char = char_die ? resolveType(char_die) : nullptr;
     return createStringType(getTypeName(die), resolved_char, getTypeSize(die));
+}
+
+std::shared_ptr<Type> TypeSystem::resolveSetType(std::shared_ptr<DIE> die) {
+    auto element_die = getTypeReference(die);
+    std::shared_ptr<Type> resolved_element = element_die ? resolveType(element_die) : nullptr;
+    return createSetType(getTypeName(die), resolved_element, getTypeSize(die));
 }
 
 std::shared_ptr<Type> TypeSystem::resolveArrayType(std::shared_ptr<DIE> die) {
