@@ -463,15 +463,9 @@ std::string TypePrinter::formatEnum(const std::shared_ptr<DIE>& enum_die,
             }
             result += enum_name;
 
-            auto const_value = child->getAttribute(DwarfAttribute::DW_AT_const_value);
-            if (const_value) {
-                auto uint_val = std::dynamic_pointer_cast<UnsignedAttributeValue>(const_value);
-                auto int_val = std::dynamic_pointer_cast<SignedAttributeValue>(const_value);
-                if (uint_val) {
-                    result += " = " + std::to_string(uint_val->getValue());
-                } else if (int_val) {
-                    result += " = " + std::to_string(int_val->getValue());
-                }
+            if (auto value = decodeConstantOffsetAttribute(
+                    child->getAttribute(DwarfAttribute::DW_AT_const_value))) {
+                result += " = " + std::to_string(*value);
             }
             result += ",\n";
         }

@@ -15943,6 +15943,14 @@ void testTypeSystem() {
         negative_enum_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("NEGATIVE"));
         negative_enum_die->addAttribute(DwarfAttribute::DW_AT_const_value, std::make_shared<SignedAttributeValue>(-7));
         enum_die->addChild(negative_enum_die);
+        auto expr_enum_die = add_die(DwarfTag::DW_TAG_enumerator, 0x4a);
+        expr_enum_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("POSITIVE"));
+        expr_enum_die->addAttribute(
+            DwarfAttribute::DW_AT_const_value,
+            std::make_shared<LocationAttributeValue>(
+                LocationAttributeValue::LocationType::EXPRESSION,
+                std::vector<uint8_t>{static_cast<uint8_t>(DwarfOp::DW_OP_plus_uconst), 0x05}));
+        enum_die->addChild(expr_enum_die);
 
         auto elem_die = add_die(DwarfTag::DW_TAG_array_type, 0x50);
         elem_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x10));
@@ -16151,9 +16159,11 @@ void testTypeSystem() {
         assert(resolved_enum);
         assert(resolved_enum->getName() == "SignedEnum");
         assert(resolved_enum->isScoped());
-        assert(resolved_enum->getEnumerators().size() == 1);
+        assert(resolved_enum->getEnumerators().size() == 2);
         assert(resolved_enum->getEnumerators()[0].value == -7);
         assert(resolved_enum->getEnumeratorName(-7) == "NEGATIVE");
+        assert(resolved_enum->getEnumerators()[1].value == 5);
+        assert(resolved_enum->getEnumeratorName(5) == "POSITIVE");
 
         auto resolved_array = std::dynamic_pointer_cast<ArrayType>(resolving_system.resolveType(elem_die));
         assert(resolved_array);
@@ -16320,6 +16330,18 @@ void testTypePrinter() {
     enum_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("ScopedColor"));
     enum_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x100));
     enum_die->addAttribute(DwarfAttribute::DW_AT_enum_class, std::make_shared<FlagAttributeValue>(true));
+    auto negative_enum_value_die = add_die(DwarfTag::DW_TAG_enumerator, 0x1476);
+    negative_enum_value_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("NEGATIVE"));
+    negative_enum_value_die->addAttribute(DwarfAttribute::DW_AT_const_value, std::make_shared<SignedAttributeValue>(-7));
+    enum_die->addChild(negative_enum_value_die);
+    auto expr_enum_value_die = add_die(DwarfTag::DW_TAG_enumerator, 0x1477);
+    expr_enum_value_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("POSITIVE"));
+    expr_enum_value_die->addAttribute(
+        DwarfAttribute::DW_AT_const_value,
+        std::make_shared<LocationAttributeValue>(
+            LocationAttributeValue::LocationType::EXPRESSION,
+            std::vector<uint8_t>{static_cast<uint8_t>(DwarfOp::DW_OP_plus_uconst), 0x05}));
+    enum_die->addChild(expr_enum_value_die);
 
     auto func_die = add_die(DwarfTag::DW_TAG_subroutine_type, 0x148);
     func_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x100));
@@ -16456,6 +16478,9 @@ void testTypePrinter() {
     assert(printer.formatType(interface_die) == "interface Runnable");
     assert(printer.formatType(member_ptr_die) == "Alias Widget::*");
     assert(printer.formatType(enum_die) == "enum class ScopedColor");
+    std::string enum_text = printer.formatEnum(enum_die, true);
+    assert(enum_text.find("NEGATIVE = -7") != std::string::npos);
+    assert(enum_text.find("POSITIVE = 5") != std::string::npos);
     assert(printer.formatType(array_die) == "int[-2..2] [byte_stride=16] [bit_stride=128]");
     assert(printer.formatType(expr_stride_array_die) == "int[3] [byte_stride=24] [bit_stride=64]");
     assert(printer.formatType(expr_bound_array_die) == "int[-1..3]");
