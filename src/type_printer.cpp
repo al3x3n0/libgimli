@@ -808,14 +808,18 @@ std::string TypePrinter::formatArrayType(const std::shared_ptr<DIE>& die,
         result = element_str + " " + var_name + suffix;
     }
 
-    auto byte_stride_attr = die->getAttribute(DwarfAttribute::DW_AT_byte_stride);
-    if (auto byte_stride = std::dynamic_pointer_cast<UnsignedAttributeValue>(byte_stride_attr)) {
-        result += " [byte_stride=" + std::to_string(byte_stride->getValue()) + "]";
+    if (auto byte_stride = decodeConstantOffsetAttribute(
+            die->getAttribute(DwarfAttribute::DW_AT_byte_stride))) {
+        if (*byte_stride >= 0) {
+            result += " [byte_stride=" + std::to_string(*byte_stride) + "]";
+        }
     }
 
-    auto bit_stride_attr = die->getAttribute(DwarfAttribute::DW_AT_bit_stride);
-    if (auto bit_stride = std::dynamic_pointer_cast<UnsignedAttributeValue>(bit_stride_attr)) {
-        result += " [bit_stride=" + std::to_string(bit_stride->getValue()) + "]";
+    if (auto bit_stride = decodeConstantOffsetAttribute(
+            die->getAttribute(DwarfAttribute::DW_AT_bit_stride))) {
+        if (*bit_stride >= 0) {
+            result += " [bit_stride=" + std::to_string(*bit_stride) + "]";
+        }
     }
 
     return result;

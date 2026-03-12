@@ -15953,6 +15953,22 @@ void testTypeSystem() {
         subrange->addAttribute(DwarfAttribute::DW_AT_upper_bound, std::make_shared<SignedAttributeValue>(2));
         elem_die->addChild(subrange);
 
+        auto expr_stride_array_die = add_die(DwarfTag::DW_TAG_array_type, 0x52);
+        expr_stride_array_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x10));
+        expr_stride_array_die->addAttribute(
+            DwarfAttribute::DW_AT_byte_stride,
+            std::make_shared<LocationAttributeValue>(
+                LocationAttributeValue::LocationType::EXPRESSION,
+                std::vector<uint8_t>{static_cast<uint8_t>(DwarfOp::DW_OP_plus_uconst), 0x18}));
+        expr_stride_array_die->addAttribute(
+            DwarfAttribute::DW_AT_bit_stride,
+            std::make_shared<LocationAttributeValue>(
+                LocationAttributeValue::LocationType::EXPRESSION,
+                std::vector<uint8_t>{static_cast<uint8_t>(DwarfOp::DW_OP_constu), 0x40}));
+        auto expr_stride_subrange = add_die(DwarfTag::DW_TAG_subrange_type, 0x53);
+        expr_stride_subrange->addAttribute(DwarfAttribute::DW_AT_count, std::make_shared<UnsignedAttributeValue>(3));
+        expr_stride_array_die->addChild(expr_stride_subrange);
+
         auto base_struct_die = add_die(DwarfTag::DW_TAG_structure_type, 0x60);
         base_struct_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("Base"));
         base_struct_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(4));
@@ -16133,6 +16149,13 @@ void testTypeSystem() {
         assert(resolved_array->getBounds()[0].count == 5);
         assert(resolved_array->getByteStride() == 16);
         assert(resolved_array->getBitStride() == 128);
+
+        auto resolved_expr_stride_array = std::dynamic_pointer_cast<ArrayType>(resolving_system.resolveType(expr_stride_array_die));
+        assert(resolved_expr_stride_array);
+        assert(resolved_expr_stride_array->getDimensions().size() == 1);
+        assert(resolved_expr_stride_array->getDimensions()[0] == 3);
+        assert(resolved_expr_stride_array->getByteStride() == 24);
+        assert(resolved_expr_stride_array->getBitStride() == 64);
 
         auto resolved_interface = std::dynamic_pointer_cast<CompositeType>(resolving_system.resolveType(interface_die));
         assert(resolved_interface);
@@ -16351,6 +16374,22 @@ void testTypePrinter() {
     array_subrange_die->addAttribute(DwarfAttribute::DW_AT_upper_bound, std::make_shared<SignedAttributeValue>(2));
     array_die->addChild(array_subrange_die);
 
+    auto expr_stride_array_die = add_die(DwarfTag::DW_TAG_array_type, 0x156);
+    expr_stride_array_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x100));
+    expr_stride_array_die->addAttribute(
+        DwarfAttribute::DW_AT_byte_stride,
+        std::make_shared<LocationAttributeValue>(
+            LocationAttributeValue::LocationType::EXPRESSION,
+            std::vector<uint8_t>{static_cast<uint8_t>(DwarfOp::DW_OP_plus_uconst), 0x18}));
+    expr_stride_array_die->addAttribute(
+        DwarfAttribute::DW_AT_bit_stride,
+        std::make_shared<LocationAttributeValue>(
+            LocationAttributeValue::LocationType::EXPRESSION,
+            std::vector<uint8_t>{static_cast<uint8_t>(DwarfOp::DW_OP_constu), 0x40}));
+    auto expr_stride_array_subrange_die = add_die(DwarfTag::DW_TAG_subrange_type, 0x157);
+    expr_stride_array_subrange_die->addAttribute(DwarfAttribute::DW_AT_count, std::make_shared<UnsignedAttributeValue>(3));
+    expr_stride_array_die->addChild(expr_stride_array_subrange_die);
+
     TypePrinterConfig cfg;
     cfg.pointer_size_bytes = 8;
     cfg.show_offsets = true;
@@ -16371,6 +16410,7 @@ void testTypePrinter() {
     assert(printer.formatType(member_ptr_die) == "Alias Widget::*");
     assert(printer.formatType(enum_die) == "enum class ScopedColor");
     assert(printer.formatType(array_die) == "int[-2..2] [byte_stride=16] [bit_stride=128]");
+    assert(printer.formatType(expr_stride_array_die) == "int[3] [byte_stride=24] [bit_stride=64]");
     assert(printer.formatTypedef(typedef_die) == "typedef const int* Alias");
     assert(printer.formatType(func_die) == "int (*)(/* object_pointer, artificial */ Alias, ...)");
     assert(printer.formatType(flag_variadic_func_die) == "int (*)(Alias, ...)");

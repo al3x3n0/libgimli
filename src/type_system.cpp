@@ -1054,14 +1054,18 @@ std::shared_ptr<Type> TypeSystem::resolveArrayType(std::shared_ptr<DIE> die) {
         uint64_t byte_stride = 0;
         uint64_t bit_stride = 0;
 
-        auto byte_stride_attr = die->getAttribute(DwarfAttribute::DW_AT_byte_stride);
-        if (byte_stride_attr && byte_stride_attr->getType() == AttributeValueType::UNSIGNED) {
-            byte_stride = std::static_pointer_cast<UnsignedAttributeValue>(byte_stride_attr)->getValue();
+        if (auto decoded_byte_stride =
+                decodeConstantOffsetAttribute(die->getAttribute(DwarfAttribute::DW_AT_byte_stride))) {
+            if (*decoded_byte_stride >= 0) {
+                byte_stride = static_cast<uint64_t>(*decoded_byte_stride);
+            }
         }
 
-        auto bit_stride_attr = die->getAttribute(DwarfAttribute::DW_AT_bit_stride);
-        if (bit_stride_attr && bit_stride_attr->getType() == AttributeValueType::UNSIGNED) {
-            bit_stride = std::static_pointer_cast<UnsignedAttributeValue>(bit_stride_attr)->getValue();
+        if (auto decoded_bit_stride =
+                decodeConstantOffsetAttribute(die->getAttribute(DwarfAttribute::DW_AT_bit_stride))) {
+            if (*decoded_bit_stride >= 0) {
+                bit_stride = static_cast<uint64_t>(*decoded_bit_stride);
+            }
         }
 
         for (const auto& child : die->getChildren()) {
