@@ -15766,6 +15766,16 @@ void testTypeSystem() {
     // Note: getElementCount() method doesn't exist, using dimensions instead
     auto array_type_ptr = std::dynamic_pointer_cast<ArrayType>(int_array_type);
     assert(array_type_ptr->getDimensions().size() == 2);
+    assert(array_type_ptr->getByteStride() == 0);
+    assert(array_type_ptr->getBitStride() == 0);
+
+    std::vector<ArrayBound> strided_bounds = {{1, 4}};
+    auto strided_array_type = type_system.createArrayType(int_type, strided_bounds, 16, 128);
+    auto strided_array_type_ptr = std::dynamic_pointer_cast<ArrayType>(strided_array_type);
+    assert(strided_array_type_ptr->getByteStride() == 16);
+    assert(strided_array_type_ptr->getBitStride() == 128);
+    assert(strided_array_type_ptr->getDescription().find("[byte_stride=16]") != std::string::npos);
+    assert(strided_array_type_ptr->getDescription().find("[bit_stride=128]") != std::string::npos);
     
     // Test function type creation
     std::vector<std::shared_ptr<Type>> param_types = {int_type};
@@ -15903,6 +15913,8 @@ void testTypeSystem() {
 
         auto elem_die = add_die(DwarfTag::DW_TAG_array_type, 0x50);
         elem_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x10));
+        elem_die->addAttribute(DwarfAttribute::DW_AT_byte_stride, std::make_shared<UnsignedAttributeValue>(16));
+        elem_die->addAttribute(DwarfAttribute::DW_AT_bit_stride, std::make_shared<UnsignedAttributeValue>(128));
         auto subrange = add_die(DwarfTag::DW_TAG_subrange_type, 0x51);
         subrange->addAttribute(DwarfAttribute::DW_AT_lower_bound, std::make_shared<SignedAttributeValue>(-2));
         subrange->addAttribute(DwarfAttribute::DW_AT_upper_bound, std::make_shared<SignedAttributeValue>(2));
@@ -16069,6 +16081,8 @@ void testTypeSystem() {
         assert(resolved_array->getBounds().size() == 1);
         assert(resolved_array->getBounds()[0].lower_bound == -2);
         assert(resolved_array->getBounds()[0].count == 5);
+        assert(resolved_array->getByteStride() == 16);
+        assert(resolved_array->getBitStride() == 128);
 
         auto resolved_interface = std::dynamic_pointer_cast<CompositeType>(resolving_system.resolveType(interface_die));
         assert(resolved_interface);

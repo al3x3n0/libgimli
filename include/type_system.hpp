@@ -171,7 +171,10 @@ private:
 class ArrayType : public Type {
 public:
     ArrayType(std::shared_ptr<Type> element_type, const std::vector<uint64_t>& dimensions);
-    ArrayType(std::shared_ptr<Type> element_type, const std::vector<ArrayBound>& bounds);
+    ArrayType(std::shared_ptr<Type> element_type,
+              const std::vector<ArrayBound>& bounds,
+              uint64_t byte_stride = 0,
+              uint64_t bit_stride = 0);
     std::string getName() const override;
     uint64_t getSize() const override;
     std::string getDescription() const override;
@@ -181,12 +184,16 @@ public:
     std::shared_ptr<Type> getElementType() const { return element_type_; }
     const std::vector<uint64_t>& getDimensions() const { return dimensions_; }
     const std::vector<ArrayBound>& getBounds() const { return bounds_; }
+    uint64_t getByteStride() const { return byte_stride_; }
+    uint64_t getBitStride() const { return bit_stride_; }
     uint64_t getElementCount() const;
     
 private:
     std::shared_ptr<Type> element_type_;
     std::vector<uint64_t> dimensions_;
     std::vector<ArrayBound> bounds_;
+    uint64_t byte_stride_;
+    uint64_t bit_stride_;
 };
 
 class StringType : public Type {
@@ -365,7 +372,9 @@ public:
     std::shared_ptr<Type> createArrayType(std::shared_ptr<Type> element_type, 
                                           const std::vector<uint64_t>& dimensions);
     std::shared_ptr<Type> createArrayType(std::shared_ptr<Type> element_type,
-                                          const std::vector<ArrayBound>& bounds);
+                                          const std::vector<ArrayBound>& bounds,
+                                          uint64_t byte_stride = 0,
+                                          uint64_t bit_stride = 0);
     std::shared_ptr<Type> createFunctionType(std::shared_ptr<Type> return_type,
                                              const std::vector<std::shared_ptr<Type>>& parameter_types,
                                              bool is_variadic = false,
