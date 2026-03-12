@@ -65,6 +65,41 @@ std::optional<int64_t> decodeConstantOffsetAttribute(const std::shared_ptr<Attri
     return std::nullopt;
 }
 
+std::string formatFormalParameterPrefix(const std::shared_ptr<DIE>& param_die) {
+    if (!param_die) {
+        return "";
+    }
+
+    bool is_object_pointer = false;
+    auto object_pointer_attr = param_die->getAttribute(DwarfAttribute::DW_AT_object_pointer);
+    if (auto flag = std::dynamic_pointer_cast<FlagAttributeValue>(object_pointer_attr)) {
+        is_object_pointer = flag->getValue();
+    }
+
+    bool is_artificial = false;
+    auto artificial_attr = param_die->getAttribute(DwarfAttribute::DW_AT_artificial);
+    if (auto flag = std::dynamic_pointer_cast<FlagAttributeValue>(artificial_attr)) {
+        is_artificial = flag->getValue();
+    }
+
+    if (!is_object_pointer && !is_artificial) {
+        return "";
+    }
+
+    std::string prefix = "/* ";
+    if (is_object_pointer) {
+        prefix += "object_pointer";
+    }
+    if (is_object_pointer && is_artificial) {
+        prefix += ", ";
+    }
+    if (is_artificial) {
+        prefix += "artificial";
+    }
+    prefix += " */ ";
+    return prefix;
+}
+
 } // namespace
 
 // RecursionGuard implementation
@@ -197,6 +232,7 @@ std::string TypePrinter::formatFunction(const std::shared_ptr<DIE>& func_die) co
             first = false;
 
             std::string param_name = child->getName();
+            result += formatFormalParameterPrefix(child);
             auto param_type_attr = child->getAttribute(DwarfAttribute::DW_AT_type);
             uint64_t param_type_offset = getTypeOffset(param_type_attr);
             if (param_type_offset != 0) {
@@ -906,6 +942,7 @@ std::string TypePrinter::formatSubroutineType(const std::shared_ptr<DIE>& die,
             }
             first = false;
 
+            params += formatFormalParameterPrefix(child);
             auto param_type_attr = child->getAttribute(DwarfAttribute::DW_AT_type);
             if (param_type_attr) {
                 auto ref = std::dynamic_pointer_cast<ReferenceAttributeValue>(param_type_attr);

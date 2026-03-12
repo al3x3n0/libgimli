@@ -16192,6 +16192,8 @@ void testTypePrinter() {
     func_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x100));
     auto param_die = add_die(DwarfTag::DW_TAG_formal_parameter, 0x149);
     param_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x130));
+    param_die->addAttribute(DwarfAttribute::DW_AT_object_pointer, std::make_shared<FlagAttributeValue>(true));
+    param_die->addAttribute(DwarfAttribute::DW_AT_artificial, std::make_shared<FlagAttributeValue>(true));
     func_die->addChild(param_die);
     func_die->addChild(add_die(DwarfTag::DW_TAG_unspecified_parameters, 0x14a));
 
@@ -16279,8 +16281,9 @@ void testTypePrinter() {
     assert(printer.formatType(enum_die) == "enum class ScopedColor");
     assert(printer.formatType(array_die) == "int[-2..2]");
     assert(printer.formatTypedef(typedef_die) == "typedef const int* Alias");
-    assert(printer.formatType(func_die) == "int (*)(Alias, ...)");
+    assert(printer.formatType(func_die) == "int (*)(/* object_pointer, artificial */ Alias, ...)");
     assert(printer.formatType(flag_variadic_func_die) == "int (*)(Alias, ...)");
+    assert(printer.formatFunction(func_die) == "int <anonymous>(/* object_pointer, artificial */ Alias, ...)");
 
     std::string struct_text = printer.formatStructure(struct_die, true);
     assert(struct_text.find("struct Widget") != std::string::npos);
