@@ -15934,6 +15934,16 @@ void testTypeSystem() {
                 std::vector<uint8_t>{static_cast<uint8_t>(DwarfOp::DW_OP_plus_uconst), 0x0c}));
         struct_die->addChild(expr_member_die);
 
+        auto expr_inherit_die = add_die(DwarfTag::DW_TAG_inheritance, 0x75);
+        expr_inherit_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x60));
+        expr_inherit_die->addAttribute(
+            DwarfAttribute::DW_AT_data_member_location,
+            std::make_shared<LocationAttributeValue>(
+                LocationAttributeValue::LocationType::EXPRESSION,
+                std::vector<uint8_t>{static_cast<uint8_t>(DwarfOp::DW_OP_consts), 0x78}));
+        expr_inherit_die->addAttribute(DwarfAttribute::DW_AT_accessibility, std::make_shared<UnsignedAttributeValue>(1));
+        struct_die->addChild(expr_inherit_die);
+
         auto inherit_die = add_die(DwarfTag::DW_TAG_inheritance, 0x72);
         inherit_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x60));
         inherit_die->addAttribute(DwarfAttribute::DW_AT_data_member_location, std::make_shared<SignedAttributeValue>(-16));
@@ -16051,10 +16061,13 @@ void testTypeSystem() {
         assert(static_cast<int64_t>(resolved_struct->getMembers()[1].offset) == -4);
         assert(resolved_struct->getMembers()[2].name == "payload");
         assert(resolved_struct->getMembers()[2].offset == 12);
-        assert(resolved_struct->getBaseClasses().size() == 1);
-        assert(resolved_struct->getBaseClasses()[0].is_virtual);
-        assert(resolved_struct->getBaseClasses()[0].is_protected);
-        assert(static_cast<int64_t>(resolved_struct->getBaseClasses()[0].offset) == -16);
+        assert(resolved_struct->getBaseClasses().size() == 2);
+        assert(resolved_struct->getBaseClasses()[0].is_public);
+        assert(!resolved_struct->getBaseClasses()[0].is_virtual);
+        assert(static_cast<int64_t>(resolved_struct->getBaseClasses()[0].offset) == -8);
+        assert(resolved_struct->getBaseClasses()[1].is_virtual);
+        assert(resolved_struct->getBaseClasses()[1].is_protected);
+        assert(static_cast<int64_t>(resolved_struct->getBaseClasses()[1].offset) == -16);
 
         auto resolved_func = std::dynamic_pointer_cast<FunctionType>(resolving_system.resolveType(func_die));
         assert(resolved_func);
