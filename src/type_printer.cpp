@@ -180,6 +180,8 @@ std::string TypePrinter::formatStructure(const std::shared_ptr<DIE>& type_die,
         result = "union ";
     } else if (tag == DwarfTag::DW_TAG_class_type) {
         result = "class ";
+    } else if (tag == DwarfTag::DW_TAG_interface_type) {
+        result = "interface ";
     } else {
         return "";
     }

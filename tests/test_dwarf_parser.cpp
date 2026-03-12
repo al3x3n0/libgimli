@@ -16053,6 +16053,13 @@ void testTypePrinter() {
     member_die->addAttribute(DwarfAttribute::DW_AT_data_member_location, std::make_shared<UnsignedAttributeValue>(8));
     struct_die->addChild(member_die);
 
+    auto interface_decl_die = add_die(DwarfTag::DW_TAG_interface_type, 0x152);
+    interface_decl_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("Runnable"));
+    auto iface_member_die = add_die(DwarfTag::DW_TAG_member, 0x153);
+    iface_member_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("state"));
+    iface_member_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x130));
+    interface_decl_die->addChild(iface_member_die);
+
     TypePrinterConfig cfg;
     cfg.pointer_size_bytes = 8;
     cfg.show_offsets = true;
@@ -16075,6 +16082,10 @@ void testTypePrinter() {
     assert(struct_text.find("struct Widget") != std::string::npos);
     assert(struct_text.find("Alias value") != std::string::npos);
     assert(struct_text.find("offset: 8") != std::string::npos);
+
+    std::string interface_text = printer.formatStructure(interface_decl_die, true);
+    assert(interface_text.find("interface Runnable") != std::string::npos);
+    assert(interface_text.find("Alias state") != std::string::npos);
 
     std::cout << "TypePrinter tests passed!" << std::endl;
 }
