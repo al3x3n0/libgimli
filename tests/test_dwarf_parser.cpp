@@ -16277,6 +16277,8 @@ void testTypePrinter() {
 
     auto array_die = add_die(DwarfTag::DW_TAG_array_type, 0x154);
     array_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x100));
+    array_die->addAttribute(DwarfAttribute::DW_AT_byte_stride, std::make_shared<UnsignedAttributeValue>(16));
+    array_die->addAttribute(DwarfAttribute::DW_AT_bit_stride, std::make_shared<UnsignedAttributeValue>(128));
     auto array_subrange_die = add_die(DwarfTag::DW_TAG_subrange_type, 0x155);
     array_subrange_die->addAttribute(DwarfAttribute::DW_AT_lower_bound, std::make_shared<SignedAttributeValue>(-2));
     array_subrange_die->addAttribute(DwarfAttribute::DW_AT_upper_bound, std::make_shared<SignedAttributeValue>(2));
@@ -16299,7 +16301,7 @@ void testTypePrinter() {
     assert(printer.formatType(interface_die) == "interface Runnable");
     assert(printer.formatType(member_ptr_die) == "Alias Widget::*");
     assert(printer.formatType(enum_die) == "enum class ScopedColor");
-    assert(printer.formatType(array_die) == "int[-2..2]");
+    assert(printer.formatType(array_die) == "int[-2..2] [byte_stride=16] [bit_stride=128]");
     assert(printer.formatTypedef(typedef_die) == "typedef const int* Alias");
     assert(printer.formatType(func_die) == "int (*)(/* object_pointer, artificial */ Alias, ...)");
     assert(printer.formatType(flag_variadic_func_die) == "int (*)(Alias, ...)");

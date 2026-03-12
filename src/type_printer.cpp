@@ -795,10 +795,24 @@ std::string TypePrinter::formatArrayType(const std::shared_ptr<DIE>& die,
     auto bounds = getArrayBounds(die);
     std::string suffix = formatArraySuffix(bounds);
 
+    std::string result;
     if (var_name.empty()) {
-        return element_str + suffix;
+        result = element_str + suffix;
+    } else {
+        result = element_str + " " + var_name + suffix;
     }
-    return element_str + " " + var_name + suffix;
+
+    auto byte_stride_attr = die->getAttribute(DwarfAttribute::DW_AT_byte_stride);
+    if (auto byte_stride = std::dynamic_pointer_cast<UnsignedAttributeValue>(byte_stride_attr)) {
+        result += " [byte_stride=" + std::to_string(byte_stride->getValue()) + "]";
+    }
+
+    auto bit_stride_attr = die->getAttribute(DwarfAttribute::DW_AT_bit_stride);
+    if (auto bit_stride = std::dynamic_pointer_cast<UnsignedAttributeValue>(bit_stride_attr)) {
+        result += " [bit_stride=" + std::to_string(bit_stride->getValue()) + "]";
+    }
+
+    return result;
 }
 
 std::string TypePrinter::formatConstType(const std::shared_ptr<DIE>& die,
