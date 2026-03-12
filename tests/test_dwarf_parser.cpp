@@ -41,6 +41,14 @@ void testDwarfUtils() {
     // Test tag conversion
     assert(DwarfUtils::tagToString(DwarfTag::DW_TAG_compile_unit) == "DW_TAG_compile_unit");
     assert(DwarfUtils::tagToString(DwarfTag::DW_TAG_subprogram) == "DW_TAG_subprogram");
+    assert(DwarfUtils::tagToString(DwarfTag::DW_TAG_string_type) == "DW_TAG_string_type");
+    assert(DwarfUtils::tagToString(DwarfTag::DW_TAG_set_type) == "DW_TAG_set_type");
+    assert(DwarfUtils::tagToString(DwarfTag::DW_TAG_interface_type) == "DW_TAG_interface_type");
+    assert(DwarfUtils::tagToString(DwarfTag::DW_TAG_ptr_to_member_type) == "DW_TAG_ptr_to_member_type");
+    assert(DwarfUtils::stringToTag("DW_TAG_string_type") == DwarfTag::DW_TAG_string_type);
+    assert(DwarfUtils::stringToTag("DW_TAG_set_type") == DwarfTag::DW_TAG_set_type);
+    assert(DwarfUtils::stringToTag("DW_TAG_interface_type") == DwarfTag::DW_TAG_interface_type);
+    assert(DwarfUtils::stringToTag("DW_TAG_ptr_to_member_type") == DwarfTag::DW_TAG_ptr_to_member_type);
 
     // Test attribute conversion
     assert(DwarfUtils::attributeToString(DwarfAttribute::DW_AT_name) == "DW_AT_name");
@@ -422,6 +430,10 @@ void testDwarfUtils() {
     // Test type utilities
     assert(DwarfUtils::isTypeTag(DwarfTag::DW_TAG_base_type));
     assert(DwarfUtils::isTypeTag(DwarfTag::DW_TAG_pointer_type));
+    assert(DwarfUtils::isTypeTag(DwarfTag::DW_TAG_string_type));
+    assert(DwarfUtils::isTypeTag(DwarfTag::DW_TAG_set_type));
+    assert(DwarfUtils::isTypeTag(DwarfTag::DW_TAG_interface_type));
+    assert(DwarfUtils::isTypeTag(DwarfTag::DW_TAG_ptr_to_member_type));
     assert(!DwarfUtils::isTypeTag(DwarfTag::DW_TAG_subprogram));
 
     assert(DwarfUtils::isSubprogramTag(DwarfTag::DW_TAG_subprogram));

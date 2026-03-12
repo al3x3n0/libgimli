@@ -77,10 +77,18 @@ void DwarfExtractor::extractTypes() {
         DwarfTag::DW_TAG_structure_type,
         DwarfTag::DW_TAG_union_type,
         DwarfTag::DW_TAG_class_type,
+        DwarfTag::DW_TAG_interface_type,
         DwarfTag::DW_TAG_array_type,
+        DwarfTag::DW_TAG_string_type,
+        DwarfTag::DW_TAG_set_type,
         DwarfTag::DW_TAG_pointer_type,
+        DwarfTag::DW_TAG_ptr_to_member_type,
         DwarfTag::DW_TAG_reference_type,
+        DwarfTag::DW_TAG_rvalue_reference_type,
+        DwarfTag::DW_TAG_atomic_type,
         DwarfTag::DW_TAG_enumeration_type,
+        DwarfTag::DW_TAG_subroutine_type,
+        DwarfTag::DW_TAG_unspecified_type,
         DwarfTag::DW_TAG_typedef
     };
     

@@ -36,7 +36,11 @@ std::string DwarfUtils::tagToString(DwarfTag tag) {
         case DwarfTag::DW_TAG_variable: return "DW_TAG_variable";
         case DwarfTag::DW_TAG_formal_parameter: return "DW_TAG_formal_parameter";
         case DwarfTag::DW_TAG_base_type: return "DW_TAG_base_type";
+        case DwarfTag::DW_TAG_unspecified_type: return "DW_TAG_unspecified_type";
+        case DwarfTag::DW_TAG_string_type: return "DW_TAG_string_type";
+        case DwarfTag::DW_TAG_set_type: return "DW_TAG_set_type";
         case DwarfTag::DW_TAG_pointer_type: return "DW_TAG_pointer_type";
+        case DwarfTag::DW_TAG_ptr_to_member_type: return "DW_TAG_ptr_to_member_type";
         case DwarfTag::DW_TAG_array_type: return "DW_TAG_array_type";
         case DwarfTag::DW_TAG_structure_type: return "DW_TAG_structure_type";
         case DwarfTag::DW_TAG_union_type: return "DW_TAG_union_type";
@@ -45,7 +49,13 @@ std::string DwarfUtils::tagToString(DwarfTag tag) {
         case DwarfTag::DW_TAG_const_type: return "DW_TAG_const_type";
         case DwarfTag::DW_TAG_volatile_type: return "DW_TAG_volatile_type";
         case DwarfTag::DW_TAG_restrict_type: return "DW_TAG_restrict_type";
+        case DwarfTag::DW_TAG_reference_type: return "DW_TAG_reference_type";
+        case DwarfTag::DW_TAG_rvalue_reference_type: return "DW_TAG_rvalue_reference_type";
+        case DwarfTag::DW_TAG_atomic_type: return "DW_TAG_atomic_type";
         case DwarfTag::DW_TAG_subrange_type: return "DW_TAG_subrange_type";
+        case DwarfTag::DW_TAG_class_type: return "DW_TAG_class_type";
+        case DwarfTag::DW_TAG_interface_type: return "DW_TAG_interface_type";
+        case DwarfTag::DW_TAG_subroutine_type: return "DW_TAG_subroutine_type";
         case DwarfTag::DW_TAG_member: return "DW_TAG_member";
         case DwarfTag::DW_TAG_inheritance: return "DW_TAG_inheritance";
         case DwarfTag::DW_TAG_inlined_subroutine: return "DW_TAG_inlined_subroutine";
@@ -66,7 +76,11 @@ DwarfTag DwarfUtils::stringToTag(const std::string& str) {
     if (str == "DW_TAG_variable") return DwarfTag::DW_TAG_variable;
     if (str == "DW_TAG_formal_parameter") return DwarfTag::DW_TAG_formal_parameter;
     if (str == "DW_TAG_base_type") return DwarfTag::DW_TAG_base_type;
+    if (str == "DW_TAG_unspecified_type") return DwarfTag::DW_TAG_unspecified_type;
+    if (str == "DW_TAG_string_type") return DwarfTag::DW_TAG_string_type;
+    if (str == "DW_TAG_set_type") return DwarfTag::DW_TAG_set_type;
     if (str == "DW_TAG_pointer_type") return DwarfTag::DW_TAG_pointer_type;
+    if (str == "DW_TAG_ptr_to_member_type") return DwarfTag::DW_TAG_ptr_to_member_type;
     if (str == "DW_TAG_array_type") return DwarfTag::DW_TAG_array_type;
     if (str == "DW_TAG_structure_type") return DwarfTag::DW_TAG_structure_type;
     if (str == "DW_TAG_union_type") return DwarfTag::DW_TAG_union_type;
@@ -75,7 +89,13 @@ DwarfTag DwarfUtils::stringToTag(const std::string& str) {
     if (str == "DW_TAG_const_type") return DwarfTag::DW_TAG_const_type;
     if (str == "DW_TAG_volatile_type") return DwarfTag::DW_TAG_volatile_type;
     if (str == "DW_TAG_restrict_type") return DwarfTag::DW_TAG_restrict_type;
+    if (str == "DW_TAG_reference_type") return DwarfTag::DW_TAG_reference_type;
+    if (str == "DW_TAG_rvalue_reference_type") return DwarfTag::DW_TAG_rvalue_reference_type;
+    if (str == "DW_TAG_atomic_type") return DwarfTag::DW_TAG_atomic_type;
     if (str == "DW_TAG_subrange_type") return DwarfTag::DW_TAG_subrange_type;
+    if (str == "DW_TAG_class_type") return DwarfTag::DW_TAG_class_type;
+    if (str == "DW_TAG_interface_type") return DwarfTag::DW_TAG_interface_type;
+    if (str == "DW_TAG_subroutine_type") return DwarfTag::DW_TAG_subroutine_type;
     if (str == "DW_TAG_member") return DwarfTag::DW_TAG_member;
     if (str == "DW_TAG_inheritance") return DwarfTag::DW_TAG_inheritance;
     if (str == "DW_TAG_inlined_subroutine") return DwarfTag::DW_TAG_inlined_subroutine;
@@ -494,7 +514,11 @@ bool DwarfUtils::isValidOperation(DwarfOp op) {
 bool DwarfUtils::isTypeTag(DwarfTag tag) {
     switch (tag) {
         case DwarfTag::DW_TAG_base_type:
+        case DwarfTag::DW_TAG_unspecified_type:
+        case DwarfTag::DW_TAG_string_type:
+        case DwarfTag::DW_TAG_set_type:
         case DwarfTag::DW_TAG_pointer_type:
+        case DwarfTag::DW_TAG_ptr_to_member_type:
         case DwarfTag::DW_TAG_array_type:
         case DwarfTag::DW_TAG_structure_type:
         case DwarfTag::DW_TAG_union_type:
@@ -503,7 +527,13 @@ bool DwarfUtils::isTypeTag(DwarfTag tag) {
         case DwarfTag::DW_TAG_const_type:
         case DwarfTag::DW_TAG_volatile_type:
         case DwarfTag::DW_TAG_restrict_type:
+        case DwarfTag::DW_TAG_reference_type:
+        case DwarfTag::DW_TAG_rvalue_reference_type:
+        case DwarfTag::DW_TAG_atomic_type:
         case DwarfTag::DW_TAG_subrange_type:
+        case DwarfTag::DW_TAG_class_type:
+        case DwarfTag::DW_TAG_interface_type:
+        case DwarfTag::DW_TAG_subroutine_type:
             return true;
         default:
             return false;
