@@ -417,7 +417,7 @@ FunctionType::FunctionType(std::shared_ptr<Type> return_type,
       calling_convention_(calling_convention) {
     parameters_.reserve(parameter_types_.size());
     for (const auto& parameter_type : parameter_types_) {
-        parameters_.push_back({"", parameter_type});
+        parameters_.push_back({"", parameter_type, false, false});
     }
 }
 
@@ -1166,7 +1166,20 @@ std::shared_ptr<Type> TypeSystem::resolveFunctionType(std::shared_ptr<DIE> die) 
             auto param_type = getTypeReference(child);
             std::shared_ptr<Type> resolved_param = param_type ? resolveType(param_type) : nullptr;
             if (resolved_param) {
-                parameters.push_back({child->getName(), resolved_param});
+                bool is_object_pointer = false;
+                auto object_pointer_attr = child->getAttribute(DwarfAttribute::DW_AT_object_pointer);
+                if (object_pointer_attr && object_pointer_attr->getType() == AttributeValueType::FLAG) {
+                    is_object_pointer =
+                        std::static_pointer_cast<FlagAttributeValue>(object_pointer_attr)->getValue();
+                }
+
+                bool is_artificial = false;
+                auto artificial_attr = child->getAttribute(DwarfAttribute::DW_AT_artificial);
+                if (artificial_attr && artificial_attr->getType() == AttributeValueType::FLAG) {
+                    is_artificial = std::static_pointer_cast<FlagAttributeValue>(artificial_attr)->getValue();
+                }
+
+                parameters.push_back({child->getName(), resolved_param, is_object_pointer, is_artificial});
             }
         } else if (child->getTag() == DwarfTag::DW_TAG_unspecified_parameters) {
             is_variadic = true;

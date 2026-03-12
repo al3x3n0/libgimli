@@ -45,6 +45,8 @@ struct ArrayBound {
 struct FunctionParameter {
     std::string name;
     std::shared_ptr<Type> type;
+    bool is_object_pointer = false;
+    bool is_artificial = false;
 };
 
 enum class ModifiedTypeKind {

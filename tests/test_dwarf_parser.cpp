@@ -15779,12 +15779,14 @@ void testTypeSystem() {
     assert(!func_type_ptr->isPrototyped());
     assert(func_type_ptr->getCallingConvention() == 0);
 
-    std::vector<FunctionParameter> named_params = {{"value", int_type}};
+    std::vector<FunctionParameter> named_params = {{"value", int_type, true, true}};
     auto named_func_type = type_system.createFunctionType(int_type, named_params, true, true, 2);
     auto named_func_type_ptr = std::dynamic_pointer_cast<FunctionType>(named_func_type);
     assert(named_func_type_ptr->getParameters().size() == 1);
     assert(named_func_type_ptr->getParameters()[0].name == "value");
     assert(named_func_type_ptr->getParameters()[0].type == int_type);
+    assert(named_func_type_ptr->getParameters()[0].is_object_pointer);
+    assert(named_func_type_ptr->getParameters()[0].is_artificial);
     assert(named_func_type_ptr->isVariadic());
     assert(named_func_type_ptr->isPrototyped());
     assert(named_func_type_ptr->getCallingConvention() == 2);
@@ -15972,6 +15974,8 @@ void testTypeSystem() {
         auto param_die = add_die(DwarfTag::DW_TAG_formal_parameter, 0x81);
         param_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("value"));
         param_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x30));
+        param_die->addAttribute(DwarfAttribute::DW_AT_object_pointer, std::make_shared<FlagAttributeValue>(true));
+        param_die->addAttribute(DwarfAttribute::DW_AT_artificial, std::make_shared<FlagAttributeValue>(true));
         func_die->addChild(param_die);
         auto variadic_die = add_die(DwarfTag::DW_TAG_unspecified_parameters, 0x82);
         func_die->addChild(variadic_die);
@@ -16098,6 +16102,8 @@ void testTypeSystem() {
         assert(resolved_func->getParameters().size() == 1);
         assert(resolved_func->getParameters()[0].name == "value");
         assert(resolved_func->getParameters()[0].type->getName() == "MyInt");
+        assert(resolved_func->getParameters()[0].is_object_pointer);
+        assert(resolved_func->getParameters()[0].is_artificial);
 
         auto resolved_flag_variadic_func = std::dynamic_pointer_cast<FunctionType>(
             resolving_system.resolveType(flag_variadic_func_die));
@@ -16107,6 +16113,8 @@ void testTypeSystem() {
         assert(resolved_flag_variadic_func->getCallingConvention() == 0);
         assert(resolved_flag_variadic_func->getParameters().size() == 1);
         assert(resolved_flag_variadic_func->getParameters()[0].name == "prefix");
+        assert(!resolved_flag_variadic_func->getParameters()[0].is_object_pointer);
+        assert(!resolved_flag_variadic_func->getParameters()[0].is_artificial);
     }
     
     std::cout << "TypeSystem tests passed!" << std::endl;
