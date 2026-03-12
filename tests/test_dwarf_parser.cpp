@@ -16184,6 +16184,12 @@ void testTypePrinter() {
     file_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("IntFile"));
     file_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x100));
     file_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(64));
+    auto anonymous_file_die = add_die(DwarfTag::DW_TAG_file_type, 0x10a5);
+    anonymous_file_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x100));
+    auto anonymous_file_subrange_die = add_die(DwarfTag::DW_TAG_subrange_type, 0x10a6);
+    anonymous_file_subrange_die->addAttribute(DwarfAttribute::DW_AT_lower_bound, std::make_shared<SignedAttributeValue>(1));
+    anonymous_file_subrange_die->addAttribute(DwarfAttribute::DW_AT_upper_bound, std::make_shared<SignedAttributeValue>(4));
+    anonymous_file_die->addChild(anonymous_file_subrange_die);
 
     auto const_die = add_die(DwarfTag::DW_TAG_const_type, 0x110);
     const_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x100));
@@ -16304,6 +16310,7 @@ void testTypePrinter() {
     assert(printer.formatType(string_die) == "utf8_string [length=4]");
     assert(printer.formatType(set_die) == "IntSet");
     assert(printer.formatType(file_die) == "IntFile");
+    assert(printer.formatType(anonymous_file_die) == "file<int>[1..4]");
     assert(printer.formatType(rref_die) == "Alias&&");
     assert(printer.formatType(atomic_die) == "_Atomic(Alias)");
     assert(printer.formatType(interface_die) == "interface Runnable");

@@ -775,19 +775,17 @@ std::string TypePrinter::formatFileType(const std::shared_ptr<DIE>& die,
         if (element_type) {
             name += "<" + formatType(element_type) + ">";
         }
-        for (const auto& child : die->getChildren()) {
-            if (child->getTag() == DwarfTag::DW_TAG_subrange_type) {
-                auto count_attr = child->getAttribute(DwarfAttribute::DW_AT_count);
-                if (count_attr) {
-                    auto uint_attr = std::dynamic_pointer_cast<UnsignedAttributeValue>(count_attr);
-                    if (uint_attr) {
-                        std::stringstream ss;
-                        ss << name << "[" << uint_attr->getValue() << "]";
-                        name = ss.str();
-                    }
-                }
-                break;
+        auto bounds = getArrayBounds(die);
+        if (!bounds.empty()) {
+            std::stringstream ss;
+            ss << name;
+            if (bounds[0].lower_bound == 0) {
+                ss << "[" << bounds[0].count << "]";
+            } else {
+                int64_t upper = bounds[0].lower_bound + static_cast<int64_t>(bounds[0].count) - 1;
+                ss << "[" << bounds[0].lower_bound << ".." << upper << "]";
             }
+            name = ss.str();
         }
     }
     return var_name.empty() ? name : name + " " + var_name;
