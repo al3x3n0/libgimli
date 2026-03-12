@@ -15809,6 +15809,9 @@ void testTypeSystem() {
         int_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(4));
         int_die->addAttribute(DwarfAttribute::DW_AT_encoding, std::make_shared<UnsignedAttributeValue>(4));
 
+        auto unspecified_die = add_die(DwarfTag::DW_TAG_unspecified_type, 0x15);
+        unspecified_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("decltype(auto)"));
+
         auto const_die = add_die(DwarfTag::DW_TAG_const_type, 0x20);
         const_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x10));
 
@@ -15875,6 +15878,12 @@ void testTypeSystem() {
         assert(resolved_typedef->getUnderlyingType());
         assert(resolved_typedef->getUnderlyingType()->getName() == "const int");
 
+        auto resolved_unspecified = std::dynamic_pointer_cast<PrimitiveType>(resolving_system.resolveType(unspecified_die));
+        assert(resolved_unspecified);
+        assert(resolved_unspecified->getKind() == PrimitiveType::Kind::VOID);
+        assert(resolved_unspecified->getName() == "decltype(auto)");
+        assert(resolved_unspecified->getSize() == 0);
+
         auto resolved_ref = std::dynamic_pointer_cast<ModifiedType>(resolving_system.resolveType(ref_die));
         assert(resolved_ref);
         assert(resolved_ref->getKind() == ModifiedTypeKind::REFERENCE);
@@ -15897,8 +15906,8 @@ void testTypeSystem() {
         assert(resolved_member_ptr);
         assert(resolved_member_ptr->getSize() == 8);
         assert(resolved_member_ptr->getMemberType()->getName() == "MyInt");
-        assert(resolved_member_ptr->getContainingType()->getName() == "Widget");
-        assert(resolved_member_ptr->getName() == "MyInt Widget::*");
+        assert(resolved_member_ptr->getContainingType()->getName() == "Base");
+        assert(resolved_member_ptr->getName() == "MyInt Base::*");
 
         auto resolved_array = std::dynamic_pointer_cast<ArrayType>(resolving_system.resolveType(elem_die));
         assert(resolved_array);
@@ -15943,6 +15952,9 @@ void testTypePrinter() {
     int_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("int"));
     int_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(4));
     int_die->addAttribute(DwarfAttribute::DW_AT_encoding, std::make_shared<UnsignedAttributeValue>(4));
+
+    auto unspecified_die = add_die(DwarfTag::DW_TAG_unspecified_type, 0x105);
+    unspecified_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("decltype(auto)"));
 
     auto const_die = add_die(DwarfTag::DW_TAG_const_type, 0x110);
     const_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x100));
@@ -15991,6 +16003,7 @@ void testTypePrinter() {
     assert(printer.formatType(const_die) == "const int");
     assert(printer.formatType(ptr_die) == "const int*");
     assert(printer.formatType(typedef_die) == "Alias");
+    assert(printer.formatType(unspecified_die) == "decltype(auto)");
     assert(printer.formatType(rref_die) == "Alias&&");
     assert(printer.formatType(atomic_die) == "_Atomic(Alias)");
     assert(printer.formatType(member_ptr_die) == "Alias Widget::*");

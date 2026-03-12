@@ -470,6 +470,9 @@ std::shared_ptr<Type> TypeSystem::resolveType(std::shared_ptr<DIE> die) {
         case DwarfTag::DW_TAG_base_type:
             type = resolvePrimitiveType(die);
             break;
+        case DwarfTag::DW_TAG_unspecified_type:
+            type = createPrimitiveType(PrimitiveType::Kind::VOID, getTypeSize(die), getTypeName(die));
+            break;
         case DwarfTag::DW_TAG_pointer_type:
             type = resolvePointerType(die);
             break;

@@ -425,6 +425,14 @@ std::string TypePrinter::formatTypeInternal(const std::shared_ptr<DIE>& type_die
             }
             return formatBaseType(type_die) + " " + var_name;
 
+        case DwarfTag::DW_TAG_unspecified_type: {
+            std::string name = type_die->getName();
+            if (name.empty()) {
+                name = "void";
+            }
+            return var_name.empty() ? name : name + " " + var_name;
+        }
+
         case DwarfTag::DW_TAG_pointer_type:
             return formatPointerType(type_die, var_name);
 
