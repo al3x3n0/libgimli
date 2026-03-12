@@ -333,12 +333,27 @@ std::string TypePrinter::formatStructure(const std::shared_ptr<DIE>& type_die,
             }
             result += member_decl;
 
+            auto bit_size_attr = child->getAttribute(DwarfAttribute::DW_AT_bit_size);
+            if (auto bit_size = std::dynamic_pointer_cast<UnsignedAttributeValue>(bit_size_attr)) {
+                result += " : " + std::to_string(bit_size->getValue());
+            }
+
             // Show offset if configured
             if (config_.show_offsets) {
                 if (auto offset = decodeConstantOffsetAttribute(
                         child->getAttribute(DwarfAttribute::DW_AT_data_member_location))) {
                     std::ostringstream oss;
                     oss << " /* offset: " << *offset << " */";
+                    result += oss.str();
+                }
+
+                auto bit_offset_attr = child->getAttribute(DwarfAttribute::DW_AT_data_bit_offset);
+                if (!bit_offset_attr) {
+                    bit_offset_attr = child->getAttribute(DwarfAttribute::DW_AT_bit_offset);
+                }
+                if (auto bit_offset = std::dynamic_pointer_cast<UnsignedAttributeValue>(bit_offset_attr)) {
+                    std::ostringstream oss;
+                    oss << " /* bit_offset: " << bit_offset->getValue() << " */";
                     result += oss.str();
                 }
             }

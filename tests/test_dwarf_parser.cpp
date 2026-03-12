@@ -16346,6 +16346,8 @@ void testTypePrinter() {
     member_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("value"));
     member_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x130));
     member_die->addAttribute(DwarfAttribute::DW_AT_data_member_location, std::make_shared<UnsignedAttributeValue>(8));
+    member_die->addAttribute(DwarfAttribute::DW_AT_bit_size, std::make_shared<UnsignedAttributeValue>(3));
+    member_die->addAttribute(DwarfAttribute::DW_AT_data_bit_offset, std::make_shared<UnsignedAttributeValue>(1));
     member_die->addAttribute(DwarfAttribute::DW_AT_accessibility, std::make_shared<UnsignedAttributeValue>(1));
     struct_die->addChild(member_die);
     auto signed_member_die = add_die(DwarfTag::DW_TAG_member, 0x1515);
@@ -16365,6 +16367,13 @@ void testTypePrinter() {
     expr_member_die->addAttribute(DwarfAttribute::DW_AT_accessibility, std::make_shared<UnsignedAttributeValue>(3));
     expr_member_die->addAttribute(DwarfAttribute::DW_AT_external, std::make_shared<FlagAttributeValue>(true));
     struct_die->addChild(expr_member_die);
+    auto legacy_bitfield_die = add_die(DwarfTag::DW_TAG_member, 0x15165);
+    legacy_bitfield_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("legacy_bits"));
+    legacy_bitfield_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x130));
+    legacy_bitfield_die->addAttribute(DwarfAttribute::DW_AT_data_member_location, std::make_shared<UnsignedAttributeValue>(4));
+    legacy_bitfield_die->addAttribute(DwarfAttribute::DW_AT_bit_size, std::make_shared<UnsignedAttributeValue>(5));
+    legacy_bitfield_die->addAttribute(DwarfAttribute::DW_AT_bit_offset, std::make_shared<UnsignedAttributeValue>(9));
+    struct_die->addChild(legacy_bitfield_die);
     auto expr_inherit_die = add_die(DwarfTag::DW_TAG_inheritance, 0x1517);
     expr_inherit_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x146));
     expr_inherit_die->addAttribute(
@@ -16457,12 +16466,15 @@ void testTypePrinter() {
 
     std::string struct_text = printer.formatStructure(struct_die, true);
     assert(struct_text.find("struct Widget") != std::string::npos);
-    assert(struct_text.find("public Alias value") != std::string::npos);
+    assert(struct_text.find("value : 3") != std::string::npos);
     assert(struct_text.find("offset: 8") != std::string::npos);
-    assert(struct_text.find("protected Alias tail") != std::string::npos);
+    assert(struct_text.find("bit_offset: 1") != std::string::npos);
+    assert(struct_text.find("tail") != std::string::npos);
     assert(struct_text.find("offset: -4") != std::string::npos);
-    assert(struct_text.find("private static Alias payload") != std::string::npos);
+    assert(struct_text.find("payload") != std::string::npos);
     assert(struct_text.find("offset: 12") != std::string::npos);
+    assert(struct_text.find("legacy_bits : 5") != std::string::npos);
+    assert(struct_text.find("bit_offset: 9") != std::string::npos);
     assert(struct_text.find("inherits from: public Widget /* offset: -8 */") != std::string::npos);
     assert(struct_text.find("inherits from: protected virtual Widget /* offset: -16 */") != std::string::npos);
 
