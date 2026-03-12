@@ -16084,6 +16084,13 @@ void testTypePrinter() {
     iface_member_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x130));
     interface_decl_die->addChild(iface_member_die);
 
+    auto array_die = add_die(DwarfTag::DW_TAG_array_type, 0x154);
+    array_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x100));
+    auto array_subrange_die = add_die(DwarfTag::DW_TAG_subrange_type, 0x155);
+    array_subrange_die->addAttribute(DwarfAttribute::DW_AT_lower_bound, std::make_shared<SignedAttributeValue>(-2));
+    array_subrange_die->addAttribute(DwarfAttribute::DW_AT_upper_bound, std::make_shared<SignedAttributeValue>(2));
+    array_die->addChild(array_subrange_die);
+
     TypePrinterConfig cfg;
     cfg.pointer_size_bytes = 8;
     cfg.show_offsets = true;
@@ -16100,6 +16107,7 @@ void testTypePrinter() {
     assert(printer.formatType(atomic_die) == "_Atomic(Alias)");
     assert(printer.formatType(interface_die) == "interface Runnable");
     assert(printer.formatType(member_ptr_die) == "Alias Widget::*");
+    assert(printer.formatType(array_die) == "int[5]");
     assert(printer.formatTypedef(typedef_die) == "typedef const int* Alias");
     assert(printer.formatType(func_die) == "int (*)(Alias, ...)");
 

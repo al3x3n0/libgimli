@@ -949,15 +949,25 @@ std::vector<uint64_t> TypePrinter::getArrayDimensions(const std::shared_ptr<DIE>
 
     for (const auto& child : die->getChildren()) {
         if (child->getTag() == DwarfTag::DW_TAG_subrange_type) {
+            int64_t lower = 0;
+            auto lower_attr = child->getAttribute(DwarfAttribute::DW_AT_lower_bound);
+            if (auto uint_val = std::dynamic_pointer_cast<UnsignedAttributeValue>(lower_attr)) {
+                lower = static_cast<int64_t>(uint_val->getValue());
+            } else if (auto int_val = std::dynamic_pointer_cast<SignedAttributeValue>(lower_attr)) {
+                lower = int_val->getValue();
+            }
+
             // Try upper_bound first (0 to upper_bound inclusive = upper_bound+1 elements)
             auto upper_attr = child->getAttribute(DwarfAttribute::DW_AT_upper_bound);
             if (upper_attr) {
                 auto uint_val = std::dynamic_pointer_cast<UnsignedAttributeValue>(upper_attr);
                 auto int_val = std::dynamic_pointer_cast<SignedAttributeValue>(upper_attr);
                 if (uint_val) {
-                    dimensions.push_back(uint_val->getValue() + 1);
+                    int64_t upper = static_cast<int64_t>(uint_val->getValue());
+                    dimensions.push_back(upper >= lower ? static_cast<uint64_t>(upper - lower + 1) : 0);
                 } else if (int_val) {
-                    dimensions.push_back(static_cast<uint64_t>(int_val->getValue() + 1));
+                    int64_t upper = int_val->getValue();
+                    dimensions.push_back(upper >= lower ? static_cast<uint64_t>(upper - lower + 1) : 0);
                 }
                 continue;
             }
