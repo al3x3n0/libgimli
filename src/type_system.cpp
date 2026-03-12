@@ -1008,6 +1008,9 @@ std::shared_ptr<Type> TypeSystem::resolveCompositeType(std::shared_ptr<DIE> die)
                 }
 
                 auto bit_offset_attr = child->getAttribute(DwarfAttribute::DW_AT_data_bit_offset);
+                if (!bit_offset_attr) {
+                    bit_offset_attr = child->getAttribute(DwarfAttribute::DW_AT_bit_offset);
+                }
                 if (bit_offset_attr && bit_offset_attr->getType() == AttributeValueType::UNSIGNED) {
                     member.bit_offset = std::static_pointer_cast<UnsignedAttributeValue>(bit_offset_attr)->getValue();
                 }

@@ -135,6 +135,7 @@ enum class DwarfAttribute : uint16_t {
     DW_AT_name = 0x03,
     DW_AT_ordering = 0x09,
     DW_AT_byte_size = 0x0b,
+    DW_AT_bit_offset = 0x0c,
     DW_AT_bit_size = 0x0d,
     DW_AT_stmt_list = 0x10,
     DW_AT_low_pc = 0x11,

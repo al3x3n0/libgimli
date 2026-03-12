@@ -15934,6 +15934,14 @@ void testTypeSystem() {
                 std::vector<uint8_t>{static_cast<uint8_t>(DwarfOp::DW_OP_plus_uconst), 0x0c}));
         struct_die->addChild(expr_member_die);
 
+        auto legacy_bitfield_die = add_die(DwarfTag::DW_TAG_member, 0x76);
+        legacy_bitfield_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("legacy_bits"));
+        legacy_bitfield_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x10));
+        legacy_bitfield_die->addAttribute(DwarfAttribute::DW_AT_data_member_location, std::make_shared<UnsignedAttributeValue>(4));
+        legacy_bitfield_die->addAttribute(DwarfAttribute::DW_AT_bit_size, std::make_shared<UnsignedAttributeValue>(5));
+        legacy_bitfield_die->addAttribute(DwarfAttribute::DW_AT_bit_offset, std::make_shared<UnsignedAttributeValue>(9));
+        struct_die->addChild(legacy_bitfield_die);
+
         auto expr_inherit_die = add_die(DwarfTag::DW_TAG_inheritance, 0x75);
         expr_inherit_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x60));
         expr_inherit_die->addAttribute(
@@ -16053,7 +16061,7 @@ void testTypeSystem() {
 
         auto resolved_struct = std::dynamic_pointer_cast<CompositeType>(resolving_system.resolveType(struct_die));
         assert(resolved_struct);
-        assert(resolved_struct->getMembers().size() == 3);
+        assert(resolved_struct->getMembers().size() == 4);
         assert(resolved_struct->getMembers()[0].bit_size == 3);
         assert(resolved_struct->getMembers()[0].bit_offset == 1);
         assert(resolved_struct->getMembers()[0].is_public);
@@ -16061,6 +16069,9 @@ void testTypeSystem() {
         assert(static_cast<int64_t>(resolved_struct->getMembers()[1].offset) == -4);
         assert(resolved_struct->getMembers()[2].name == "payload");
         assert(resolved_struct->getMembers()[2].offset == 12);
+        assert(resolved_struct->getMembers()[3].name == "legacy_bits");
+        assert(resolved_struct->getMembers()[3].bit_size == 5);
+        assert(resolved_struct->getMembers()[3].bit_offset == 9);
         assert(resolved_struct->getBaseClasses().size() == 2);
         assert(resolved_struct->getBaseClasses()[0].is_public);
         assert(!resolved_struct->getBaseClasses()[0].is_virtual);
