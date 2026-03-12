@@ -15822,6 +15822,9 @@ void testTypeSystem() {
         auto rref_die = add_die(DwarfTag::DW_TAG_rvalue_reference_type, 0x45);
         rref_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x30));
 
+        auto atomic_die = add_die(DwarfTag::DW_TAG_atomic_type, 0x46);
+        atomic_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x30));
+
         auto elem_die = add_die(DwarfTag::DW_TAG_array_type, 0x50);
         elem_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x10));
         auto subrange = add_die(DwarfTag::DW_TAG_subrange_type, 0x51);
@@ -15880,6 +15883,12 @@ void testTypeSystem() {
         assert(resolved_rref->getSize() == 8);
         assert(resolved_rref->getName() == "MyInt&&");
 
+        auto resolved_atomic = std::dynamic_pointer_cast<ModifiedType>(resolving_system.resolveType(atomic_die));
+        assert(resolved_atomic);
+        assert(resolved_atomic->getKind() == ModifiedTypeKind::ATOMIC);
+        assert(resolved_atomic->getSize() == 4);
+        assert(resolved_atomic->getName() == "_Atomic(MyInt)");
+
         auto resolved_array = std::dynamic_pointer_cast<ArrayType>(resolving_system.resolveType(elem_die));
         assert(resolved_array);
         assert(resolved_array->getDimensions().size() == 1);
@@ -15937,12 +15946,15 @@ void testTypePrinter() {
     auto rref_die = add_die(DwarfTag::DW_TAG_rvalue_reference_type, 0x140);
     rref_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x130));
 
-    auto func_die = add_die(DwarfTag::DW_TAG_subroutine_type, 0x140);
+    auto atomic_die = add_die(DwarfTag::DW_TAG_atomic_type, 0x145);
+    atomic_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x130));
+
+    auto func_die = add_die(DwarfTag::DW_TAG_subroutine_type, 0x146);
     func_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x100));
-    auto param_die = add_die(DwarfTag::DW_TAG_formal_parameter, 0x141);
+    auto param_die = add_die(DwarfTag::DW_TAG_formal_parameter, 0x147);
     param_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x130));
     func_die->addChild(param_die);
-    func_die->addChild(add_die(DwarfTag::DW_TAG_unspecified_parameters, 0x142));
+    func_die->addChild(add_die(DwarfTag::DW_TAG_unspecified_parameters, 0x148));
 
     auto struct_die = add_die(DwarfTag::DW_TAG_structure_type, 0x150);
     struct_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("Widget"));
@@ -15962,6 +15974,7 @@ void testTypePrinter() {
     assert(printer.formatType(ptr_die) == "const int*");
     assert(printer.formatType(typedef_die) == "Alias");
     assert(printer.formatType(rref_die) == "Alias&&");
+    assert(printer.formatType(atomic_die) == "_Atomic(Alias)");
     assert(printer.formatTypedef(typedef_die) == "typedef const int* Alias");
     assert(printer.formatType(func_die) == "int (*)(Alias, ...)");
 

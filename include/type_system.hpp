@@ -43,7 +43,8 @@ enum class ModifiedTypeKind {
     VOLATILE,
     RESTRICT,
     REFERENCE,
-    RVALUE_REFERENCE
+    RVALUE_REFERENCE,
+    ATOMIC
 };
 
 // Forward declaration
@@ -234,6 +235,7 @@ public:
     std::shared_ptr<Type> createPointerType(std::shared_ptr<Type> pointee_type);
     std::shared_ptr<Type> createReferenceType(std::shared_ptr<Type> referee_type);
     std::shared_ptr<Type> createRvalueReferenceType(std::shared_ptr<Type> referee_type);
+    std::shared_ptr<Type> createAtomicType(std::shared_ptr<Type> value_type);
     std::shared_ptr<Type> createArrayType(std::shared_ptr<Type> element_type, 
                                           const std::vector<uint64_t>& dimensions);
     std::shared_ptr<Type> createFunctionType(std::shared_ptr<Type> return_type,

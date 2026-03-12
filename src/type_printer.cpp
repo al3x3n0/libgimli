@@ -440,6 +440,15 @@ std::string TypePrinter::formatTypeInternal(const std::shared_ptr<DIE>& type_die
             return referee_str + " &&" + var_name;
         }
 
+        case DwarfTag::DW_TAG_atomic_type: {
+            auto value_type = getReferencedType(type_die);
+            std::string value_str = formatType(value_type);
+            if (var_name.empty()) {
+                return "_Atomic(" + value_str + ")";
+            }
+            return "_Atomic(" + value_str + ") " + var_name;
+        }
+
         case DwarfTag::DW_TAG_array_type:
             return formatArrayType(type_die, var_name);
 
