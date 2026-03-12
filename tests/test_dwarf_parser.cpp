@@ -15781,6 +15781,15 @@ void testTypeSystem() {
         type_system.createStringType("CountedString", int_type, 16, 4));
     assert(bounded_string_type->getLength() == 4);
     assert(bounded_string_type->getDescription().find("[length=4]") != std::string::npos);
+
+    std::vector<ArrayBound> file_bounds = {{1, 4}};
+    auto bounded_file_type = std::dynamic_pointer_cast<FileType>(
+        type_system.createFileType("", int_type, 64, file_bounds));
+    assert(bounded_file_type->getElementCount() == 4);
+    assert(bounded_file_type->getBounds().size() == 1);
+    assert(bounded_file_type->getBounds()[0].lower_bound == 1);
+    assert(bounded_file_type->getBounds()[0].count == 4);
+    assert(bounded_file_type->getName() == "file<int>[1..4]");
     
     // Test function type creation
     std::vector<std::shared_ptr<Type>> param_types = {int_type};
@@ -15887,6 +15896,14 @@ void testTypeSystem() {
         auto file_count = add_die(DwarfTag::DW_TAG_subrange_type, 0x1b);
         file_count->addAttribute(DwarfAttribute::DW_AT_count, std::make_shared<UnsignedAttributeValue>(4));
         file_die->addChild(file_count);
+
+        auto anonymous_file_die = add_die(DwarfTag::DW_TAG_file_type, 0x1c);
+        anonymous_file_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x10));
+        anonymous_file_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(64));
+        auto anonymous_file_count = add_die(DwarfTag::DW_TAG_subrange_type, 0x1d);
+        anonymous_file_count->addAttribute(DwarfAttribute::DW_AT_lower_bound, std::make_shared<SignedAttributeValue>(1));
+        anonymous_file_count->addAttribute(DwarfAttribute::DW_AT_upper_bound, std::make_shared<UnsignedAttributeValue>(4));
+        anonymous_file_die->addChild(anonymous_file_count);
 
         auto const_die = add_die(DwarfTag::DW_TAG_const_type, 0x20);
         const_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x10));
@@ -16045,8 +16062,19 @@ void testTypeSystem() {
         assert(resolved_file->getName() == "IntFile");
         assert(resolved_file->getSize() == 64);
         assert(resolved_file->getElementCount() == 4);
+        assert(resolved_file->getBounds().size() == 1);
+        assert(resolved_file->getBounds()[0].lower_bound == 0);
+        assert(resolved_file->getBounds()[0].count == 4);
         assert(resolved_file->getElementType());
         assert(resolved_file->getElementType()->getName() == "int");
+
+        auto resolved_anonymous_file = std::dynamic_pointer_cast<FileType>(resolving_system.resolveType(anonymous_file_die));
+        assert(resolved_anonymous_file);
+        assert(resolved_anonymous_file->getName() == "file<int>[1..4]");
+        assert(resolved_anonymous_file->getElementCount() == 4);
+        assert(resolved_anonymous_file->getBounds().size() == 1);
+        assert(resolved_anonymous_file->getBounds()[0].lower_bound == 1);
+        assert(resolved_anonymous_file->getBounds()[0].count == 4);
 
         auto resolved_ref = std::dynamic_pointer_cast<ModifiedType>(resolving_system.resolveType(ref_die));
         assert(resolved_ref);

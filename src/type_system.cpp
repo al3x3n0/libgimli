@@ -379,8 +379,20 @@ FileType::FileType(const std::string& name,
                    uint64_t element_count)
     : name_(name),
       element_type_(std::move(element_type)),
+      size_(size) {
+    if (element_count != 0) {
+        bounds_.push_back({0, element_count});
+    }
+}
+
+FileType::FileType(const std::string& name,
+                   std::shared_ptr<Type> element_type,
+                   uint64_t size,
+                   const std::vector<ArrayBound>& bounds)
+    : name_(name),
+      element_type_(std::move(element_type)),
       size_(size),
-      element_count_(element_count) {
+      bounds_(bounds) {
 }
 
 std::string FileType::getName() const {
@@ -391,9 +403,16 @@ std::string FileType::getName() const {
     if (element_type_) {
         base += "<" + element_type_->getName() + ">";
     }
-    if (element_count_ != 0) {
+    if (!bounds_.empty()) {
         std::stringstream ss;
-        ss << base << "[" << element_count_ << "]";
+        ss << base;
+        const auto& bound = bounds_.front();
+        if (bound.lower_bound == 0) {
+            ss << "[" << bound.count << "]";
+        } else {
+            int64_t upper = bound.lower_bound + static_cast<int64_t>(bound.count) - 1;
+            ss << "[" << bound.lower_bound << ".." << upper << "]";
+        }
         return ss.str();
     }
     return base;
@@ -418,6 +437,13 @@ bool FileType::isComplete() const {
 
 std::shared_ptr<Type> FileType::resolve() {
     return std::static_pointer_cast<Type>(shared_from_this());
+}
+
+uint64_t FileType::getElementCount() const {
+    if (bounds_.empty()) {
+        return 0;
+    }
+    return bounds_.front().count;
 }
 
 // FunctionType implementation
@@ -665,6 +691,16 @@ std::shared_ptr<Type> TypeSystem::createFileType(const std::string& name,
                                                  uint64_t size,
                                                  uint64_t element_count) {
     auto type = std::make_shared<FileType>(name, std::move(element_type), size, element_count);
+    type->setDwarfTag(DwarfTag::DW_TAG_file_type);
+    all_types_.push_back(type);
+    return type;
+}
+
+std::shared_ptr<Type> TypeSystem::createFileType(const std::string& name,
+                                                 std::shared_ptr<Type> element_type,
+                                                 uint64_t size,
+                                                 const std::vector<ArrayBound>& bounds) {
+    auto type = std::make_shared<FileType>(name, std::move(element_type), size, bounds);
     type->setDwarfTag(DwarfTag::DW_TAG_file_type);
     all_types_.push_back(type);
     return type;
@@ -992,15 +1028,17 @@ std::shared_ptr<Type> TypeSystem::resolveFileType(std::shared_ptr<DIE> die) {
     auto element_die = getTypeReference(die);
     std::shared_ptr<Type> resolved_element = element_die ? resolveType(element_die) : nullptr;
 
-    uint64_t element_count = 0;
+    std::vector<ArrayBound> bounds;
     for (const auto& child : die->getChildren()) {
         if (child->getTag() == DwarfTag::DW_TAG_subrange_type) {
-            element_count = getSubrangeCount(child);
-            break;
+            bounds.push_back({getSubrangeLowerBound(child), getSubrangeCount(child)});
         }
     }
 
-    return createFileType(getTypeName(die), resolved_element, getTypeSize(die), element_count);
+    if (!bounds.empty()) {
+        return createFileType(getTypeName(die), resolved_element, getTypeSize(die), bounds);
+    }
+    return createFileType(getTypeName(die), resolved_element, getTypeSize(die), uint64_t{0});
 }
 
 std::shared_ptr<Type> TypeSystem::resolveArrayType(std::shared_ptr<DIE> die) {
