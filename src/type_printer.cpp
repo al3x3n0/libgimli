@@ -744,9 +744,11 @@ std::string TypePrinter::formatStringType(const std::shared_ptr<DIE>& die,
         }
     }
 
-    auto length_attr = die->getAttribute(DwarfAttribute::DW_AT_string_length);
-    if (auto length = std::dynamic_pointer_cast<UnsignedAttributeValue>(length_attr)) {
-        name += " [length=" + std::to_string(length->getValue()) + "]";
+    if (auto length = decodeConstantOffsetAttribute(
+            die->getAttribute(DwarfAttribute::DW_AT_string_length))) {
+        if (*length >= 0) {
+            name += " [length=" + std::to_string(*length) + "]";
+        }
     }
 
     return var_name.empty() ? name : name + " " + var_name;

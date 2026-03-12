@@ -15884,6 +15884,16 @@ void testTypeSystem() {
         string_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(16));
         string_die->addAttribute(DwarfAttribute::DW_AT_string_length, std::make_shared<UnsignedAttributeValue>(4));
 
+        auto expr_string_die = add_die(DwarfTag::DW_TAG_string_type, 0x18a);
+        expr_string_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("expr_string"));
+        expr_string_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x10));
+        expr_string_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(16));
+        expr_string_die->addAttribute(
+            DwarfAttribute::DW_AT_string_length,
+            std::make_shared<LocationAttributeValue>(
+                LocationAttributeValue::LocationType::EXPRESSION,
+                std::vector<uint8_t>{static_cast<uint8_t>(DwarfOp::DW_OP_plus_uconst), 0x06}));
+
         auto set_die = add_die(DwarfTag::DW_TAG_set_type, 0x19);
         set_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("IntSet"));
         set_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x10));
@@ -16050,6 +16060,11 @@ void testTypeSystem() {
         assert(resolved_string->getCharacterType());
         assert(resolved_string->getCharacterType()->getName() == "int");
 
+        auto resolved_expr_string = std::dynamic_pointer_cast<StringType>(resolving_system.resolveType(expr_string_die));
+        assert(resolved_expr_string);
+        assert(resolved_expr_string->getName() == "expr_string");
+        assert(resolved_expr_string->getLength() == 6);
+
         auto resolved_set = std::dynamic_pointer_cast<SetType>(resolving_system.resolveType(set_die));
         assert(resolved_set);
         assert(resolved_set->getName() == "IntSet");
@@ -16203,6 +16218,16 @@ void testTypePrinter() {
     string_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(16));
     string_die->addAttribute(DwarfAttribute::DW_AT_string_length, std::make_shared<UnsignedAttributeValue>(4));
 
+    auto expr_string_die = add_die(DwarfTag::DW_TAG_string_type, 0x1085);
+    expr_string_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("CountedExprString"));
+    expr_string_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x100));
+    expr_string_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(16));
+    expr_string_die->addAttribute(
+        DwarfAttribute::DW_AT_string_length,
+        std::make_shared<LocationAttributeValue>(
+            LocationAttributeValue::LocationType::EXPRESSION,
+            std::vector<uint8_t>{static_cast<uint8_t>(DwarfOp::DW_OP_plus_uconst), 0x06}));
+
     auto set_die = add_die(DwarfTag::DW_TAG_set_type, 0x109);
     set_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("IntSet"));
     set_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x100));
@@ -16336,6 +16361,7 @@ void testTypePrinter() {
     assert(printer.formatType(typedef_die) == "Alias");
     assert(printer.formatType(unspecified_die) == "decltype(auto)");
     assert(printer.formatType(string_die) == "utf8_string [length=4]");
+    assert(printer.formatType(expr_string_die) == "CountedExprString [length=6]");
     assert(printer.formatType(set_die) == "IntSet");
     assert(printer.formatType(file_die) == "IntFile");
     assert(printer.formatType(anonymous_file_die) == "file<int>[1..4]");

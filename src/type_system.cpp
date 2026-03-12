@@ -1011,9 +1011,11 @@ std::shared_ptr<Type> TypeSystem::resolveStringType(std::shared_ptr<DIE> die) {
     auto char_die = getTypeReference(die);
     std::shared_ptr<Type> resolved_char = char_die ? resolveType(char_die) : nullptr;
     uint64_t length = 0;
-    auto length_attr = die->getAttribute(DwarfAttribute::DW_AT_string_length);
-    if (length_attr && length_attr->getType() == AttributeValueType::UNSIGNED) {
-        length = std::static_pointer_cast<UnsignedAttributeValue>(length_attr)->getValue();
+    if (auto decoded_length =
+            decodeConstantOffsetAttribute(die->getAttribute(DwarfAttribute::DW_AT_string_length))) {
+        if (*decoded_length >= 0) {
+            length = static_cast<uint64_t>(*decoded_length);
+        }
     }
     return createStringType(getTypeName(die), resolved_char, getTypeSize(die), length);
 }
