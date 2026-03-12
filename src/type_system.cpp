@@ -161,7 +161,19 @@ void CompositeType::addBaseClass(const BaseClass& base) {
 
 // ArrayType implementation
 ArrayType::ArrayType(std::shared_ptr<Type> element_type, const std::vector<uint64_t>& dimensions)
-    : element_type_(element_type), dimensions_(dimensions) {
+    : element_type_(std::move(element_type)), dimensions_(dimensions) {
+    bounds_.reserve(dimensions_.size());
+    for (uint64_t dim : dimensions_) {
+        bounds_.push_back({0, dim});
+    }
+}
+
+ArrayType::ArrayType(std::shared_ptr<Type> element_type, const std::vector<ArrayBound>& bounds)
+    : element_type_(std::move(element_type)), bounds_(bounds) {
+    dimensions_.reserve(bounds_.size());
+    for (const auto& bound : bounds_) {
+        dimensions_.push_back(bound.count);
+    }
 }
 
 std::string ArrayType::getName() const {
@@ -545,6 +557,14 @@ std::shared_ptr<Type> TypeSystem::createArrayType(std::shared_ptr<Type> element_
     return type;
 }
 
+std::shared_ptr<Type> TypeSystem::createArrayType(std::shared_ptr<Type> element_type,
+                                                  const std::vector<ArrayBound>& bounds) {
+    auto type = std::make_shared<ArrayType>(std::move(element_type), bounds);
+    type->setDwarfTag(DwarfTag::DW_TAG_array_type);
+    all_types_.push_back(type);
+    return type;
+}
+
 std::shared_ptr<Type> TypeSystem::createFunctionType(std::shared_ptr<Type> return_type,
                                                      const std::vector<std::shared_ptr<Type>>& parameter_types,
                                                      bool is_variadic) {
@@ -844,23 +864,23 @@ std::shared_ptr<Type> TypeSystem::resolveArrayType(std::shared_ptr<DIE> die) {
     std::shared_ptr<Type> resolved_element = element_type ? resolveType(element_type) : nullptr;
 
     if (resolved_element) {
-        std::vector<uint64_t> dimensions;
+        std::vector<ArrayBound> bounds;
 
         for (const auto& child : die->getChildren()) {
             if (child->getTag() == DwarfTag::DW_TAG_subrange_type) {
-                dimensions.push_back(getSubrangeCount(child));
+                bounds.push_back({getSubrangeLowerBound(child), getSubrangeCount(child)});
             }
         }
 
-        if (dimensions.empty()) {
+        if (bounds.empty()) {
             if (size != 0 && resolved_element->getSize() != 0) {
-                dimensions.push_back(size / resolved_element->getSize());
+                bounds.push_back({0, size / resolved_element->getSize()});
             } else {
-                dimensions.push_back(1);
+                bounds.push_back({0, 1});
             }
         }
 
-        return createArrayType(resolved_element, dimensions);
+        return createArrayType(resolved_element, bounds);
     } else {
         return createPrimitiveType(PrimitiveType::Kind::INTEGER, size, getTypeName(die));
     }
@@ -1094,6 +1114,20 @@ uint64_t TypeSystem::getSubrangeCount(std::shared_ptr<DIE> die) const {
     }
 
     return 1;
+}
+
+int64_t TypeSystem::getSubrangeLowerBound(std::shared_ptr<DIE> die) const {
+    if (!die) return 0;
+
+    auto lower_attr = die->getAttribute(DwarfAttribute::DW_AT_lower_bound);
+    if (auto u = std::dynamic_pointer_cast<UnsignedAttributeValue>(lower_attr)) {
+        return static_cast<int64_t>(u->getValue());
+    }
+    if (auto s = std::dynamic_pointer_cast<SignedAttributeValue>(lower_attr)) {
+        return s->getValue();
+    }
+
+    return 0;
 }
 
 } // namespace dwarf

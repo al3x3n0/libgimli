@@ -37,6 +37,11 @@ struct BaseClass {
     bool is_private;
 };
 
+struct ArrayBound {
+    int64_t lower_bound;
+    uint64_t count;
+};
+
 enum class ModifiedTypeKind {
     TYPEDEF,
     CONST,
@@ -159,6 +164,7 @@ private:
 class ArrayType : public Type {
 public:
     ArrayType(std::shared_ptr<Type> element_type, const std::vector<uint64_t>& dimensions);
+    ArrayType(std::shared_ptr<Type> element_type, const std::vector<ArrayBound>& bounds);
     std::string getName() const override;
     uint64_t getSize() const override;
     std::string getDescription() const override;
@@ -167,11 +173,13 @@ public:
     
     std::shared_ptr<Type> getElementType() const { return element_type_; }
     const std::vector<uint64_t>& getDimensions() const { return dimensions_; }
+    const std::vector<ArrayBound>& getBounds() const { return bounds_; }
     uint64_t getElementCount() const;
     
 private:
     std::shared_ptr<Type> element_type_;
     std::vector<uint64_t> dimensions_;
+    std::vector<ArrayBound> bounds_;
 };
 
 class StringType : public Type {
@@ -330,6 +338,8 @@ public:
                                          uint64_t element_count = 0);
     std::shared_ptr<Type> createArrayType(std::shared_ptr<Type> element_type, 
                                           const std::vector<uint64_t>& dimensions);
+    std::shared_ptr<Type> createArrayType(std::shared_ptr<Type> element_type,
+                                          const std::vector<ArrayBound>& bounds);
     std::shared_ptr<Type> createFunctionType(std::shared_ptr<Type> return_type,
                                              const std::vector<std::shared_ptr<Type>>& parameter_types,
                                              bool is_variadic = false);
@@ -381,6 +391,7 @@ private:
     uint64_t getTypeSize(std::shared_ptr<DIE> die) const;
     std::shared_ptr<DIE> getTypeReference(std::shared_ptr<DIE> die) const;
     uint64_t getSubrangeCount(std::shared_ptr<DIE> die) const;
+    int64_t getSubrangeLowerBound(std::shared_ptr<DIE> die) const;
 };
 
 } // namespace dwarf

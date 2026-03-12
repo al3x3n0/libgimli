@@ -15972,6 +15972,9 @@ void testTypeSystem() {
         assert(resolved_array);
         assert(resolved_array->getDimensions().size() == 1);
         assert(resolved_array->getDimensions()[0] == 5);
+        assert(resolved_array->getBounds().size() == 1);
+        assert(resolved_array->getBounds()[0].lower_bound == -2);
+        assert(resolved_array->getBounds()[0].count == 5);
 
         auto resolved_interface = std::dynamic_pointer_cast<CompositeType>(resolving_system.resolveType(interface_die));
         assert(resolved_interface);
