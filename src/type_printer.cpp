@@ -299,7 +299,35 @@ std::string TypePrinter::formatStructure(const std::shared_ptr<DIE>& type_die,
                 if (ref) {
                     result += config_.indent + "/* inherits from: ";
                     auto base_type = die_lookup_(ref->getOffset());
+
+                    auto access_attr = child->getAttribute(DwarfAttribute::DW_AT_accessibility);
+                    if (auto access = std::dynamic_pointer_cast<UnsignedAttributeValue>(access_attr)) {
+                        switch (access->getValue()) {
+                            case 1: result += "public "; break;
+                            case 2: result += "protected "; break;
+                            case 3: result += "private "; break;
+                            default: break;
+                        }
+                    }
+
+                    auto virtuality_attr = child->getAttribute(DwarfAttribute::DW_AT_virtuality);
+                    if (auto virtuality = std::dynamic_pointer_cast<UnsignedAttributeValue>(virtuality_attr)) {
+                        if (virtuality->getValue() != 0) {
+                            result += "virtual ";
+                        }
+                    }
+
                     result += formatType(base_type);
+
+                    if (config_.show_offsets) {
+                        if (auto offset = decodeConstantOffsetAttribute(
+                                child->getAttribute(DwarfAttribute::DW_AT_data_member_location))) {
+                            std::ostringstream oss;
+                            oss << " /* offset: " << *offset << " */";
+                            result += oss.str();
+                        }
+                    }
+
                     result += " */\n";
                 }
             }

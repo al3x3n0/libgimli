@@ -16195,6 +16195,21 @@ void testTypePrinter() {
             LocationAttributeValue::LocationType::EXPRESSION,
             std::vector<uint8_t>{static_cast<uint8_t>(DwarfOp::DW_OP_plus_uconst), 0x0c}));
     struct_die->addChild(expr_member_die);
+    auto expr_inherit_die = add_die(DwarfTag::DW_TAG_inheritance, 0x1517);
+    expr_inherit_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x146));
+    expr_inherit_die->addAttribute(
+        DwarfAttribute::DW_AT_data_member_location,
+        std::make_shared<LocationAttributeValue>(
+            LocationAttributeValue::LocationType::EXPRESSION,
+            std::vector<uint8_t>{static_cast<uint8_t>(DwarfOp::DW_OP_consts), 0x78}));
+    expr_inherit_die->addAttribute(DwarfAttribute::DW_AT_accessibility, std::make_shared<UnsignedAttributeValue>(1));
+    struct_die->addChild(expr_inherit_die);
+    auto inherit_die = add_die(DwarfTag::DW_TAG_inheritance, 0x1518);
+    inherit_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x146));
+    inherit_die->addAttribute(DwarfAttribute::DW_AT_data_member_location, std::make_shared<SignedAttributeValue>(-16));
+    inherit_die->addAttribute(DwarfAttribute::DW_AT_virtuality, std::make_shared<UnsignedAttributeValue>(1));
+    inherit_die->addAttribute(DwarfAttribute::DW_AT_accessibility, std::make_shared<UnsignedAttributeValue>(2));
+    struct_die->addChild(inherit_die);
 
     auto interface_decl_die = add_die(DwarfTag::DW_TAG_interface_type, 0x152);
     interface_decl_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("Runnable"));
@@ -16240,6 +16255,8 @@ void testTypePrinter() {
     assert(struct_text.find("offset: -4") != std::string::npos);
     assert(struct_text.find("Alias payload") != std::string::npos);
     assert(struct_text.find("offset: 12") != std::string::npos);
+    assert(struct_text.find("inherits from: public Widget /* offset: -8 */") != std::string::npos);
+    assert(struct_text.find("inherits from: protected virtual Widget /* offset: -16 */") != std::string::npos);
 
     std::string interface_text = printer.formatStructure(interface_decl_die, true);
     assert(interface_text.find("interface Runnable") != std::string::npos);
