@@ -1814,6 +1814,76 @@ void testExpressionEvaluatorGnuEncodedAddr() {
     std::cout << "ExpressionEvaluator DW_OP_GNU_encoded_addr tests passed!" << std::endl;
 }
 
+void testExpressionEvaluatorEntryValue() {
+    std::cout << "Testing ExpressionEvaluator DW_OP_entry_value..." << std::endl;
+
+    {
+        ExpressionEvaluator ev;
+        EvaluationContext ctx;
+        ctx.address_size = 8;
+        ctx.entry_registers = std::vector<uint64_t>(32, 0);
+        ctx.entry_registers[5] = 0xdeadbeefULL;
+
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_entry_value));
+        appendULEB(expr, 1);
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_reg5));
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_stack_value));
+
+        auto r = ev.evaluate(expr, ctx, /*pc=*/0, /*registers=*/{});
+        assert(r.type == ExpressionResult::VALUE);
+        assert(r.value == 0xdeadbeefULL);
+    }
+
+    {
+        struct EntryValueMemory : public MemoryContext {
+            bool readMemory(uint64_t address, size_t size, void* buffer) const override {
+                if (address != 0x1000 || size != 8) return false;
+                const uint8_t bytes[8] = {0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11};
+                std::memcpy(buffer, bytes, sizeof(bytes));
+                return true;
+            }
+            bool writeMemory(uint64_t address, size_t size, const void* buffer) override {
+                (void)address;
+                (void)size;
+                (void)buffer;
+                return false;
+            }
+        };
+
+        auto mem = std::make_shared<EntryValueMemory>();
+        ExpressionEvaluator ev(mem);
+        EvaluationContext ctx;
+        ctx.address_size = 8;
+        ctx.entry_registers = std::vector<uint64_t>(32, 0);
+        ctx.entry_registers[3] = 0x1000;
+
+        std::vector<uint8_t> entry_expr;
+        entry_expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_entry_value));
+        appendULEB(entry_expr, 1);
+        entry_expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_reg3));
+        entry_expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_deref));
+        entry_expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_stack_value));
+
+        auto entry_r = ev.evaluate(entry_expr, ctx, /*pc=*/0, /*registers=*/{});
+        assert(entry_r.type == ExpressionResult::VALUE);
+        assert(entry_r.value == 0x1122334455667788ULL);
+
+        std::vector<uint8_t> gnu_expr;
+        gnu_expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_GNU_entry_value));
+        appendULEB(gnu_expr, 1);
+        gnu_expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_reg3));
+        gnu_expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_deref));
+        gnu_expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_stack_value));
+
+        auto gnu_r = ev.evaluate(gnu_expr, ctx, /*pc=*/0, /*registers=*/{});
+        assert(gnu_r.type == ExpressionResult::VALUE);
+        assert(gnu_r.value == 0x1122334455667788ULL);
+    }
+
+    std::cout << "ExpressionEvaluator DW_OP_entry_value tests passed!" << std::endl;
+}
+
 void testExpressionEvaluatorGnuUninit() {
     std::cout << "Testing ExpressionEvaluator DW_OP_GNU_uninit..." << std::endl;
 
@@ -5111,6 +5181,91 @@ void testExpressionVerifier() {
         );
     }
 
+    // entry_value and GNU_entry_value should materialize entry-time register values through verifier contexts.
+    {
+        std::vector<uint8_t> lhs = {
+            static_cast<uint8_t>(DwarfOp::DW_OP_entry_value),
+            0x01,
+            static_cast<uint8_t>(DwarfOp::DW_OP_reg5),
+            static_cast<uint8_t>(DwarfOp::DW_OP_stack_value)
+        };
+        std::vector<uint8_t> rhs = {
+            static_cast<uint8_t>(DwarfOp::DW_OP_lit0),
+            static_cast<uint8_t>(DwarfOp::DW_OP_const1u),
+            0x2a,
+            static_cast<uint8_t>(DwarfOp::DW_OP_plus),
+            static_cast<uint8_t>(DwarfOp::DW_OP_stack_value)
+        };
+
+        EvaluationContext lhs_ctx = ctx;
+        lhs_ctx.entry_registers = std::vector<uint64_t>(16, 0);
+        lhs_ctx.entry_registers[5] = 42;
+
+        auto r = verifier.verifyWithContexts(lhs, lhs_ctx, 0, {}, rhs, ctx, 0, {});
+        assert(r.verdict ==
+#if DWARF_HAS_Z3
+               ExpressionVerificationResult::Verdict::EQUIVALENT
+#else
+               ExpressionVerificationResult::Verdict::UNKNOWN
+#endif
+        );
+    }
+
+    {
+        std::vector<uint8_t> lhs = {
+            static_cast<uint8_t>(DwarfOp::DW_OP_GNU_entry_value),
+            0x01,
+            static_cast<uint8_t>(DwarfOp::DW_OP_reg5),
+            static_cast<uint8_t>(DwarfOp::DW_OP_stack_value)
+        };
+        std::vector<uint8_t> rhs = {
+            static_cast<uint8_t>(DwarfOp::DW_OP_lit7),
+            static_cast<uint8_t>(DwarfOp::DW_OP_stack_value)
+        };
+
+        EvaluationContext lhs_ctx = ctx;
+        lhs_ctx.entry_registers = std::vector<uint64_t>(16, 0);
+        lhs_ctx.entry_registers[5] = 7;
+
+        auto r = verifier.verifyWithContexts(lhs, lhs_ctx, 0, {}, rhs, ctx, 0, {});
+        assert(r.verdict ==
+#if DWARF_HAS_Z3
+               ExpressionVerificationResult::Verdict::EQUIVALENT
+#else
+               ExpressionVerificationResult::Verdict::UNKNOWN
+#endif
+        );
+    }
+
+    // Per-side entry contexts should still distinguish mismatched entry_value materializations.
+    {
+        std::vector<uint8_t> lhs = {
+            static_cast<uint8_t>(DwarfOp::DW_OP_entry_value),
+            0x01,
+            static_cast<uint8_t>(DwarfOp::DW_OP_reg5),
+            static_cast<uint8_t>(DwarfOp::DW_OP_stack_value)
+        };
+        std::vector<uint8_t> rhs = lhs;
+
+        EvaluationContext lhs_ctx = ctx;
+        EvaluationContext rhs_ctx = ctx;
+        lhs_ctx.entry_registers = std::vector<uint64_t>(16, 0);
+        rhs_ctx.entry_registers = std::vector<uint64_t>(16, 0);
+        lhs_ctx.entry_registers[5] = 1;
+        rhs_ctx.entry_registers[5] = 2;
+
+        auto r = verifier.verifyWithContexts(lhs, lhs_ctx, 0, {}, rhs, rhs_ctx, 0, {});
+#if DWARF_HAS_Z3
+        assert(r.verdict == ExpressionVerificationResult::Verdict::DIFFERENT);
+        assert(r.verifier_backend == "z3");
+        assert(r.solver_result == "sat");
+#else
+        assert(r.verdict == ExpressionVerificationResult::Verdict::UNKNOWN);
+        assert(r.verifier_backend == "solver-unavailable");
+        assert(r.solver_result == "solver_unavailable");
+#endif
+    }
+
     // Wide implicit byte values should remain solver-visible through the public verifier.
     {
         std::vector<uint8_t> lhs = {
@@ -5995,6 +6150,175 @@ void testCrossBinaryExpressionComparator() {
         strict_attr.require_attribute_on_both = true;
         auto strict_rows = cmp.compareDIEListsByName({lcu}, {rcu}, strict_attr);
         assert(strict_rows.empty());
+    }
+
+    // Range-aware compare should honor per-side entry_value contexts and coverage accounting.
+    {
+        auto lcu = std::make_shared<DIE>(DwarfTag::DW_TAG_compile_unit, 0xb00, 0);
+        auto rcu = std::make_shared<DIE>(DwarfTag::DW_TAG_compile_unit, 0xc00, 0);
+
+        auto makeListVar = [](const std::string& name,
+                              const std::vector<LocationAttributeValue::LocationEntry>& entries,
+                              uint64_t off) {
+            auto die = std::make_shared<DIE>(DwarfTag::DW_TAG_variable, off, 0);
+            die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>(name));
+            die->addAttribute(DwarfAttribute::DW_AT_location,
+                              std::make_shared<LocationAttributeValue>(entries));
+            return die;
+        };
+
+        std::vector<uint8_t> entry_reg5 = {
+            static_cast<uint8_t>(DwarfOp::DW_OP_entry_value),
+            0x01,
+            static_cast<uint8_t>(DwarfOp::DW_OP_reg5),
+            static_cast<uint8_t>(DwarfOp::DW_OP_stack_value)
+        };
+        std::vector<uint8_t> lit7 = {
+            static_cast<uint8_t>(DwarfOp::DW_OP_lit7),
+            static_cast<uint8_t>(DwarfOp::DW_OP_stack_value)
+        };
+        std::vector<uint8_t> lit9 = {
+            static_cast<uint8_t>(DwarfOp::DW_OP_lit9),
+            static_cast<uint8_t>(DwarfOp::DW_OP_stack_value)
+        };
+
+        std::vector<LocationAttributeValue::LocationEntry> lhs_entries;
+        lhs_entries.emplace_back(0x10, 0x20, entry_reg5, false);
+        lhs_entries.emplace_back(0x20, 0x30, lit9, false);
+
+        std::vector<LocationAttributeValue::LocationEntry> rhs_entries;
+        rhs_entries.emplace_back(0x10, 0x20, lit7, false);
+        rhs_entries.emplace_back(0x20, 0x40, lit9, false);
+
+        lcu->addChild(makeListVar("range_ctx", lhs_entries, 0xb10));
+        rcu->addChild(makeListVar("range_ctx", rhs_entries, 0xc10));
+
+        CrossBinaryCompareOptions range_opts;
+        range_opts.tag = DwarfTag::DW_TAG_variable;
+        range_opts.attribute = DwarfAttribute::DW_AT_location;
+        range_opts.enable_range_aware_location_compare = true;
+        range_opts.enable_location_semantic_normalization = true;
+        range_opts.include_missing = true;
+        range_opts.lhs_context.address_size = 8;
+        range_opts.rhs_context.address_size = 8;
+        range_opts.lhs_context.entry_registers = std::vector<uint64_t>(16, 0);
+        range_opts.rhs_context.entry_registers = std::vector<uint64_t>(16, 0);
+        range_opts.lhs_context.entry_registers[5] = 7;
+
+        auto range_rows = cmp.compareDIEListsByName({lcu}, {rcu}, range_opts);
+        assert(range_rows.size() == 1);
+        const auto& row = range_rows.front();
+        assert(row.range_aware);
+        assert(row.coverage_total == 0x30);
+        assert(row.coverage_equivalent == 0x20);
+        assert(row.coverage_different == 0);
+        assert(row.coverage_unknown == 0);
+        assert(row.coverage_uncovered == 0x10);
+        assert(row.range_segments.size() == 3);
+        assert(row.range_segments[0].start == 0x10 && row.range_segments[0].end == 0x20);
+        assert(row.range_segments[0].verdict ==
+#if DWARF_HAS_Z3
+               ExpressionVerificationResult::Verdict::EQUIVALENT
+#else
+               ExpressionVerificationResult::Verdict::UNKNOWN
+#endif
+        );
+        assert(row.range_segments[1].start == 0x20 && row.range_segments[1].end == 0x30);
+        assert(row.range_segments[1].verdict ==
+#if DWARF_HAS_Z3
+               ExpressionVerificationResult::Verdict::EQUIVALENT
+#else
+               ExpressionVerificationResult::Verdict::UNKNOWN
+#endif
+        );
+        assert(row.range_segments[2].start == 0x30 && row.range_segments[2].end == 0x40);
+        assert(!row.range_segments[2].lhs_present && row.range_segments[2].rhs_present);
+        assert(row.verification.reason.find("range-aware coverage eq=") != std::string::npos);
+        assert(row.verification.reason.find("uncovered=16") != std::string::npos);
+        assert(row.verification.verdict == ExpressionVerificationResult::Verdict::UNKNOWN);
+
+        auto range_summary = cmp.summarize(range_rows);
+        assert(range_summary.total == 1);
+        assert(range_summary.coverage_total == 0x30);
+        assert(range_summary.coverage_equivalent == 0x20);
+        assert(range_summary.coverage_uncovered == 0x10);
+
+        CrossBinaryGateOptions coverage_gate;
+        coverage_gate.max_different = std::numeric_limits<size_t>::max();
+        coverage_gate.max_unknown = std::numeric_limits<size_t>::max();
+        coverage_gate.fail_on_uncovered = true;
+        auto range_gate = cmp.evaluateGate(range_rows, coverage_gate);
+        assert(!range_gate.pass);
+        assert(range_gate.trigger == "fail_on_uncovered");
+        assert(range_gate.trigger_detail == "16");
+    }
+
+    // Location semantic normalization should merge adjacent equivalent ranges before segmentation.
+    {
+        auto lcu = std::make_shared<DIE>(DwarfTag::DW_TAG_compile_unit, 0xd00, 0);
+        auto rcu = std::make_shared<DIE>(DwarfTag::DW_TAG_compile_unit, 0xe00, 0);
+
+        auto makeListVar = [](const std::string& name,
+                              const std::vector<LocationAttributeValue::LocationEntry>& entries,
+                              uint64_t off) {
+            auto die = std::make_shared<DIE>(DwarfTag::DW_TAG_variable, off, 0);
+            die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>(name));
+            die->addAttribute(DwarfAttribute::DW_AT_location,
+                              std::make_shared<LocationAttributeValue>(entries));
+            return die;
+        };
+
+        std::vector<uint8_t> lit4 = {
+            static_cast<uint8_t>(DwarfOp::DW_OP_lit4),
+            static_cast<uint8_t>(DwarfOp::DW_OP_stack_value)
+        };
+
+        std::vector<LocationAttributeValue::LocationEntry> lhs_entries;
+        lhs_entries.emplace_back(0x10, 0x18, lit4, false);
+        lhs_entries.emplace_back(0x18, 0x20, lit4, false);
+
+        std::vector<LocationAttributeValue::LocationEntry> rhs_entries;
+        rhs_entries.emplace_back(0x10, 0x20, lit4, false);
+
+        lcu->addChild(makeListVar("range_norm", lhs_entries, 0xd10));
+        rcu->addChild(makeListVar("range_norm", rhs_entries, 0xe10));
+
+        CrossBinaryCompareOptions raw_opts;
+        raw_opts.tag = DwarfTag::DW_TAG_variable;
+        raw_opts.attribute = DwarfAttribute::DW_AT_location;
+        raw_opts.enable_range_aware_location_compare = true;
+        raw_opts.enable_location_semantic_normalization = false;
+
+        auto raw_rows = cmp.compareDIEListsByName({lcu}, {rcu}, raw_opts);
+        assert(raw_rows.size() == 1);
+        const auto& raw = raw_rows.front();
+        assert(raw.range_aware);
+        assert(raw.coverage_total == 0x10);
+        assert(raw.coverage_equivalent == 0x10);
+        assert(raw.coverage_uncovered == 0);
+        assert(raw.range_segments.size() == 2);
+        assert(raw.range_segments[0].start == 0x10 && raw.range_segments[0].end == 0x18);
+        assert(raw.range_segments[1].start == 0x18 && raw.range_segments[1].end == 0x20);
+
+        CrossBinaryCompareOptions norm_opts = raw_opts;
+        norm_opts.enable_location_semantic_normalization = true;
+
+        auto norm_rows = cmp.compareDIEListsByName({lcu}, {rcu}, norm_opts);
+        assert(norm_rows.size() == 1);
+        const auto& norm = norm_rows.front();
+        assert(norm.range_aware);
+        assert(norm.coverage_total == 0x10);
+        assert(norm.coverage_equivalent == 0x10);
+        assert(norm.coverage_uncovered == 0);
+        assert(norm.range_segments.size() == 1);
+        assert(norm.range_segments[0].start == 0x10 && norm.range_segments[0].end == 0x20);
+        assert(norm.verification.verdict ==
+#if DWARF_HAS_Z3
+               ExpressionVerificationResult::Verdict::EQUIVALENT
+#else
+               ExpressionVerificationResult::Verdict::UNKNOWN
+#endif
+        );
     }
 
     std::cout << "CrossBinaryExpressionComparator tests passed!" << std::endl;
@@ -15967,6 +16291,7 @@ int main() {
     testExpressionEvaluatorPieceImplicitBytesEndianness();
     testExpressionEvaluatorConstTypeEndianness();
     testExpressionEvaluatorGnuEncodedAddr();
+    testExpressionEvaluatorEntryValue();
     testExpressionEvaluatorGnuUninit();
     testExpressionEvaluatorBranchLoopIsGuarded();
     testExpressionEvaluatorTlsAddressOps();

@@ -301,11 +301,19 @@ SymExprPtr SymExpr::makeSExt(SymExprPtr v, uint64_t size_bytes) {
 
 std::string SymExpr::toString() const {
     auto bin = [&](const char* op) -> std::string {
-        assert(args.size() == 2);
+        if (args.size() != 2) {
+            std::ostringstream ss;
+            ss << "malformed_bin(" << op << ",argc=" << args.size() << ")";
+            return ss.str();
+        }
         return "(" + args[0]->toString() + " " + op + " " + args[1]->toString() + ")";
     };
     auto un = [&](const char* op) -> std::string {
-        assert(args.size() == 1);
+        if (args.size() != 1) {
+            std::ostringstream ss;
+            ss << "malformed_un(" << op << ",argc=" << args.size() << ")";
+            return ss.str();
+        }
         return std::string(op) + "(" + args[0]->toString() + ")";
     };
 

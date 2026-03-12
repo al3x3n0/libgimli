@@ -444,6 +444,91 @@ std::string makeSingleVariableLocationELF(const std::string& stem,
     return path;
 }
 
+std::string makeSingleVariableLoclistELF(
+    const std::string& stem,
+    const std::string& var_name,
+    const std::vector<std::tuple<uint64_t, uint64_t, std::vector<uint8_t>>>& segments) {
+    std::vector<uint8_t> debug_str;
+    const uint32_t off_name = 0;
+    for (char c : var_name) debug_str.push_back(static_cast<uint8_t>(c));
+    debug_str.push_back(0);
+
+    std::vector<uint8_t> debug_loclists;
+    appendU32LE(debug_loclists, 0);   // unit_length placeholder
+    appendU16LE(debug_loclists, 5);   // version
+    debug_loclists.push_back(0x08);   // address_size
+    debug_loclists.push_back(0x00);   // segment_selector_size
+    appendU32LE(debug_loclists, 0);   // offset_entry_count
+    const uint32_t loclist_off = static_cast<uint32_t>(debug_loclists.size());
+
+    for (const auto& [start, end, expr] : segments) {
+        debug_loclists.push_back(0x07); // DW_LLE_start_end
+        appendU64LE(debug_loclists, start);
+        appendU64LE(debug_loclists, end);
+        appendULEB128(debug_loclists, static_cast<uint64_t>(expr.size()));
+        debug_loclists.insert(debug_loclists.end(), expr.begin(), expr.end());
+    }
+    debug_loclists.push_back(0x00); // DW_LLE_end_of_list
+
+    const uint32_t loclists_unit_len = static_cast<uint32_t>(debug_loclists.size() - 4);
+    debug_loclists[0] = static_cast<uint8_t>(loclists_unit_len & 0xff);
+    debug_loclists[1] = static_cast<uint8_t>((loclists_unit_len >> 8) & 0xff);
+    debug_loclists[2] = static_cast<uint8_t>((loclists_unit_len >> 16) & 0xff);
+    debug_loclists[3] = static_cast<uint8_t>((loclists_unit_len >> 24) & 0xff);
+
+    std::vector<uint8_t> debug_abbrev;
+    appendULEB128(debug_abbrev, 1);
+    appendULEB128(debug_abbrev, 0x11); // DW_TAG_compile_unit
+    debug_abbrev.push_back(0x01);      // children
+    appendULEB128(debug_abbrev, 0x8c); // DW_AT_loclists_base
+    appendULEB128(debug_abbrev, 0x17); // DW_FORM_sec_offset
+    debug_abbrev.push_back(0x00);
+    debug_abbrev.push_back(0x00);
+
+    appendULEB128(debug_abbrev, 2);
+    appendULEB128(debug_abbrev, 0x34); // DW_TAG_variable
+    debug_abbrev.push_back(0x00);      // no children
+    appendULEB128(debug_abbrev, 0x03); // DW_AT_name
+    appendULEB128(debug_abbrev, 0x0e); // DW_FORM_strp
+    appendULEB128(debug_abbrev, 0x02); // DW_AT_location
+    appendULEB128(debug_abbrev, 0x17); // DW_FORM_sec_offset
+    debug_abbrev.push_back(0x00);
+    debug_abbrev.push_back(0x00);
+    debug_abbrev.push_back(0x00);
+
+    std::vector<uint8_t> debug_info;
+    appendU32LE(debug_info, 0); // unit_length placeholder
+    appendU16LE(debug_info, 5); // version
+    debug_info.push_back(0x01); // DW_UT_compile
+    debug_info.push_back(0x08); // addr size
+    appendU32LE(debug_info, 0); // abbrev offset
+
+    debug_info.push_back(0x01); // CU
+    appendU32LE(debug_info, 0); // DW_AT_loclists_base = contribution header start
+
+    debug_info.push_back(0x02); // variable
+    appendU32LE(debug_info, off_name);
+    appendU32LE(debug_info, loclist_off); // DW_AT_location sec_offset into .debug_loclists
+    debug_info.push_back(0x00); // end children
+
+    const uint32_t unit_len = static_cast<uint32_t>(debug_info.size() - 4);
+    debug_info[0] = static_cast<uint8_t>(unit_len & 0xff);
+    debug_info[1] = static_cast<uint8_t>((unit_len >> 8) & 0xff);
+    debug_info[2] = static_cast<uint8_t>((unit_len >> 16) & 0xff);
+    debug_info[3] = static_cast<uint8_t>((unit_len >> 24) & 0xff);
+
+    fs::path dir = fs::temp_directory_path() / fs::path(stem);
+    fs::create_directories(dir);
+    std::string path = (dir / "single_var_loclist.elf").string();
+    writeELFWithSections(path, {
+        {".debug_info", debug_info},
+        {".debug_abbrev", debug_abbrev},
+        {".debug_str", debug_str},
+        {".debug_loclists", debug_loclists},
+    });
+    return path;
+}
+
 struct VendorTelemetryExpectations {
     uint64_t skips = 0;
     std::vector<uint64_t> forms;
@@ -1451,6 +1536,147 @@ int main() {
             "/tmp/dwarf_cli_range_aware_ok.txt", out);
         assert(code == 0);
         assert(out.find("summary total=") != std::string::npos);
+    }
+
+    {
+        std::vector<uint8_t> lit4 = {0x34, 0x9f}; // DW_OP_lit4; DW_OP_stack_value
+        std::vector<std::tuple<uint64_t, uint64_t, std::vector<uint8_t>>> lhs_segments = {
+            {0x10, 0x18, lit4},
+            {0x18, 0x20, lit4},
+        };
+        std::vector<std::tuple<uint64_t, uint64_t, std::vector<uint8_t>>> rhs_segments = {
+            {0x10, 0x20, lit4},
+            {0x20, 0x30, lit4},
+        };
+
+        std::string lhs_loc_elf = makeSingleVariableLoclistELF("dwarf_cli_range_loc_lhs", "range_norm", lhs_segments);
+        std::string rhs_loc_elf = makeSingleVariableLoclistELF("dwarf_cli_range_loc_rhs", "range_norm", rhs_segments);
+
+        std::string out_text;
+        int code_text = runAndCapture(
+            dwarf_dump + " compare-expr " + lhs_loc_elf + " " + rhs_loc_elf +
+                " --name=range_norm --range-aware --normalize-loc --allow-unknown --allow-missing --report-only",
+            "/tmp/dwarf_cli_range_aware_loclists_text.txt", out_text);
+        assert(code_text == 0);
+        assert(out_text.find("coverage_total=32") != std::string::npos);
+        assert(out_text.find("coverage_eq=16") != std::string::npos);
+        assert(out_text.find("coverage_uncovered=16") != std::string::npos);
+        assert(out_text.find("|32|16|0|0|16|") != std::string::npos);
+
+        std::string out_json;
+        int code_json = runAndCapture(
+            dwarf_dump + " compare-expr " + lhs_loc_elf + " " + rhs_loc_elf +
+                " --name=range_norm --range-aware --normalize-loc --allow-unknown --allow-missing --report-only --format=json --schema-version=1",
+            "/tmp/dwarf_cli_range_aware_loclists_json.txt", out_json);
+        assert(code_json == 0);
+        std::string row_json = extractFirstObjectFromArrayKey(out_json, "comparisons");
+        assert(!row_json.empty());
+        assert(row_json.find("\"range_aware\":true") != std::string::npos);
+        assert(row_json.find("\"coverage_total\":32") != std::string::npos);
+        assert(row_json.find("\"coverage_equivalent\":16") != std::string::npos);
+        assert(row_json.find("\"coverage_uncovered\":16") != std::string::npos);
+        assert(row_json.find("\"range_segments\"") != std::string::npos);
+        assert(row_json.find("\"start\":16") != std::string::npos);
+        assert(row_json.find("\"end\":32") != std::string::npos);
+        auto norm_segments = extractObjectsFromArrayKey(row_json, "range_segments");
+        assert(norm_segments.size() == 2);
+        assert(norm_segments[0].find("\"start\":16") != std::string::npos);
+        assert(norm_segments[0].find("\"end\":32") != std::string::npos);
+        assert(norm_segments[0].find("\"verdict\":\"EQUIVALENT\"") != std::string::npos);
+        assert(norm_segments[1].find("\"start\":32") != std::string::npos);
+        assert(norm_segments[1].find("\"end\":48") != std::string::npos);
+        assert(norm_segments[1].find("\"lhs_present\":false") != std::string::npos);
+
+        std::string out_json_raw;
+        int code_json_raw = runAndCapture(
+            dwarf_dump + " compare-expr " + lhs_loc_elf + " " + rhs_loc_elf +
+                " --name=range_norm --range-aware --allow-unknown --allow-missing --report-only --format=json --schema-version=1",
+            "/tmp/dwarf_cli_range_aware_loclists_json_raw.txt", out_json_raw);
+        assert(code_json_raw == 0);
+        std::string row_json_raw = extractFirstObjectFromArrayKey(out_json_raw, "comparisons");
+        assert(!row_json_raw.empty());
+        auto raw_segments = extractObjectsFromArrayKey(row_json_raw, "range_segments");
+        assert(raw_segments.size() == 3);
+        assert(raw_segments[0].find("\"start\":16") != std::string::npos);
+        assert(raw_segments[0].find("\"end\":24") != std::string::npos);
+        assert(raw_segments[1].find("\"start\":24") != std::string::npos);
+        assert(raw_segments[1].find("\"end\":32") != std::string::npos);
+        assert(raw_segments[2].find("\"start\":32") != std::string::npos);
+        assert(raw_segments[2].find("\"end\":48") != std::string::npos);
+
+        std::string gate_text;
+        int gate_code = runAndCapture(
+            dwarf_dump + " compare-expr " + lhs_loc_elf + " " + rhs_loc_elf +
+                " --name=range_norm --range-aware --normalize-loc --allow-unknown --allow-missing"
+                " --max-different=100000 --max-unknown=100000 --fail-on-uncovered",
+            "/tmp/dwarf_cli_range_aware_loclists_gate_text.txt", gate_text);
+        assert(gate_code == 2);
+        assert(gate_text.find("uncovered range-aware segments are disallowed") != std::string::npos);
+
+        std::string gate_json;
+        int gate_json_code = runAndCapture(
+            dwarf_dump + " compare-expr " + lhs_loc_elf + " " + rhs_loc_elf +
+                " --name=range_norm --range-aware --normalize-loc --allow-unknown --allow-missing"
+                " --max-different=100000 --max-unknown=100000 --fail-on-uncovered --format=json --schema-version=1",
+            "/tmp/dwarf_cli_range_aware_loclists_gate_json.txt", gate_json);
+        assert(gate_json_code == 2);
+        assert(gate_json.find("\"trigger\":\"fail_on_uncovered\"") != std::string::npos);
+        assert(gate_json.find("\"trigger_detail\":\"16\"") != std::string::npos);
+
+        std::string eq_gate_text;
+        int eq_gate_code = runAndCapture(
+            dwarf_dump + " compare-expr " + lhs_loc_elf + " " + rhs_loc_elf +
+                " --name=range_norm --range-aware --normalize-loc --allow-unknown --allow-missing"
+                " --max-different=100000 --max-unknown=100000 --min-equivalent-coverage=0.6",
+            "/tmp/dwarf_cli_range_aware_loclists_eq_gate_text.txt", eq_gate_text);
+        assert(eq_gate_code == 2);
+        assert(eq_gate_text.find("equivalent coverage ratio below minimum") != std::string::npos);
+
+        std::string eq_gate_json;
+        int eq_gate_json_code = runAndCapture(
+            dwarf_dump + " compare-expr " + lhs_loc_elf + " " + rhs_loc_elf +
+                " --name=range_norm --range-aware --normalize-loc --allow-unknown --allow-missing"
+                " --max-different=100000 --max-unknown=100000 --min-equivalent-coverage=0.6 --format=json --schema-version=1",
+            "/tmp/dwarf_cli_range_aware_loclists_eq_gate_json.txt", eq_gate_json);
+        assert(eq_gate_json_code == 2);
+        assert(eq_gate_json.find("\"trigger\":\"min_equivalent_coverage\"") != std::string::npos);
+        assert(eq_gate_json.find("\"trigger_detail\":\"0.500000/0.600000\"") != std::string::npos);
+    }
+
+    {
+        std::vector<uint8_t> lit4 = {0x34, 0x9f}; // DW_OP_lit4; DW_OP_stack_value
+        std::vector<uint8_t> lit5 = {0x35, 0x9f}; // DW_OP_lit5; DW_OP_stack_value
+        std::vector<std::tuple<uint64_t, uint64_t, std::vector<uint8_t>>> lhs_segments = {
+            {0x10, 0x20, lit4},
+            {0x20, 0x30, lit4},
+        };
+        std::vector<std::tuple<uint64_t, uint64_t, std::vector<uint8_t>>> rhs_segments = {
+            {0x10, 0x20, lit5},
+            {0x20, 0x30, lit4},
+        };
+
+        std::string lhs_loc_elf = makeSingleVariableLoclistELF("dwarf_cli_range_diff_lhs", "range_diff", lhs_segments);
+        std::string rhs_loc_elf = makeSingleVariableLoclistELF("dwarf_cli_range_diff_rhs", "range_diff", rhs_segments);
+
+        std::string diff_text;
+        int diff_code = runAndCapture(
+            dwarf_dump + " compare-expr " + lhs_loc_elf + " " + rhs_loc_elf +
+                " --name=range_diff --range-aware --normalize-loc --allow-unknown --allow-missing --report-only",
+            "/tmp/dwarf_cli_range_aware_diff_text.txt", diff_text);
+        assert(diff_code == 0);
+        assert(diff_text.find("coverage_total=32") != std::string::npos);
+        assert(diff_text.find("coverage_eq=16") != std::string::npos);
+        assert(diff_text.find("coverage_diff=16") != std::string::npos);
+
+        std::string diff_gate_json;
+        int diff_gate_code = runAndCapture(
+            dwarf_dump + " compare-expr " + lhs_loc_elf + " " + rhs_loc_elf +
+                " --name=range_diff --range-aware --normalize-loc --allow-unknown --allow-missing"
+                " --max-unknown=100000 --max-different=100000 --max-different-coverage=0.4 --format=json --schema-version=1",
+            "/tmp/dwarf_cli_range_aware_diff_gate_json.txt", diff_gate_json);
+        assert(diff_gate_code == 2);
+        assert(diff_gate_json.find("\"trigger\":\"max_different_coverage\"") != std::string::npos);
+        assert(diff_gate_json.find("\"trigger_detail\":\"0.500000/0.400000\"") != std::string::npos);
     }
 
     {

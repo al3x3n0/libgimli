@@ -1281,11 +1281,36 @@ void ExpressionEvaluator::handleEntryValue(uint64_t& offset, const std::vector<u
 
     // Use entry registers from context instead of current registers
     auto result = sub_evaluator.evaluate(sub_expr, context_, pc_, context_.entry_registers);
+    uninitialized_taint_ = uninitialized_taint_ || result.uninitialized;
 
-    if (result.type != ExpressionResult::INVALID) {
-        push(result.value);
-    } else {
-        push(0);  // Fallback
+    switch (result.type) {
+        case ExpressionResult::VALUE:
+            push(result.value);
+            return;
+        case ExpressionResult::REGISTER:
+            if (!context_.entry_registers.empty() && result.value < context_.entry_registers.size()) {
+                push(context_.entry_registers[static_cast<size_t>(result.value)]);
+            } else {
+                push(0);
+            }
+            return;
+        case ExpressionResult::ADDRESS:
+            if (memory_context_) {
+                size_t n = pointerByteSize("DW_OP_entry_value");
+                if (execution_error_) return;
+                std::vector<uint8_t> buf(n);
+                if (memory_context_->readMemory(result.value, n, buf.data())) {
+                    push(decodeU64FromBytes(buf.data(), n, DwarfUtils::objectIsLittleEndian()));
+                } else {
+                    push(0);
+                }
+            } else {
+                push(0);
+            }
+            return;
+        default:
+            push(0);  // Fallback
+            return;
     }
 }
 
