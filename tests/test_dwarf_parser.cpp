@@ -16482,7 +16482,7 @@ void testTypePrinter() {
     assert(printer.formatType(atomic_die) == "_Atomic(Alias)");
     assert(printer.formatType(interface_die) == "interface Runnable");
     assert(printer.formatType(member_ptr_die) == "Alias Widget::*");
-    assert(printer.formatType(enum_die) == "enum class ScopedColor");
+    assert(printer.formatType(enum_die) == "enum class ScopedColor : int");
     std::string enum_text = printer.formatEnum(enum_die, true);
     assert(enum_text.find("NEGATIVE = -7") != std::string::npos);
     assert(enum_text.find("POSITIVE = 5") != std::string::npos);

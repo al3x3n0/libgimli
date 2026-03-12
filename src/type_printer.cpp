@@ -974,10 +974,20 @@ std::string TypePrinter::formatEnumType(const std::shared_ptr<DIE>& die) const {
     }
 
     std::string name = die->getName();
+    std::string result = is_scoped ? "enum class " : "enum ";
     if (name.empty()) {
-        return is_scoped ? "enum class <anonymous>" : "enum <anonymous>";
+        result += "<anonymous>";
+    } else {
+        result += name;
     }
-    return (is_scoped ? "enum class " : "enum ") + name;
+
+    uint64_t underlying_type_offset = getTypeOffset(die->getAttribute(DwarfAttribute::DW_AT_type));
+    if (underlying_type_offset != 0) {
+        auto underlying_type = die_lookup_(underlying_type_offset);
+        result += " : " + formatType(underlying_type);
+    }
+
+    return result;
 }
 
 std::string TypePrinter::formatSubroutineType(const std::shared_ptr<DIE>& die,
