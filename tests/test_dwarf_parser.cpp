@@ -15933,7 +15933,7 @@ void testTypeSystem() {
 
         auto member_ptr_die = add_die(DwarfTag::DW_TAG_ptr_to_member_type, 0x47);
         member_ptr_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x30));
-        member_ptr_die->addAttribute(DwarfAttribute::DW_AT_containing_type, std::make_shared<ReferenceAttributeValue>(0x60));
+        member_ptr_die->addAttribute(DwarfAttribute::DW_AT_containing_type, std::make_shared<TypeAttributeValue>(0x60));
 
         auto enum_die = add_die(DwarfTag::DW_TAG_enumeration_type, 0x48);
         enum_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("SignedEnum"));

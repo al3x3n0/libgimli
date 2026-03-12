@@ -997,11 +997,14 @@ std::shared_ptr<Type> TypeSystem::resolveMemberPointerType(std::shared_ptr<DIE> 
 
     std::shared_ptr<Type> resolved_containing;
     auto containing_attr = die->getAttribute(DwarfAttribute::DW_AT_containing_type);
-    if (containing_attr && containing_attr->getType() == AttributeValueType::REFERENCE) {
-        auto ref = std::static_pointer_cast<ReferenceAttributeValue>(containing_attr);
-        if (die_lookup_) {
-            resolved_containing = resolveType(die_lookup_(ref->getOffset()));
-        }
+    uint64_t containing_offset = 0;
+    if (auto ref = std::dynamic_pointer_cast<ReferenceAttributeValue>(containing_attr)) {
+        containing_offset = ref->getOffset();
+    } else if (auto type_val = std::dynamic_pointer_cast<TypeAttributeValue>(containing_attr)) {
+        containing_offset = type_val->getOffset();
+    }
+    if (containing_offset != 0 && die_lookup_) {
+        resolved_containing = resolveType(die_lookup_(containing_offset));
     }
 
     return createMemberPointerType(resolved_member, resolved_containing);
