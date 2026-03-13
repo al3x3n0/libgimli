@@ -780,6 +780,11 @@ std::string TypePrinter::formatBaseType(const std::shared_ptr<DIE>& die) const {
         name += " [endianity=" + std::to_string(uint_val->getValue()) + "]";
     }
 
+    auto address_class_attr = die->getAttribute(DwarfAttribute::DW_AT_address_class);
+    if (auto uint_val = std::dynamic_pointer_cast<UnsignedAttributeValue>(address_class_attr)) {
+        name += " [address_class=" + std::to_string(uint_val->getValue()) + "]";
+    }
+
     return name;
 }
 

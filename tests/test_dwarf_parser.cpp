@@ -15745,6 +15745,12 @@ void testTypeSystem() {
     assert(be_int_type);
     assert(be_int_type->getEndianity() == 1);
     assert(be_int_type->getDescription().find("[endianity=1]") != std::string::npos);
+
+    auto addr_class_int_type = std::dynamic_pointer_cast<PrimitiveType>(
+        type_system.createPrimitiveType(PrimitiveType::Kind::INTEGER, 4, "seg_int", 0, 7));
+    assert(addr_class_int_type);
+    assert(addr_class_int_type->getAddressClass() == 7);
+    assert(addr_class_int_type->getDescription().find("[address_class=7]") != std::string::npos);
     
     // Test pointer type creation
     auto int_ptr_type = type_system.createPointerType(int_type);
@@ -15902,6 +15908,12 @@ void testTypeSystem() {
         be_int_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(4));
         be_int_die->addAttribute(DwarfAttribute::DW_AT_encoding, std::make_shared<UnsignedAttributeValue>(4));
         be_int_die->addAttribute(DwarfAttribute::DW_AT_endianity, std::make_shared<UnsignedAttributeValue>(1));
+
+        auto seg_int_die = add_die(DwarfTag::DW_TAG_base_type, 0x12);
+        seg_int_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("seg_int"));
+        seg_int_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(4));
+        seg_int_die->addAttribute(DwarfAttribute::DW_AT_encoding, std::make_shared<UnsignedAttributeValue>(4));
+        seg_int_die->addAttribute(DwarfAttribute::DW_AT_address_class, std::make_shared<UnsignedAttributeValue>(7));
 
         auto unspecified_die = add_die(DwarfTag::DW_TAG_unspecified_type, 0x15);
         unspecified_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("decltype(auto)"));
@@ -16135,6 +16147,12 @@ void testTypeSystem() {
         assert(resolved_be_int->getEndianity() == 1);
         assert(resolved_be_int->getDescription().find("[endianity=1]") != std::string::npos);
 
+        auto resolved_seg_int = std::dynamic_pointer_cast<PrimitiveType>(resolving_system.resolveType(seg_int_die));
+        assert(resolved_seg_int);
+        assert(resolved_seg_int->getName() == "seg_int");
+        assert(resolved_seg_int->getAddressClass() == 7);
+        assert(resolved_seg_int->getDescription().find("[address_class=7]") != std::string::npos);
+
         auto resolved_string = std::dynamic_pointer_cast<StringType>(resolving_system.resolveType(string_die));
         assert(resolved_string);
         assert(resolved_string->getName() == "utf8_string");
@@ -16325,6 +16343,12 @@ void testTypePrinter() {
     be_int_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(4));
     be_int_die->addAttribute(DwarfAttribute::DW_AT_encoding, std::make_shared<UnsignedAttributeValue>(4));
     be_int_die->addAttribute(DwarfAttribute::DW_AT_endianity, std::make_shared<UnsignedAttributeValue>(1));
+
+    auto seg_int_die = add_die(DwarfTag::DW_TAG_base_type, 0x102);
+    seg_int_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("seg_int"));
+    seg_int_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(4));
+    seg_int_die->addAttribute(DwarfAttribute::DW_AT_encoding, std::make_shared<UnsignedAttributeValue>(4));
+    seg_int_die->addAttribute(DwarfAttribute::DW_AT_address_class, std::make_shared<UnsignedAttributeValue>(7));
 
     auto unspecified_die = add_die(DwarfTag::DW_TAG_unspecified_type, 0x105);
     unspecified_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("decltype(auto)"));
@@ -16542,6 +16566,7 @@ void testTypePrinter() {
 
     assert(printer.formatType(const_die) == "const int");
     assert(printer.formatType(be_int_die) == "be_int [endianity=1]");
+    assert(printer.formatType(seg_int_die) == "seg_int [address_class=7]");
     assert(printer.formatType(ptr_die) == "const int*");
     assert(printer.formatType(typedef_die) == "Alias");
     assert(printer.formatType(unspecified_die) == "decltype(auto)");

@@ -92,7 +92,11 @@ public:
         POINTER
     };
     
-    PrimitiveType(Kind kind, uint64_t size, const std::string& name = "", uint64_t endianity = 0);
+    PrimitiveType(Kind kind,
+                  uint64_t size,
+                  const std::string& name = "",
+                  uint64_t endianity = 0,
+                  uint64_t address_class = 0);
     std::string getName() const override;
     uint64_t getSize() const override;
     std::string getDescription() const override;
@@ -100,12 +104,14 @@ public:
     std::shared_ptr<Type> resolve() override;
     Kind getKind() const { return kind_; }
     uint64_t getEndianity() const { return endianity_; }
+    uint64_t getAddressClass() const { return address_class_; }
     
 private:
     Kind kind_;
     uint64_t size_;
     std::string name_;
     uint64_t endianity_;
+    uint64_t address_class_;
 };
 
 class ModifiedType : public Type {
@@ -395,7 +401,8 @@ public:
     // Type creation
     std::shared_ptr<Type> createPrimitiveType(PrimitiveType::Kind kind, uint64_t size,
                                               const std::string& name = "",
-                                              uint64_t endianity = 0);
+                                              uint64_t endianity = 0,
+                                              uint64_t address_class = 0);
     std::shared_ptr<Type> createPointerType(std::shared_ptr<Type> pointee_type);
     std::shared_ptr<Type> createReferenceType(std::shared_ptr<Type> referee_type);
     std::shared_ptr<Type> createRvalueReferenceType(std::shared_ptr<Type> referee_type);
