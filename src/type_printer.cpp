@@ -147,6 +147,13 @@ std::string formatSubroutineMetadataSuffix(const std::shared_ptr<DIE>& die) {
         }
     }
 
+    auto recursive_attr = die->getAttribute(DwarfAttribute::DW_AT_recursive);
+    if (auto flag = std::dynamic_pointer_cast<FlagAttributeValue>(recursive_attr)) {
+        if (flag->getValue()) {
+            suffix += " [recursive]";
+        }
+    }
+
     return suffix;
 }
 
