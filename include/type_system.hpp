@@ -323,6 +323,7 @@ public:
                  const std::vector<std::shared_ptr<Type>>& parameter_types,
                  bool is_variadic = false,
                  bool is_prototyped = false,
+                 uint64_t inline_code = 0,
                  uint64_t calling_convention = 0,
                  bool is_declaration = false,
                  bool is_explicit = false,
@@ -336,6 +337,7 @@ public:
                  const std::vector<FunctionParameter>& parameters,
                  bool is_variadic = false,
                  bool is_prototyped = false,
+                 uint64_t inline_code = 0,
                  uint64_t calling_convention = 0,
                  bool is_declaration = false,
                  bool is_explicit = false,
@@ -356,6 +358,7 @@ public:
     const std::vector<FunctionParameter>& getParameters() const { return parameters_; }
     bool isVariadic() const { return is_variadic_; }
     bool isPrototyped() const { return is_prototyped_; }
+    uint64_t getInlineCode() const { return inline_code_; }
     uint64_t getCallingConvention() const { return calling_convention_; }
     bool isDeclaration() const { return is_declaration_; }
     bool isExplicit() const { return is_explicit_; }
@@ -372,6 +375,7 @@ private:
     std::vector<FunctionParameter> parameters_;
     bool is_variadic_;
     bool is_prototyped_;
+    uint64_t inline_code_;
     uint64_t calling_convention_;
     bool is_declaration_;
     bool is_explicit_;
@@ -497,6 +501,7 @@ public:
                                              const std::vector<std::shared_ptr<Type>>& parameter_types,
                                              bool is_variadic = false,
                                              bool is_prototyped = false,
+                                             uint64_t inline_code = 0,
                                              uint64_t calling_convention = 0,
                                              bool is_declaration = false,
                                              bool is_explicit = false,
@@ -510,6 +515,7 @@ public:
                                              const std::vector<FunctionParameter>& parameters,
                                              bool is_variadic = false,
                                              bool is_prototyped = false,
+                                             uint64_t inline_code = 0,
                                              uint64_t calling_convention = 0,
                                              bool is_declaration = false,
                                              bool is_explicit = false,
