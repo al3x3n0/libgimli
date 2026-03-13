@@ -174,6 +174,7 @@ public:
     ArrayType(std::shared_ptr<Type> element_type, const std::vector<uint64_t>& dimensions);
     ArrayType(std::shared_ptr<Type> element_type,
               const std::vector<ArrayBound>& bounds,
+              uint64_t rank = 0,
               uint64_t byte_stride = 0,
               uint64_t bit_stride = 0);
     std::string getName() const override;
@@ -185,6 +186,7 @@ public:
     std::shared_ptr<Type> getElementType() const { return element_type_; }
     const std::vector<uint64_t>& getDimensions() const { return dimensions_; }
     const std::vector<ArrayBound>& getBounds() const { return bounds_; }
+    uint64_t getRank() const { return rank_; }
     uint64_t getByteStride() const { return byte_stride_; }
     uint64_t getBitStride() const { return bit_stride_; }
     uint64_t getElementCount() const;
@@ -193,6 +195,7 @@ private:
     std::shared_ptr<Type> element_type_;
     std::vector<uint64_t> dimensions_;
     std::vector<ArrayBound> bounds_;
+    uint64_t rank_;
     uint64_t byte_stride_;
     uint64_t bit_stride_;
 };
@@ -243,11 +246,13 @@ public:
     FileType(const std::string& name,
              std::shared_ptr<Type> element_type,
              uint64_t size,
-             uint64_t element_count = 0);
+             uint64_t element_count = 0,
+             uint64_t rank = 0);
     FileType(const std::string& name,
              std::shared_ptr<Type> element_type,
              uint64_t size,
-             const std::vector<ArrayBound>& bounds);
+             const std::vector<ArrayBound>& bounds,
+             uint64_t rank = 0);
     std::string getName() const override;
     uint64_t getSize() const override;
     std::string getDescription() const override;
@@ -257,12 +262,14 @@ public:
     std::shared_ptr<Type> getElementType() const { return element_type_; }
     uint64_t getElementCount() const;
     const std::vector<ArrayBound>& getBounds() const { return bounds_; }
+    uint64_t getRank() const { return rank_; }
 
 private:
     std::string name_;
     std::shared_ptr<Type> element_type_;
     uint64_t size_;
     std::vector<ArrayBound> bounds_;
+    uint64_t rank_;
 };
 
 // Function types
@@ -394,15 +401,18 @@ public:
     std::shared_ptr<Type> createFileType(const std::string& name,
                                          std::shared_ptr<Type> element_type,
                                          uint64_t size,
-                                         uint64_t element_count = 0);
+                                         uint64_t element_count = 0,
+                                         uint64_t rank = 0);
     std::shared_ptr<Type> createFileType(const std::string& name,
                                          std::shared_ptr<Type> element_type,
                                          uint64_t size,
-                                         const std::vector<ArrayBound>& bounds);
+                                         const std::vector<ArrayBound>& bounds,
+                                         uint64_t rank = 0);
     std::shared_ptr<Type> createArrayType(std::shared_ptr<Type> element_type, 
                                           const std::vector<uint64_t>& dimensions);
     std::shared_ptr<Type> createArrayType(std::shared_ptr<Type> element_type,
                                           const std::vector<ArrayBound>& bounds,
+                                          uint64_t rank = 0,
                                           uint64_t byte_stride = 0,
                                           uint64_t bit_stride = 0);
     std::shared_ptr<Type> createFunctionType(std::shared_ptr<Type> return_type,

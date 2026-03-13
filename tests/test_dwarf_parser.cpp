@@ -15770,9 +15770,10 @@ void testTypeSystem() {
     assert(array_type_ptr->getBitStride() == 0);
 
     std::vector<ArrayBound> strided_bounds = {{1, 4}};
-    auto strided_array_type = type_system.createArrayType(int_type, strided_bounds, 16, 128);
+    auto strided_array_type = type_system.createArrayType(int_type, strided_bounds, 1, 16, 128);
     auto strided_array_type_ptr = std::dynamic_pointer_cast<ArrayType>(strided_array_type);
     assert(strided_array_type_ptr->getName() == "int[1..4]");
+    assert(strided_array_type_ptr->getRank() == 1);
     assert(strided_array_type_ptr->getByteStride() == 16);
     assert(strided_array_type_ptr->getBitStride() == 128);
     assert(strided_array_type_ptr->getDescription().find("[byte_stride=16]") != std::string::npos);
@@ -15785,11 +15786,12 @@ void testTypeSystem() {
 
     std::vector<ArrayBound> file_bounds = {{1, 4}};
     auto bounded_file_type = std::dynamic_pointer_cast<FileType>(
-        type_system.createFileType("", int_type, 64, file_bounds));
+        type_system.createFileType("", int_type, 64, file_bounds, 1));
     assert(bounded_file_type->getElementCount() == 4);
     assert(bounded_file_type->getBounds().size() == 1);
     assert(bounded_file_type->getBounds()[0].lower_bound == 1);
     assert(bounded_file_type->getBounds()[0].count == 4);
+    assert(bounded_file_type->getRank() == 1);
     assert(bounded_file_type->getName() == "file<int>[1..4]");
     
     // Test function type creation
@@ -15913,6 +15915,7 @@ void testTypeSystem() {
         file_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("IntFile"));
         file_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x10));
         file_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(64));
+        file_die->addAttribute(DwarfAttribute::DW_AT_rank, std::make_shared<UnsignedAttributeValue>(1));
         auto file_count = add_die(DwarfTag::DW_TAG_subrange_type, 0x1b);
         file_count->addAttribute(DwarfAttribute::DW_AT_count, std::make_shared<UnsignedAttributeValue>(4));
         file_die->addChild(file_count);
@@ -15920,6 +15923,7 @@ void testTypeSystem() {
         auto anonymous_file_die = add_die(DwarfTag::DW_TAG_file_type, 0x1c);
         anonymous_file_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x10));
         anonymous_file_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(64));
+        anonymous_file_die->addAttribute(DwarfAttribute::DW_AT_rank, std::make_shared<UnsignedAttributeValue>(1));
         auto anonymous_file_count = add_die(DwarfTag::DW_TAG_subrange_type, 0x1d);
         anonymous_file_count->addAttribute(DwarfAttribute::DW_AT_lower_bound, std::make_shared<SignedAttributeValue>(1));
         anonymous_file_count->addAttribute(DwarfAttribute::DW_AT_upper_bound, std::make_shared<UnsignedAttributeValue>(4));
@@ -15966,6 +15970,7 @@ void testTypeSystem() {
         elem_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x10));
         elem_die->addAttribute(DwarfAttribute::DW_AT_byte_stride, std::make_shared<UnsignedAttributeValue>(16));
         elem_die->addAttribute(DwarfAttribute::DW_AT_bit_stride, std::make_shared<UnsignedAttributeValue>(128));
+        elem_die->addAttribute(DwarfAttribute::DW_AT_rank, std::make_shared<UnsignedAttributeValue>(1));
         auto subrange = add_die(DwarfTag::DW_TAG_subrange_type, 0x51);
         subrange->addAttribute(DwarfAttribute::DW_AT_lower_bound, std::make_shared<SignedAttributeValue>(-2));
         subrange->addAttribute(DwarfAttribute::DW_AT_upper_bound, std::make_shared<SignedAttributeValue>(2));
@@ -16134,6 +16139,7 @@ void testTypeSystem() {
         assert(resolved_file->getBounds().size() == 1);
         assert(resolved_file->getBounds()[0].lower_bound == 0);
         assert(resolved_file->getBounds()[0].count == 4);
+        assert(resolved_file->getRank() == 1);
         assert(resolved_file->getElementType());
         assert(resolved_file->getElementType()->getName() == "int");
 
@@ -16144,6 +16150,7 @@ void testTypeSystem() {
         assert(resolved_anonymous_file->getBounds().size() == 1);
         assert(resolved_anonymous_file->getBounds()[0].lower_bound == 1);
         assert(resolved_anonymous_file->getBounds()[0].count == 4);
+        assert(resolved_anonymous_file->getRank() == 1);
 
         auto resolved_ref = std::dynamic_pointer_cast<ModifiedType>(resolving_system.resolveType(ref_die));
         assert(resolved_ref);
@@ -16188,6 +16195,7 @@ void testTypeSystem() {
         assert(resolved_array->getBounds().size() == 1);
         assert(resolved_array->getBounds()[0].lower_bound == -2);
         assert(resolved_array->getBounds()[0].count == 5);
+        assert(resolved_array->getRank() == 1);
         assert(resolved_array->getByteStride() == 16);
         assert(resolved_array->getBitStride() == 128);
 
@@ -16314,8 +16322,10 @@ void testTypePrinter() {
     file_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("IntFile"));
     file_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x100));
     file_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(64));
+    file_die->addAttribute(DwarfAttribute::DW_AT_rank, std::make_shared<UnsignedAttributeValue>(1));
     auto anonymous_file_die = add_die(DwarfTag::DW_TAG_file_type, 0x10a5);
     anonymous_file_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x100));
+    anonymous_file_die->addAttribute(DwarfAttribute::DW_AT_rank, std::make_shared<UnsignedAttributeValue>(1));
     auto anonymous_file_subrange_die = add_die(DwarfTag::DW_TAG_subrange_type, 0x10a6);
     anonymous_file_subrange_die->addAttribute(DwarfAttribute::DW_AT_lower_bound, std::make_shared<SignedAttributeValue>(1));
     anonymous_file_subrange_die->addAttribute(DwarfAttribute::DW_AT_upper_bound, std::make_shared<SignedAttributeValue>(4));
@@ -16454,6 +16464,7 @@ void testTypePrinter() {
     array_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x100));
     array_die->addAttribute(DwarfAttribute::DW_AT_byte_stride, std::make_shared<UnsignedAttributeValue>(16));
     array_die->addAttribute(DwarfAttribute::DW_AT_bit_stride, std::make_shared<UnsignedAttributeValue>(128));
+    array_die->addAttribute(DwarfAttribute::DW_AT_rank, std::make_shared<UnsignedAttributeValue>(1));
     auto array_subrange_die = add_die(DwarfTag::DW_TAG_subrange_type, 0x155);
     array_subrange_die->addAttribute(DwarfAttribute::DW_AT_lower_bound, std::make_shared<SignedAttributeValue>(-2));
     array_subrange_die->addAttribute(DwarfAttribute::DW_AT_upper_bound, std::make_shared<SignedAttributeValue>(2));
@@ -16502,8 +16513,8 @@ void testTypePrinter() {
     assert(printer.formatType(string_die) == "utf8_string [length=4]");
     assert(printer.formatType(expr_string_die) == "CountedExprString [length=6]");
     assert(printer.formatType(set_die) == "IntSet");
-    assert(printer.formatType(file_die) == "IntFile");
-    assert(printer.formatType(anonymous_file_die) == "file<int>[1..4]");
+    assert(printer.formatType(file_die) == "IntFile [rank=1]");
+    assert(printer.formatType(anonymous_file_die) == "file<int>[1..4] [rank=1]");
     assert(printer.formatType(rref_die) == "Alias&&");
     assert(printer.formatType(atomic_die) == "_Atomic(Alias)");
     assert(printer.formatType(interface_die) == "interface Runnable");
@@ -16512,7 +16523,7 @@ void testTypePrinter() {
     std::string enum_text = printer.formatEnum(enum_die, true);
     assert(enum_text.find("NEGATIVE = -7") != std::string::npos);
     assert(enum_text.find("POSITIVE = 5") != std::string::npos);
-    assert(printer.formatType(array_die) == "int[-2..2] [byte_stride=16] [bit_stride=128]");
+    assert(printer.formatType(array_die) == "int[-2..2] [byte_stride=16] [bit_stride=128] [rank=1]");
     assert(printer.formatType(expr_stride_array_die) == "int[3] [byte_stride=24] [bit_stride=64]");
     assert(printer.formatType(expr_bound_array_die) == "int[-1..3]");
     assert(printer.formatTypedef(typedef_die) == "typedef const int* Alias");

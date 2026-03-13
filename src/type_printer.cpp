@@ -866,6 +866,11 @@ std::string TypePrinter::formatFileType(const std::shared_ptr<DIE>& die,
             name = ss.str();
         }
     }
+    if (auto rank = decodeConstantOffsetAttribute(die->getAttribute(DwarfAttribute::DW_AT_rank))) {
+        if (*rank >= 0) {
+            name += " [rank=" + std::to_string(*rank) + "]";
+        }
+    }
     return var_name.empty() ? name : name + " " + var_name;
 }
 
@@ -895,6 +900,12 @@ std::string TypePrinter::formatArrayType(const std::shared_ptr<DIE>& die,
             die->getAttribute(DwarfAttribute::DW_AT_bit_stride))) {
         if (*bit_stride >= 0) {
             result += " [bit_stride=" + std::to_string(*bit_stride) + "]";
+        }
+    }
+
+    if (auto rank = decodeConstantOffsetAttribute(die->getAttribute(DwarfAttribute::DW_AT_rank))) {
+        if (*rank >= 0) {
+            result += " [rank=" + std::to_string(*rank) + "]";
         }
     }
 

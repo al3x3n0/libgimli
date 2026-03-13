@@ -220,7 +220,11 @@ void CompositeType::addBaseClass(const BaseClass& base) {
 
 // ArrayType implementation
 ArrayType::ArrayType(std::shared_ptr<Type> element_type, const std::vector<uint64_t>& dimensions)
-    : element_type_(std::move(element_type)), dimensions_(dimensions), byte_stride_(0), bit_stride_(0) {
+    : element_type_(std::move(element_type)),
+      dimensions_(dimensions),
+      rank_(dimensions_.size()),
+      byte_stride_(0),
+      bit_stride_(0) {
     bounds_.reserve(dimensions_.size());
     for (uint64_t dim : dimensions_) {
         bounds_.push_back({0, dim});
@@ -229,10 +233,12 @@ ArrayType::ArrayType(std::shared_ptr<Type> element_type, const std::vector<uint6
 
 ArrayType::ArrayType(std::shared_ptr<Type> element_type,
                      const std::vector<ArrayBound>& bounds,
+                     uint64_t rank,
                      uint64_t byte_stride,
                      uint64_t bit_stride)
     : element_type_(std::move(element_type)),
       bounds_(bounds),
+      rank_(rank != 0 ? rank : bounds_.size()),
       byte_stride_(byte_stride),
       bit_stride_(bit_stride) {
     dimensions_.reserve(bounds_.size());
@@ -381,23 +387,30 @@ std::shared_ptr<Type> SetType::resolve() {
 FileType::FileType(const std::string& name,
                    std::shared_ptr<Type> element_type,
                    uint64_t size,
-                   uint64_t element_count)
+                   uint64_t element_count,
+                   uint64_t rank)
     : name_(name),
       element_type_(std::move(element_type)),
-      size_(size) {
+      size_(size),
+      rank_(rank) {
     if (element_count != 0) {
         bounds_.push_back({0, element_count});
+    }
+    if (rank_ == 0 && !bounds_.empty()) {
+        rank_ = bounds_.size();
     }
 }
 
 FileType::FileType(const std::string& name,
                    std::shared_ptr<Type> element_type,
                    uint64_t size,
-                   const std::vector<ArrayBound>& bounds)
+                   const std::vector<ArrayBound>& bounds,
+                   uint64_t rank)
     : name_(name),
       element_type_(std::move(element_type)),
       size_(size),
-      bounds_(bounds) {
+      bounds_(bounds),
+      rank_(rank != 0 ? rank : bounds_.size()) {
 }
 
 std::string FileType::getName() const {
@@ -722,8 +735,9 @@ std::shared_ptr<Type> TypeSystem::createSetType(const std::string& name,
 std::shared_ptr<Type> TypeSystem::createFileType(const std::string& name,
                                                  std::shared_ptr<Type> element_type,
                                                  uint64_t size,
-                                                 uint64_t element_count) {
-    auto type = std::make_shared<FileType>(name, std::move(element_type), size, element_count);
+                                                 uint64_t element_count,
+                                                 uint64_t rank) {
+    auto type = std::make_shared<FileType>(name, std::move(element_type), size, element_count, rank);
     type->setDwarfTag(DwarfTag::DW_TAG_file_type);
     all_types_.push_back(type);
     return type;
@@ -732,8 +746,9 @@ std::shared_ptr<Type> TypeSystem::createFileType(const std::string& name,
 std::shared_ptr<Type> TypeSystem::createFileType(const std::string& name,
                                                  std::shared_ptr<Type> element_type,
                                                  uint64_t size,
-                                                 const std::vector<ArrayBound>& bounds) {
-    auto type = std::make_shared<FileType>(name, std::move(element_type), size, bounds);
+                                                 const std::vector<ArrayBound>& bounds,
+                                                 uint64_t rank) {
+    auto type = std::make_shared<FileType>(name, std::move(element_type), size, bounds, rank);
     type->setDwarfTag(DwarfTag::DW_TAG_file_type);
     all_types_.push_back(type);
     return type;
@@ -749,9 +764,10 @@ std::shared_ptr<Type> TypeSystem::createArrayType(std::shared_ptr<Type> element_
 
 std::shared_ptr<Type> TypeSystem::createArrayType(std::shared_ptr<Type> element_type,
                                                   const std::vector<ArrayBound>& bounds,
+                                                  uint64_t rank,
                                                   uint64_t byte_stride,
                                                   uint64_t bit_stride) {
-    auto type = std::make_shared<ArrayType>(std::move(element_type), bounds, byte_stride, bit_stride);
+    auto type = std::make_shared<ArrayType>(std::move(element_type), bounds, rank, byte_stride, bit_stride);
     type->setDwarfTag(DwarfTag::DW_TAG_array_type);
     all_types_.push_back(type);
     return type;
@@ -1075,6 +1091,12 @@ std::shared_ptr<Type> TypeSystem::resolveSetType(std::shared_ptr<DIE> die) {
 std::shared_ptr<Type> TypeSystem::resolveFileType(std::shared_ptr<DIE> die) {
     auto element_die = getTypeReference(die);
     std::shared_ptr<Type> resolved_element = element_die ? resolveType(element_die) : nullptr;
+    uint64_t rank = 0;
+    if (auto decoded_rank = decodeConstantOffsetAttribute(die->getAttribute(DwarfAttribute::DW_AT_rank))) {
+        if (*decoded_rank >= 0) {
+            rank = static_cast<uint64_t>(*decoded_rank);
+        }
+    }
 
     std::vector<ArrayBound> bounds;
     for (const auto& child : die->getChildren()) {
@@ -1084,9 +1106,9 @@ std::shared_ptr<Type> TypeSystem::resolveFileType(std::shared_ptr<DIE> die) {
     }
 
     if (!bounds.empty()) {
-        return createFileType(getTypeName(die), resolved_element, getTypeSize(die), bounds);
+        return createFileType(getTypeName(die), resolved_element, getTypeSize(die), bounds, rank);
     }
-    return createFileType(getTypeName(die), resolved_element, getTypeSize(die), uint64_t{0});
+    return createFileType(getTypeName(die), resolved_element, getTypeSize(die), uint64_t{0}, rank);
 }
 
 std::shared_ptr<Type> TypeSystem::resolveArrayType(std::shared_ptr<DIE> die) {
@@ -1097,8 +1119,15 @@ std::shared_ptr<Type> TypeSystem::resolveArrayType(std::shared_ptr<DIE> die) {
 
     if (resolved_element) {
         std::vector<ArrayBound> bounds;
+        uint64_t rank = 0;
         uint64_t byte_stride = 0;
         uint64_t bit_stride = 0;
+
+        if (auto decoded_rank = decodeConstantOffsetAttribute(die->getAttribute(DwarfAttribute::DW_AT_rank))) {
+            if (*decoded_rank >= 0) {
+                rank = static_cast<uint64_t>(*decoded_rank);
+            }
+        }
 
         if (auto decoded_byte_stride =
                 decodeConstantOffsetAttribute(die->getAttribute(DwarfAttribute::DW_AT_byte_stride))) {
@@ -1128,7 +1157,7 @@ std::shared_ptr<Type> TypeSystem::resolveArrayType(std::shared_ptr<DIE> die) {
             }
         }
 
-        return createArrayType(resolved_element, bounds, byte_stride, bit_stride);
+        return createArrayType(resolved_element, bounds, rank, byte_stride, bit_stride);
     } else {
         return createPrimitiveType(PrimitiveType::Kind::INTEGER, size, getTypeName(die));
     }
