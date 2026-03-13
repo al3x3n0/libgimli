@@ -185,7 +185,7 @@ std::shared_ptr<Type> CompositeType::resolve() {
 }
 
 void CompositeType::addMember(const std::string& name, std::shared_ptr<Type> type, uint64_t offset) {
-    members_.push_back({name, type, offset, 0, 0, false, false, false, false});
+    members_.push_back({name, type, offset, 0, 0, false, false, false, false, false});
 }
 
 void CompositeType::addMember(const Member& member) {
@@ -1158,7 +1158,7 @@ std::shared_ptr<Type> TypeSystem::resolveCompositeType(std::shared_ptr<DIE> die)
             std::shared_ptr<Type> resolved_member_type = member_type ? resolveType(member_type) : nullptr;
             
             if (resolved_member_type) {
-                Member member{member_name, resolved_member_type, 0, 0, 0, false, false, false, false};
+                Member member{member_name, resolved_member_type, 0, 0, 0, false, false, false, false, false};
                 if (auto offset = decodeConstantOffsetAttribute(
                         child->getAttribute(DwarfAttribute::DW_AT_data_member_location))) {
                     member.offset = static_cast<uint64_t>(*offset);
@@ -1180,6 +1180,11 @@ std::shared_ptr<Type> TypeSystem::resolveCompositeType(std::shared_ptr<DIE> die)
                 auto external_attr = child->getAttribute(DwarfAttribute::DW_AT_external);
                 if (external_attr && external_attr->getType() == AttributeValueType::FLAG) {
                     member.is_static = std::static_pointer_cast<FlagAttributeValue>(external_attr)->getValue();
+                }
+
+                auto mutable_attr = child->getAttribute(DwarfAttribute::DW_AT_mutable);
+                if (mutable_attr && mutable_attr->getType() == AttributeValueType::FLAG) {
+                    member.is_mutable = std::static_pointer_cast<FlagAttributeValue>(mutable_attr)->getValue();
                 }
 
                 auto access_attr = child->getAttribute(DwarfAttribute::DW_AT_accessibility);

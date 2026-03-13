@@ -23,6 +23,7 @@ struct Member {
     uint64_t bit_size;
     uint64_t bit_offset;
     bool is_static;
+    bool is_mutable;
     bool is_public;
     bool is_protected;
     bool is_private;

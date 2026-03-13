@@ -380,6 +380,13 @@ std::string TypePrinter::formatStructure(const std::shared_ptr<DIE>& type_die,
                 }
             }
 
+            auto mutable_attr = child->getAttribute(DwarfAttribute::DW_AT_mutable);
+            if (auto flag = std::dynamic_pointer_cast<FlagAttributeValue>(mutable_attr)) {
+                if (flag->getValue()) {
+                    result += "mutable ";
+                }
+            }
+
             // Get member type
             auto member_type_attr = child->getAttribute(DwarfAttribute::DW_AT_type);
             std::string member_decl;

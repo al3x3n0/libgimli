@@ -16037,6 +16037,7 @@ void testTypeSystem() {
             std::make_shared<LocationAttributeValue>(
                 LocationAttributeValue::LocationType::EXPRESSION,
                 std::vector<uint8_t>{static_cast<uint8_t>(DwarfOp::DW_OP_plus_uconst), 0x0c}));
+        expr_member_die->addAttribute(DwarfAttribute::DW_AT_mutable, std::make_shared<FlagAttributeValue>(true));
         struct_die->addChild(expr_member_die);
 
         auto legacy_bitfield_die = add_die(DwarfTag::DW_TAG_member, 0x76);
@@ -16220,6 +16221,7 @@ void testTypeSystem() {
         assert(static_cast<int64_t>(resolved_struct->getMembers()[1].offset) == -4);
         assert(resolved_struct->getMembers()[2].name == "payload");
         assert(resolved_struct->getMembers()[2].offset == 12);
+        assert(resolved_struct->getMembers()[2].is_mutable);
         assert(resolved_struct->getMembers()[3].name == "legacy_bits");
         assert(resolved_struct->getMembers()[3].bit_size == 5);
         assert(resolved_struct->getMembers()[3].bit_offset == 9);
@@ -16416,6 +16418,7 @@ void testTypePrinter() {
             std::vector<uint8_t>{static_cast<uint8_t>(DwarfOp::DW_OP_plus_uconst), 0x0c}));
     expr_member_die->addAttribute(DwarfAttribute::DW_AT_accessibility, std::make_shared<UnsignedAttributeValue>(3));
     expr_member_die->addAttribute(DwarfAttribute::DW_AT_external, std::make_shared<FlagAttributeValue>(true));
+    expr_member_die->addAttribute(DwarfAttribute::DW_AT_mutable, std::make_shared<FlagAttributeValue>(true));
     struct_die->addChild(expr_member_die);
     auto legacy_bitfield_die = add_die(DwarfTag::DW_TAG_member, 0x15165);
     legacy_bitfield_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("legacy_bits"));
@@ -16528,6 +16531,7 @@ void testTypePrinter() {
     assert(struct_text.find("tail") != std::string::npos);
     assert(struct_text.find("offset: -4") != std::string::npos);
     assert(struct_text.find("payload") != std::string::npos);
+    assert(struct_text.find("private static mutable Alias payload") != std::string::npos);
     assert(struct_text.find("offset: 12") != std::string::npos);
     assert(struct_text.find("legacy_bits : 5") != std::string::npos);
     assert(struct_text.find("bit_offset: 9") != std::string::npos);
