@@ -15753,16 +15753,18 @@ void testTypeSystem() {
     assert(addr_class_int_type->getDescription().find("[address_class=7]") != std::string::npos);
 
     auto scaled_int_type = std::dynamic_pointer_cast<PrimitiveType>(
-        type_system.createPrimitiveType(PrimitiveType::Kind::INTEGER, 4, "scaled_int", 0, 0, 2, 3, 10, true, true));
+        type_system.createPrimitiveType(PrimitiveType::Kind::INTEGER, 4, "scaled_int", 0, 0, 2, 3, 10, "9V99", true, true));
     assert(scaled_int_type);
     assert(scaled_int_type->getBinaryScale() == 2);
     assert(scaled_int_type->getDecimalScale() == 3);
     assert(scaled_int_type->getDigitCount() == 10);
+    assert(scaled_int_type->getPictureString() == "9V99");
     assert(scaled_int_type->isSmall());
     assert(scaled_int_type->isThreadsScaled());
     assert(scaled_int_type->getDescription().find("[binary_scale=2]") != std::string::npos);
     assert(scaled_int_type->getDescription().find("[decimal_scale=3]") != std::string::npos);
     assert(scaled_int_type->getDescription().find("[digit_count=10]") != std::string::npos);
+    assert(scaled_int_type->getDescription().find("[picture_string=9V99]") != std::string::npos);
     assert(scaled_int_type->getDescription().find("[small]") != std::string::npos);
     assert(scaled_int_type->getDescription().find("[threads_scaled]") != std::string::npos);
     
@@ -15951,6 +15953,7 @@ void testTypeSystem() {
         scaled_int_die->addAttribute(DwarfAttribute::DW_AT_binary_scale, std::make_shared<UnsignedAttributeValue>(2));
         scaled_int_die->addAttribute(DwarfAttribute::DW_AT_decimal_scale, std::make_shared<UnsignedAttributeValue>(3));
         scaled_int_die->addAttribute(DwarfAttribute::DW_AT_digit_count, std::make_shared<UnsignedAttributeValue>(10));
+        scaled_int_die->addAttribute(DwarfAttribute::DW_AT_picture_string, std::make_shared<StringAttributeValue>("9V99"));
         scaled_int_die->addAttribute(DwarfAttribute::DW_AT_small, std::make_shared<FlagAttributeValue>(true));
         scaled_int_die->addAttribute(DwarfAttribute::DW_AT_threads_scaled, std::make_shared<FlagAttributeValue>(true));
 
@@ -16210,11 +16213,13 @@ void testTypeSystem() {
         assert(resolved_scaled_int->getBinaryScale() == 2);
         assert(resolved_scaled_int->getDecimalScale() == 3);
         assert(resolved_scaled_int->getDigitCount() == 10);
+        assert(resolved_scaled_int->getPictureString() == "9V99");
         assert(resolved_scaled_int->isSmall());
         assert(resolved_scaled_int->isThreadsScaled());
         assert(resolved_scaled_int->getDescription().find("[binary_scale=2]") != std::string::npos);
         assert(resolved_scaled_int->getDescription().find("[decimal_scale=3]") != std::string::npos);
         assert(resolved_scaled_int->getDescription().find("[digit_count=10]") != std::string::npos);
+        assert(resolved_scaled_int->getDescription().find("[picture_string=9V99]") != std::string::npos);
         assert(resolved_scaled_int->getDescription().find("[small]") != std::string::npos);
         assert(resolved_scaled_int->getDescription().find("[threads_scaled]") != std::string::npos);
 
@@ -16432,6 +16437,7 @@ void testTypePrinter() {
     scaled_int_die->addAttribute(DwarfAttribute::DW_AT_binary_scale, std::make_shared<UnsignedAttributeValue>(2));
     scaled_int_die->addAttribute(DwarfAttribute::DW_AT_decimal_scale, std::make_shared<UnsignedAttributeValue>(3));
     scaled_int_die->addAttribute(DwarfAttribute::DW_AT_digit_count, std::make_shared<UnsignedAttributeValue>(10));
+    scaled_int_die->addAttribute(DwarfAttribute::DW_AT_picture_string, std::make_shared<StringAttributeValue>("9V99"));
     scaled_int_die->addAttribute(DwarfAttribute::DW_AT_small, std::make_shared<FlagAttributeValue>(true));
     scaled_int_die->addAttribute(DwarfAttribute::DW_AT_threads_scaled, std::make_shared<FlagAttributeValue>(true));
 
@@ -16666,7 +16672,7 @@ void testTypePrinter() {
     assert(printer.formatType(be_int_die) == "be_int [endianity=1]");
     assert(printer.formatType(seg_int_die) == "seg_int [address_class=7]");
     assert(printer.formatType(scaled_int_die) ==
-           "scaled_int [binary_scale=2] [decimal_scale=3] [digit_count=10] [small] [threads_scaled]");
+           "scaled_int [binary_scale=2] [decimal_scale=3] [digit_count=10] [picture_string=9V99] [small] [threads_scaled]");
     assert(printer.formatType(ptr_die) == "const int*");
     assert(printer.formatType(typedef_die) == "Alias [visibility=1]");
     assert(printer.formatType(unspecified_die) == "decltype(auto)");

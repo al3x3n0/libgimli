@@ -100,6 +100,7 @@ public:
                   uint64_t binary_scale = 0,
                   uint64_t decimal_scale = 0,
                   uint64_t digit_count = 0,
+                  const std::string& picture_string = "",
                   bool is_small = false,
                   bool threads_scaled = false);
     std::string getName() const override;
@@ -113,6 +114,7 @@ public:
     uint64_t getBinaryScale() const { return binary_scale_; }
     uint64_t getDecimalScale() const { return decimal_scale_; }
     uint64_t getDigitCount() const { return digit_count_; }
+    const std::string& getPictureString() const { return picture_string_; }
     bool isSmall() const { return is_small_; }
     bool isThreadsScaled() const { return threads_scaled_; }
     
@@ -125,6 +127,7 @@ private:
     uint64_t binary_scale_;
     uint64_t decimal_scale_;
     uint64_t digit_count_;
+    std::string picture_string_;
     bool is_small_;
     bool threads_scaled_;
 };
@@ -451,6 +454,7 @@ public:
                                               uint64_t binary_scale = 0,
                                               uint64_t decimal_scale = 0,
                                               uint64_t digit_count = 0,
+                                              const std::string& picture_string = "",
                                               bool is_small = false,
                                               bool threads_scaled = false);
     std::shared_ptr<Type> createPointerType(std::shared_ptr<Type> pointee_type);

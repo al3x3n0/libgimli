@@ -75,6 +75,7 @@ PrimitiveType::PrimitiveType(Kind kind,
                              uint64_t binary_scale,
                              uint64_t decimal_scale,
                              uint64_t digit_count,
+                             const std::string& picture_string,
                              bool is_small,
                              bool threads_scaled)
     : kind_(kind),
@@ -85,6 +86,7 @@ PrimitiveType::PrimitiveType(Kind kind,
       binary_scale_(binary_scale),
       decimal_scale_(decimal_scale),
       digit_count_(digit_count),
+      picture_string_(picture_string),
       is_small_(is_small),
       threads_scaled_(threads_scaled) {
 }
@@ -124,6 +126,9 @@ std::string PrimitiveType::getDescription() const {
     }
     if (digit_count_ != 0) {
         ss << " [digit_count=" << digit_count_ << "]";
+    }
+    if (!picture_string_.empty()) {
+        ss << " [picture_string=" << picture_string_ << "]";
     }
     if (is_small_) {
         ss << " [small]";
@@ -766,10 +771,12 @@ std::shared_ptr<Type> TypeSystem::createPrimitiveType(PrimitiveType::Kind kind, 
                                                       uint64_t binary_scale,
                                                       uint64_t decimal_scale,
                                                       uint64_t digit_count,
+                                                      const std::string& picture_string,
                                                       bool is_small,
                                                       bool threads_scaled) {
     auto type = std::make_shared<PrimitiveType>(kind, size, name, endianity, address_class,
                                                 binary_scale, decimal_scale, digit_count,
+                                                picture_string,
                                                 is_small, threads_scaled);
     type->setDwarfTag(DwarfTag::DW_TAG_base_type);
     all_types_.push_back(type);
@@ -1133,6 +1140,7 @@ std::shared_ptr<Type> TypeSystem::resolvePrimitiveType(std::shared_ptr<DIE> die)
     uint64_t binary_scale = 0;
     uint64_t decimal_scale = 0;
     uint64_t digit_count = 0;
+    std::string picture_string;
     bool is_small = false;
     bool threads_scaled = false;
     
@@ -1186,6 +1194,10 @@ std::shared_ptr<Type> TypeSystem::resolvePrimitiveType(std::shared_ptr<DIE> die)
     if (digit_count_attr && digit_count_attr->getType() == AttributeValueType::UNSIGNED) {
         digit_count = std::static_pointer_cast<UnsignedAttributeValue>(digit_count_attr)->getValue();
     }
+    auto picture_string_attr = die->getAttribute(DwarfAttribute::DW_AT_picture_string);
+    if (picture_string_attr && picture_string_attr->getType() == AttributeValueType::STRING) {
+        picture_string = std::static_pointer_cast<StringAttributeValue>(picture_string_attr)->getValue();
+    }
     auto small_attr = die->getAttribute(DwarfAttribute::DW_AT_small);
     if (small_attr && small_attr->getType() == AttributeValueType::FLAG) {
         is_small = std::static_pointer_cast<FlagAttributeValue>(small_attr)->getValue();
@@ -1196,7 +1208,7 @@ std::shared_ptr<Type> TypeSystem::resolvePrimitiveType(std::shared_ptr<DIE> die)
     }
 
     return createPrimitiveType(kind, size, name, endianity, address_class, binary_scale, decimal_scale,
-                               digit_count, is_small, threads_scaled);
+                               digit_count, picture_string, is_small, threads_scaled);
 }
 
 std::shared_ptr<Type> TypeSystem::resolvePointerType(std::shared_ptr<DIE> die) {
