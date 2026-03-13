@@ -161,6 +161,13 @@ std::string formatSubroutineMetadataSuffix(const std::shared_ptr<DIE>& die) {
         }
     }
 
+    auto const_expr_attr = die->getAttribute(DwarfAttribute::DW_AT_const_expr);
+    if (auto flag = std::dynamic_pointer_cast<FlagAttributeValue>(const_expr_attr)) {
+        if (flag->getValue()) {
+            suffix += " [const_expr]";
+        }
+    }
+
     return suffix;
 }
 
