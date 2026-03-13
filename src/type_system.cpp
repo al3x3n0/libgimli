@@ -67,8 +67,8 @@ std::optional<int64_t> decodeConstantOffsetAttribute(const std::shared_ptr<Attri
 } // namespace
 
 // PrimitiveType implementation
-PrimitiveType::PrimitiveType(Kind kind, uint64_t size, const std::string& name)
-    : kind_(kind), size_(size), name_(name) {
+PrimitiveType::PrimitiveType(Kind kind, uint64_t size, const std::string& name, uint64_t endianity)
+    : kind_(kind), size_(size), name_(name), endianity_(endianity) {
 }
 
 std::string PrimitiveType::getName() const {
@@ -92,6 +92,9 @@ uint64_t PrimitiveType::getSize() const {
 std::string PrimitiveType::getDescription() const {
     std::stringstream ss;
     ss << getName() << " (" << size_ << " bytes)";
+    if (endianity_ != 0) {
+        ss << " [endianity=" << endianity_ << "]";
+    }
     return ss.str();
 }
 
@@ -674,9 +677,10 @@ TypeSystem::TypeSystem(uint8_t pointer_size_bytes, DIELookup die_lookup)
     : pointer_size_bytes_(pointer_size_bytes)
     , die_lookup_(std::move(die_lookup)) {}
 
-std::shared_ptr<Type> TypeSystem::createPrimitiveType(PrimitiveType::Kind kind, uint64_t size, 
-                                                      const std::string& name) {
-    auto type = std::make_shared<PrimitiveType>(kind, size, name);
+std::shared_ptr<Type> TypeSystem::createPrimitiveType(PrimitiveType::Kind kind, uint64_t size,
+                                                      const std::string& name,
+                                                      uint64_t endianity) {
+    auto type = std::make_shared<PrimitiveType>(kind, size, name, endianity);
     type->setDwarfTag(DwarfTag::DW_TAG_base_type);
     all_types_.push_back(type);
     return type;
@@ -1022,6 +1026,7 @@ void TypeSystem::printType(std::shared_ptr<Type> type, int indent) const {
 std::shared_ptr<Type> TypeSystem::resolvePrimitiveType(std::shared_ptr<DIE> die) {
     std::string name = getTypeName(die);
     uint64_t size = getTypeSize(die);
+    uint64_t endianity = 0;
     
     // Determine the primitive type kind based on encoding
     auto encoding_attr = die->getAttribute(DwarfAttribute::DW_AT_encoding);
@@ -1052,8 +1057,13 @@ std::shared_ptr<Type> TypeSystem::resolvePrimitiveType(std::shared_ptr<DIE> die)
                 break;
         }
     }
-    
-    return createPrimitiveType(kind, size, name);
+
+    auto endianity_attr = die->getAttribute(DwarfAttribute::DW_AT_endianity);
+    if (endianity_attr && endianity_attr->getType() == AttributeValueType::UNSIGNED) {
+        endianity = std::static_pointer_cast<UnsignedAttributeValue>(endianity_attr)->getValue();
+    }
+
+    return createPrimitiveType(kind, size, name, endianity);
 }
 
 std::shared_ptr<Type> TypeSystem::resolvePointerType(std::shared_ptr<DIE> die) {

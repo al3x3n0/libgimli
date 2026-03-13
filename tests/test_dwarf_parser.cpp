@@ -15739,6 +15739,12 @@ void testTypeSystem() {
     assert(int_type->getName() == "int");
     assert(int_type->getSize() == 4);
     assert(int_type->isComplete());
+
+    auto be_int_type = std::dynamic_pointer_cast<PrimitiveType>(
+        type_system.createPrimitiveType(PrimitiveType::Kind::INTEGER, 4, "be_int", 1));
+    assert(be_int_type);
+    assert(be_int_type->getEndianity() == 1);
+    assert(be_int_type->getDescription().find("[endianity=1]") != std::string::npos);
     
     // Test pointer type creation
     auto int_ptr_type = type_system.createPointerType(int_type);
@@ -15890,6 +15896,12 @@ void testTypeSystem() {
         int_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("int"));
         int_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(4));
         int_die->addAttribute(DwarfAttribute::DW_AT_encoding, std::make_shared<UnsignedAttributeValue>(4));
+
+        auto be_int_die = add_die(DwarfTag::DW_TAG_base_type, 0x11);
+        be_int_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("be_int"));
+        be_int_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(4));
+        be_int_die->addAttribute(DwarfAttribute::DW_AT_encoding, std::make_shared<UnsignedAttributeValue>(4));
+        be_int_die->addAttribute(DwarfAttribute::DW_AT_endianity, std::make_shared<UnsignedAttributeValue>(1));
 
         auto unspecified_die = add_die(DwarfTag::DW_TAG_unspecified_type, 0x15);
         unspecified_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("decltype(auto)"));
@@ -16117,6 +16129,12 @@ void testTypeSystem() {
         assert(resolved_unspecified->getName() == "decltype(auto)");
         assert(resolved_unspecified->getSize() == 0);
 
+        auto resolved_be_int = std::dynamic_pointer_cast<PrimitiveType>(resolving_system.resolveType(be_int_die));
+        assert(resolved_be_int);
+        assert(resolved_be_int->getName() == "be_int");
+        assert(resolved_be_int->getEndianity() == 1);
+        assert(resolved_be_int->getDescription().find("[endianity=1]") != std::string::npos);
+
         auto resolved_string = std::dynamic_pointer_cast<StringType>(resolving_system.resolveType(string_die));
         assert(resolved_string);
         assert(resolved_string->getName() == "utf8_string");
@@ -16301,6 +16319,12 @@ void testTypePrinter() {
     int_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("int"));
     int_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(4));
     int_die->addAttribute(DwarfAttribute::DW_AT_encoding, std::make_shared<UnsignedAttributeValue>(4));
+
+    auto be_int_die = add_die(DwarfTag::DW_TAG_base_type, 0x101);
+    be_int_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("be_int"));
+    be_int_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(4));
+    be_int_die->addAttribute(DwarfAttribute::DW_AT_encoding, std::make_shared<UnsignedAttributeValue>(4));
+    be_int_die->addAttribute(DwarfAttribute::DW_AT_endianity, std::make_shared<UnsignedAttributeValue>(1));
 
     auto unspecified_die = add_die(DwarfTag::DW_TAG_unspecified_type, 0x105);
     unspecified_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("decltype(auto)"));
@@ -16517,6 +16541,7 @@ void testTypePrinter() {
     TypePrinter printer(lookup, cfg);
 
     assert(printer.formatType(const_die) == "const int");
+    assert(printer.formatType(be_int_die) == "be_int [endianity=1]");
     assert(printer.formatType(ptr_die) == "const int*");
     assert(printer.formatType(typedef_die) == "Alias");
     assert(printer.formatType(unspecified_die) == "decltype(auto)");

@@ -750,32 +750,37 @@ std::string TypePrinter::formatTypeInternal(const std::shared_ptr<DIE>& type_die
 
 std::string TypePrinter::formatBaseType(const std::shared_ptr<DIE>& die) const {
     std::string name = die->getName();
-    if (!name.empty()) {
-        return name;
-    }
+    if (name.empty()) {
+        // Synthesize name from encoding and size
+        auto enc_attr = die->getAttribute(DwarfAttribute::DW_AT_encoding);
+        auto size_attr = die->getAttribute(DwarfAttribute::DW_AT_byte_size);
 
-    // Synthesize name from encoding and size
-    auto enc_attr = die->getAttribute(DwarfAttribute::DW_AT_encoding);
-    auto size_attr = die->getAttribute(DwarfAttribute::DW_AT_byte_size);
+        uint8_t encoding = 0;
+        uint64_t byte_size = 0;
 
-    uint8_t encoding = 0;
-    uint64_t byte_size = 0;
-
-    if (enc_attr) {
-        auto uint_val = std::dynamic_pointer_cast<UnsignedAttributeValue>(enc_attr);
-        if (uint_val) {
-            encoding = static_cast<uint8_t>(uint_val->getValue());
+        if (enc_attr) {
+            auto uint_val = std::dynamic_pointer_cast<UnsignedAttributeValue>(enc_attr);
+            if (uint_val) {
+                encoding = static_cast<uint8_t>(uint_val->getValue());
+            }
         }
-    }
 
-    if (size_attr) {
-        auto uint_val = std::dynamic_pointer_cast<UnsignedAttributeValue>(size_attr);
-        if (uint_val) {
-            byte_size = uint_val->getValue();
+        if (size_attr) {
+            auto uint_val = std::dynamic_pointer_cast<UnsignedAttributeValue>(size_attr);
+            if (uint_val) {
+                byte_size = uint_val->getValue();
+            }
         }
+
+        name = getBaseTypeName(encoding, byte_size);
     }
 
-    return getBaseTypeName(encoding, byte_size);
+    auto endianity_attr = die->getAttribute(DwarfAttribute::DW_AT_endianity);
+    if (auto uint_val = std::dynamic_pointer_cast<UnsignedAttributeValue>(endianity_attr)) {
+        name += " [endianity=" + std::to_string(uint_val->getValue()) + "]";
+    }
+
+    return name;
 }
 
 std::string TypePrinter::formatPointerType(const std::shared_ptr<DIE>& die,
