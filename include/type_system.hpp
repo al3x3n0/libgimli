@@ -185,6 +185,7 @@ public:
     ArrayType(std::shared_ptr<Type> element_type,
               const std::vector<ArrayBound>& bounds,
               uint64_t rank = 0,
+              uint64_t visibility = 0,
               uint64_t byte_stride = 0,
               uint64_t bit_stride = 0);
     std::string getName() const override;
@@ -197,6 +198,7 @@ public:
     const std::vector<uint64_t>& getDimensions() const { return dimensions_; }
     const std::vector<ArrayBound>& getBounds() const { return bounds_; }
     uint64_t getRank() const { return rank_; }
+    uint64_t getVisibility() const { return visibility_; }
     uint64_t getByteStride() const { return byte_stride_; }
     uint64_t getBitStride() const { return bit_stride_; }
     uint64_t getElementCount() const;
@@ -206,6 +208,7 @@ private:
     std::vector<uint64_t> dimensions_;
     std::vector<ArrayBound> bounds_;
     uint64_t rank_;
+    uint64_t visibility_;
     uint64_t byte_stride_;
     uint64_t bit_stride_;
 };
@@ -456,6 +459,7 @@ public:
     std::shared_ptr<Type> createArrayType(std::shared_ptr<Type> element_type,
                                           const std::vector<ArrayBound>& bounds,
                                           uint64_t rank = 0,
+                                          uint64_t visibility = 0,
                                           uint64_t byte_stride = 0,
                                           uint64_t bit_stride = 0);
     std::shared_ptr<Type> createFunctionType(std::shared_ptr<Type> return_type,

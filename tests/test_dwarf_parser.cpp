@@ -15782,10 +15782,11 @@ void testTypeSystem() {
     assert(array_type_ptr->getBitStride() == 0);
 
     std::vector<ArrayBound> strided_bounds = {{1, 4}};
-    auto strided_array_type = type_system.createArrayType(int_type, strided_bounds, 1, 16, 128);
+    auto strided_array_type = type_system.createArrayType(int_type, strided_bounds, 1, 2, 16, 128);
     auto strided_array_type_ptr = std::dynamic_pointer_cast<ArrayType>(strided_array_type);
     assert(strided_array_type_ptr->getName() == "int[1..4]");
     assert(strided_array_type_ptr->getRank() == 1);
+    assert(strided_array_type_ptr->getVisibility() == 2);
     assert(strided_array_type_ptr->getByteStride() == 16);
     assert(strided_array_type_ptr->getBitStride() == 128);
     assert(strided_array_type_ptr->getDescription().find("[byte_stride=16]") != std::string::npos);
@@ -16012,6 +16013,7 @@ void testTypeSystem() {
         elem_die->addAttribute(DwarfAttribute::DW_AT_byte_stride, std::make_shared<UnsignedAttributeValue>(16));
         elem_die->addAttribute(DwarfAttribute::DW_AT_bit_stride, std::make_shared<UnsignedAttributeValue>(128));
         elem_die->addAttribute(DwarfAttribute::DW_AT_rank, std::make_shared<UnsignedAttributeValue>(1));
+        elem_die->addAttribute(DwarfAttribute::DW_AT_visibility, std::make_shared<UnsignedAttributeValue>(2));
         auto subrange = add_die(DwarfTag::DW_TAG_subrange_type, 0x51);
         subrange->addAttribute(DwarfAttribute::DW_AT_lower_bound, std::make_shared<SignedAttributeValue>(-2));
         subrange->addAttribute(DwarfAttribute::DW_AT_upper_bound, std::make_shared<SignedAttributeValue>(2));
@@ -16259,6 +16261,7 @@ void testTypeSystem() {
         assert(resolved_array->getBounds()[0].lower_bound == -2);
         assert(resolved_array->getBounds()[0].count == 5);
         assert(resolved_array->getRank() == 1);
+        assert(resolved_array->getVisibility() == 2);
         assert(resolved_array->getByteStride() == 16);
         assert(resolved_array->getBitStride() == 128);
 
@@ -16557,6 +16560,7 @@ void testTypePrinter() {
     array_die->addAttribute(DwarfAttribute::DW_AT_byte_stride, std::make_shared<UnsignedAttributeValue>(16));
     array_die->addAttribute(DwarfAttribute::DW_AT_bit_stride, std::make_shared<UnsignedAttributeValue>(128));
     array_die->addAttribute(DwarfAttribute::DW_AT_rank, std::make_shared<UnsignedAttributeValue>(1));
+    array_die->addAttribute(DwarfAttribute::DW_AT_visibility, std::make_shared<UnsignedAttributeValue>(2));
     auto array_subrange_die = add_die(DwarfTag::DW_TAG_subrange_type, 0x155);
     array_subrange_die->addAttribute(DwarfAttribute::DW_AT_lower_bound, std::make_shared<SignedAttributeValue>(-2));
     array_subrange_die->addAttribute(DwarfAttribute::DW_AT_upper_bound, std::make_shared<SignedAttributeValue>(2));
@@ -16617,7 +16621,7 @@ void testTypePrinter() {
     std::string enum_text = printer.formatEnum(enum_die, true);
     assert(enum_text.find("NEGATIVE = -7") != std::string::npos);
     assert(enum_text.find("POSITIVE = 5") != std::string::npos);
-    assert(printer.formatType(array_die) == "int[-2..2] [byte_stride=16] [bit_stride=128] [rank=1]");
+    assert(printer.formatType(array_die) == "int[-2..2] [byte_stride=16] [bit_stride=128] [rank=1] [visibility=2]");
     assert(printer.formatType(expr_stride_array_die) == "int[3] [byte_stride=24] [bit_stride=64]");
     assert(printer.formatType(expr_bound_array_die) == "int[-1..3]");
     assert(printer.formatTypedef(typedef_die) == "typedef const int* Alias");

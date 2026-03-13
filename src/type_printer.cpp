@@ -969,6 +969,12 @@ std::string TypePrinter::formatArrayType(const std::shared_ptr<DIE>& die,
         }
     }
 
+    if (auto visibility = decodeConstantOffsetAttribute(die->getAttribute(DwarfAttribute::DW_AT_visibility))) {
+        if (*visibility >= 0) {
+            result += " [visibility=" + std::to_string(*visibility) + "]";
+        }
+    }
+
     return result;
 }
 

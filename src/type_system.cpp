@@ -240,6 +240,7 @@ ArrayType::ArrayType(std::shared_ptr<Type> element_type, const std::vector<uint6
     : element_type_(std::move(element_type)),
       dimensions_(dimensions),
       rank_(dimensions_.size()),
+      visibility_(0),
       byte_stride_(0),
       bit_stride_(0) {
     bounds_.reserve(dimensions_.size());
@@ -251,11 +252,13 @@ ArrayType::ArrayType(std::shared_ptr<Type> element_type, const std::vector<uint6
 ArrayType::ArrayType(std::shared_ptr<Type> element_type,
                      const std::vector<ArrayBound>& bounds,
                      uint64_t rank,
+                     uint64_t visibility,
                      uint64_t byte_stride,
                      uint64_t bit_stride)
     : element_type_(std::move(element_type)),
       bounds_(bounds),
       rank_(rank != 0 ? rank : bounds_.size()),
+      visibility_(visibility),
       byte_stride_(byte_stride),
       bit_stride_(bit_stride) {
     dimensions_.reserve(bounds_.size());
@@ -289,6 +292,9 @@ uint64_t ArrayType::getSize() const {
 std::string ArrayType::getDescription() const {
     std::stringstream ss;
     ss << getName() << " (" << getSize() << " bytes)";
+    if (visibility_ != 0) {
+        ss << " [visibility=" << visibility_ << "]";
+    }
     if (byte_stride_ != 0) {
         ss << " [byte_stride=" << byte_stride_ << "]";
     }
@@ -828,9 +834,10 @@ std::shared_ptr<Type> TypeSystem::createArrayType(std::shared_ptr<Type> element_
 std::shared_ptr<Type> TypeSystem::createArrayType(std::shared_ptr<Type> element_type,
                                                   const std::vector<ArrayBound>& bounds,
                                                   uint64_t rank,
+                                                  uint64_t visibility,
                                                   uint64_t byte_stride,
                                                   uint64_t bit_stride) {
-    auto type = std::make_shared<ArrayType>(std::move(element_type), bounds, rank, byte_stride, bit_stride);
+    auto type = std::make_shared<ArrayType>(std::move(element_type), bounds, rank, visibility, byte_stride, bit_stride);
     type->setDwarfTag(DwarfTag::DW_TAG_array_type);
     all_types_.push_back(type);
     return type;
@@ -1219,6 +1226,7 @@ std::shared_ptr<Type> TypeSystem::resolveArrayType(std::shared_ptr<DIE> die) {
     if (resolved_element) {
         std::vector<ArrayBound> bounds;
         uint64_t rank = 0;
+        uint64_t visibility = 0;
         uint64_t byte_stride = 0;
         uint64_t bit_stride = 0;
 
@@ -1226,6 +1234,10 @@ std::shared_ptr<Type> TypeSystem::resolveArrayType(std::shared_ptr<DIE> die) {
             if (*decoded_rank >= 0) {
                 rank = static_cast<uint64_t>(*decoded_rank);
             }
+        }
+        auto visibility_attr = die->getAttribute(DwarfAttribute::DW_AT_visibility);
+        if (visibility_attr && visibility_attr->getType() == AttributeValueType::UNSIGNED) {
+            visibility = std::static_pointer_cast<UnsignedAttributeValue>(visibility_attr)->getValue();
         }
 
         if (auto decoded_byte_stride =
@@ -1256,7 +1268,7 @@ std::shared_ptr<Type> TypeSystem::resolveArrayType(std::shared_ptr<DIE> die) {
             }
         }
 
-        return createArrayType(resolved_element, bounds, rank, byte_stride, bit_stride);
+        return createArrayType(resolved_element, bounds, rank, visibility, byte_stride, bit_stride);
     } else {
         return createPrimitiveType(PrimitiveType::Kind::INTEGER, size, getTypeName(die));
     }
