@@ -15792,18 +15792,20 @@ void testTypeSystem() {
     assert(strided_array_type_ptr->getDescription().find("[bit_stride=128]") != std::string::npos);
 
     auto bounded_string_type = std::dynamic_pointer_cast<StringType>(
-        type_system.createStringType("CountedString", int_type, 16, 4));
+        type_system.createStringType("CountedString", int_type, 16, 4, 1));
     assert(bounded_string_type->getLength() == 4);
+    assert(bounded_string_type->getVisibility() == 1);
     assert(bounded_string_type->getDescription().find("[length=4]") != std::string::npos);
 
     std::vector<ArrayBound> file_bounds = {{1, 4}};
     auto bounded_file_type = std::dynamic_pointer_cast<FileType>(
-        type_system.createFileType("", int_type, 64, file_bounds, 1));
+        type_system.createFileType("", int_type, 64, file_bounds, 1, 2));
     assert(bounded_file_type->getElementCount() == 4);
     assert(bounded_file_type->getBounds().size() == 1);
     assert(bounded_file_type->getBounds()[0].lower_bound == 1);
     assert(bounded_file_type->getBounds()[0].count == 4);
     assert(bounded_file_type->getRank() == 1);
+    assert(bounded_file_type->getVisibility() == 2);
     assert(bounded_file_type->getName() == "file<int>[1..4]");
     
     // Test function type creation
@@ -15929,6 +15931,7 @@ void testTypeSystem() {
         string_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x10));
         string_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(16));
         string_die->addAttribute(DwarfAttribute::DW_AT_string_length, std::make_shared<UnsignedAttributeValue>(4));
+        string_die->addAttribute(DwarfAttribute::DW_AT_visibility, std::make_shared<UnsignedAttributeValue>(1));
 
         auto expr_string_die = add_die(DwarfTag::DW_TAG_string_type, 0x18a);
         expr_string_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("expr_string"));
@@ -15944,12 +15947,14 @@ void testTypeSystem() {
         set_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("IntSet"));
         set_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x10));
         set_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(32));
+        set_die->addAttribute(DwarfAttribute::DW_AT_visibility, std::make_shared<UnsignedAttributeValue>(2));
 
         auto file_die = add_die(DwarfTag::DW_TAG_file_type, 0x1a);
         file_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("IntFile"));
         file_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x10));
         file_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(64));
         file_die->addAttribute(DwarfAttribute::DW_AT_rank, std::make_shared<UnsignedAttributeValue>(1));
+        file_die->addAttribute(DwarfAttribute::DW_AT_visibility, std::make_shared<UnsignedAttributeValue>(2));
         auto file_count = add_die(DwarfTag::DW_TAG_subrange_type, 0x1b);
         file_count->addAttribute(DwarfAttribute::DW_AT_count, std::make_shared<UnsignedAttributeValue>(4));
         file_die->addChild(file_count);
@@ -15958,6 +15963,7 @@ void testTypeSystem() {
         anonymous_file_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x10));
         anonymous_file_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(64));
         anonymous_file_die->addAttribute(DwarfAttribute::DW_AT_rank, std::make_shared<UnsignedAttributeValue>(1));
+        anonymous_file_die->addAttribute(DwarfAttribute::DW_AT_visibility, std::make_shared<UnsignedAttributeValue>(2));
         auto anonymous_file_count = add_die(DwarfTag::DW_TAG_subrange_type, 0x1d);
         anonymous_file_count->addAttribute(DwarfAttribute::DW_AT_lower_bound, std::make_shared<SignedAttributeValue>(1));
         anonymous_file_count->addAttribute(DwarfAttribute::DW_AT_upper_bound, std::make_shared<UnsignedAttributeValue>(4));
@@ -16168,6 +16174,7 @@ void testTypeSystem() {
         assert(resolved_string->getName() == "utf8_string");
         assert(resolved_string->getSize() == 16);
         assert(resolved_string->getLength() == 4);
+        assert(resolved_string->getVisibility() == 1);
         assert(resolved_string->getCharacterType());
         assert(resolved_string->getCharacterType()->getName() == "int");
 
@@ -16180,6 +16187,7 @@ void testTypeSystem() {
         assert(resolved_set);
         assert(resolved_set->getName() == "IntSet");
         assert(resolved_set->getSize() == 32);
+        assert(resolved_set->getVisibility() == 2);
         assert(resolved_set->getElementType());
         assert(resolved_set->getElementType()->getName() == "int");
 
@@ -16192,6 +16200,7 @@ void testTypeSystem() {
         assert(resolved_file->getBounds()[0].lower_bound == 0);
         assert(resolved_file->getBounds()[0].count == 4);
         assert(resolved_file->getRank() == 1);
+        assert(resolved_file->getVisibility() == 2);
         assert(resolved_file->getElementType());
         assert(resolved_file->getElementType()->getName() == "int");
 
@@ -16203,6 +16212,7 @@ void testTypeSystem() {
         assert(resolved_anonymous_file->getBounds()[0].lower_bound == 1);
         assert(resolved_anonymous_file->getBounds()[0].count == 4);
         assert(resolved_anonymous_file->getRank() == 1);
+        assert(resolved_anonymous_file->getVisibility() == 2);
 
         auto resolved_ref = std::dynamic_pointer_cast<ModifiedType>(resolving_system.resolveType(ref_die));
         assert(resolved_ref);
@@ -16372,6 +16382,7 @@ void testTypePrinter() {
     string_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<TypeAttributeValue>(0x100));
     string_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(16));
     string_die->addAttribute(DwarfAttribute::DW_AT_string_length, std::make_shared<UnsignedAttributeValue>(4));
+    string_die->addAttribute(DwarfAttribute::DW_AT_visibility, std::make_shared<UnsignedAttributeValue>(1));
 
     auto expr_string_die = add_die(DwarfTag::DW_TAG_string_type, 0x1085);
     expr_string_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("CountedExprString"));
@@ -16387,15 +16398,18 @@ void testTypePrinter() {
     set_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("IntSet"));
     set_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<TypeAttributeValue>(0x100));
     set_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(32));
+    set_die->addAttribute(DwarfAttribute::DW_AT_visibility, std::make_shared<UnsignedAttributeValue>(2));
 
     auto file_die = add_die(DwarfTag::DW_TAG_file_type, 0x10a);
     file_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("IntFile"));
     file_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x100));
     file_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(64));
     file_die->addAttribute(DwarfAttribute::DW_AT_rank, std::make_shared<UnsignedAttributeValue>(1));
+    file_die->addAttribute(DwarfAttribute::DW_AT_visibility, std::make_shared<UnsignedAttributeValue>(2));
     auto anonymous_file_die = add_die(DwarfTag::DW_TAG_file_type, 0x10a5);
     anonymous_file_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x100));
     anonymous_file_die->addAttribute(DwarfAttribute::DW_AT_rank, std::make_shared<UnsignedAttributeValue>(1));
+    anonymous_file_die->addAttribute(DwarfAttribute::DW_AT_visibility, std::make_shared<UnsignedAttributeValue>(2));
     auto anonymous_file_subrange_die = add_die(DwarfTag::DW_TAG_subrange_type, 0x10a6);
     anonymous_file_subrange_die->addAttribute(DwarfAttribute::DW_AT_lower_bound, std::make_shared<SignedAttributeValue>(1));
     anonymous_file_subrange_die->addAttribute(DwarfAttribute::DW_AT_upper_bound, std::make_shared<SignedAttributeValue>(4));
@@ -16590,11 +16604,11 @@ void testTypePrinter() {
     assert(printer.formatType(ptr_die) == "const int*");
     assert(printer.formatType(typedef_die) == "Alias");
     assert(printer.formatType(unspecified_die) == "decltype(auto)");
-    assert(printer.formatType(string_die) == "utf8_string [length=4]");
+    assert(printer.formatType(string_die) == "utf8_string [length=4] [visibility=1]");
     assert(printer.formatType(expr_string_die) == "CountedExprString [length=6]");
-    assert(printer.formatType(set_die) == "IntSet");
-    assert(printer.formatType(file_die) == "IntFile [rank=1]");
-    assert(printer.formatType(anonymous_file_die) == "file<int>[1..4] [rank=1]");
+    assert(printer.formatType(set_die) == "IntSet [visibility=2]");
+    assert(printer.formatType(file_die) == "IntFile [rank=1] [visibility=2]");
+    assert(printer.formatType(anonymous_file_die) == "file<int>[1..4] [rank=1] [visibility=2]");
     assert(printer.formatType(rref_die) == "Alias&&");
     assert(printer.formatType(atomic_die) == "_Atomic(Alias)");
     assert(printer.formatType(interface_die) == "interface Runnable [visibility=1]");

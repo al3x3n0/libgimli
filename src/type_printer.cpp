@@ -871,6 +871,12 @@ std::string TypePrinter::formatStringType(const std::shared_ptr<DIE>& die,
         }
     }
 
+    if (auto visibility = decodeConstantOffsetAttribute(die->getAttribute(DwarfAttribute::DW_AT_visibility))) {
+        if (*visibility >= 0) {
+            name += " [visibility=" + std::to_string(*visibility) + "]";
+        }
+    }
+
     return var_name.empty() ? name : name + " " + var_name;
 }
 
@@ -883,6 +889,11 @@ std::string TypePrinter::formatSetType(const std::shared_ptr<DIE>& die,
             name = "set<" + formatType(element_type) + ">";
         } else {
             name = "set";
+        }
+    }
+    if (auto visibility = decodeConstantOffsetAttribute(die->getAttribute(DwarfAttribute::DW_AT_visibility))) {
+        if (*visibility >= 0) {
+            name += " [visibility=" + std::to_string(*visibility) + "]";
         }
     }
     return var_name.empty() ? name : name + " " + var_name;
@@ -913,6 +924,11 @@ std::string TypePrinter::formatFileType(const std::shared_ptr<DIE>& die,
     if (auto rank = decodeConstantOffsetAttribute(die->getAttribute(DwarfAttribute::DW_AT_rank))) {
         if (*rank >= 0) {
             name += " [rank=" + std::to_string(*rank) + "]";
+        }
+    }
+    if (auto visibility = decodeConstantOffsetAttribute(die->getAttribute(DwarfAttribute::DW_AT_visibility))) {
+        if (*visibility >= 0) {
+            name += " [visibility=" + std::to_string(*visibility) + "]";
         }
     }
     return var_name.empty() ? name : name + " " + var_name;

@@ -215,7 +215,8 @@ public:
     StringType(const std::string& name,
                std::shared_ptr<Type> character_type,
                uint64_t size,
-               uint64_t length = 0);
+               uint64_t length = 0,
+               uint64_t visibility = 0);
     std::string getName() const override;
     uint64_t getSize() const override;
     std::string getDescription() const override;
@@ -224,19 +225,22 @@ public:
 
     std::shared_ptr<Type> getCharacterType() const { return character_type_; }
     uint64_t getLength() const { return length_; }
+    uint64_t getVisibility() const { return visibility_; }
 
 private:
     std::string name_;
     std::shared_ptr<Type> character_type_;
     uint64_t size_;
     uint64_t length_;
+    uint64_t visibility_;
 };
 
 class SetType : public Type {
 public:
     SetType(const std::string& name,
             std::shared_ptr<Type> element_type,
-            uint64_t size);
+            uint64_t size,
+            uint64_t visibility = 0);
     std::string getName() const override;
     uint64_t getSize() const override;
     std::string getDescription() const override;
@@ -244,11 +248,13 @@ public:
     std::shared_ptr<Type> resolve() override;
 
     std::shared_ptr<Type> getElementType() const { return element_type_; }
+    uint64_t getVisibility() const { return visibility_; }
 
 private:
     std::string name_;
     std::shared_ptr<Type> element_type_;
     uint64_t size_;
+    uint64_t visibility_;
 };
 
 class FileType : public Type {
@@ -257,12 +263,14 @@ public:
              std::shared_ptr<Type> element_type,
              uint64_t size,
              uint64_t element_count = 0,
-             uint64_t rank = 0);
+             uint64_t rank = 0,
+             uint64_t visibility = 0);
     FileType(const std::string& name,
              std::shared_ptr<Type> element_type,
              uint64_t size,
              const std::vector<ArrayBound>& bounds,
-             uint64_t rank = 0);
+             uint64_t rank = 0,
+             uint64_t visibility = 0);
     std::string getName() const override;
     uint64_t getSize() const override;
     std::string getDescription() const override;
@@ -273,6 +281,7 @@ public:
     uint64_t getElementCount() const;
     const std::vector<ArrayBound>& getBounds() const { return bounds_; }
     uint64_t getRank() const { return rank_; }
+    uint64_t getVisibility() const { return visibility_; }
 
 private:
     std::string name_;
@@ -280,6 +289,7 @@ private:
     uint64_t size_;
     std::vector<ArrayBound> bounds_;
     uint64_t rank_;
+    uint64_t visibility_;
 };
 
 // Function types
@@ -423,20 +433,24 @@ public:
     std::shared_ptr<Type> createStringType(const std::string& name,
                                            std::shared_ptr<Type> character_type,
                                            uint64_t size,
-                                           uint64_t length = 0);
+                                           uint64_t length = 0,
+                                           uint64_t visibility = 0);
     std::shared_ptr<Type> createSetType(const std::string& name,
                                         std::shared_ptr<Type> element_type,
-                                        uint64_t size);
+                                        uint64_t size,
+                                        uint64_t visibility = 0);
     std::shared_ptr<Type> createFileType(const std::string& name,
                                          std::shared_ptr<Type> element_type,
                                          uint64_t size,
                                          uint64_t element_count = 0,
-                                         uint64_t rank = 0);
+                                         uint64_t rank = 0,
+                                         uint64_t visibility = 0);
     std::shared_ptr<Type> createFileType(const std::string& name,
                                          std::shared_ptr<Type> element_type,
                                          uint64_t size,
                                          const std::vector<ArrayBound>& bounds,
-                                         uint64_t rank = 0);
+                                         uint64_t rank = 0,
+                                         uint64_t visibility = 0);
     std::shared_ptr<Type> createArrayType(std::shared_ptr<Type> element_type, 
                                           const std::vector<uint64_t>& dimensions);
     std::shared_ptr<Type> createArrayType(std::shared_ptr<Type> element_type,
