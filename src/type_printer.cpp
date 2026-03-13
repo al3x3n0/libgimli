@@ -154,6 +154,13 @@ std::string formatSubroutineMetadataSuffix(const std::shared_ptr<DIE>& die) {
         }
     }
 
+    auto main_subprogram_attr = die->getAttribute(DwarfAttribute::DW_AT_main_subprogram);
+    if (auto flag = std::dynamic_pointer_cast<FlagAttributeValue>(main_subprogram_attr)) {
+        if (flag->getValue()) {
+            suffix += " [main_subprogram]";
+        }
+    }
+
     return suffix;
 }
 

@@ -474,7 +474,8 @@ FunctionType::FunctionType(std::shared_ptr<Type> return_type,
                            bool is_explicit,
                            bool is_elemental,
                            bool is_pure,
-                           bool is_recursive)
+                           bool is_recursive,
+                           bool is_main_subprogram)
     : return_type_(std::move(return_type)),
       parameter_types_(parameter_types),
       is_variadic_(is_variadic),
@@ -484,7 +485,8 @@ FunctionType::FunctionType(std::shared_ptr<Type> return_type,
       is_explicit_(is_explicit),
       is_elemental_(is_elemental),
       is_pure_(is_pure),
-      is_recursive_(is_recursive) {
+      is_recursive_(is_recursive),
+      is_main_subprogram_(is_main_subprogram) {
     parameters_.reserve(parameter_types_.size());
     for (const auto& parameter_type : parameter_types_) {
         parameters_.push_back({"", parameter_type, false, false});
@@ -500,7 +502,8 @@ FunctionType::FunctionType(std::shared_ptr<Type> return_type,
                            bool is_explicit,
                            bool is_elemental,
                            bool is_pure,
-                           bool is_recursive)
+                           bool is_recursive,
+                           bool is_main_subprogram)
     : return_type_(std::move(return_type)),
       parameters_(parameters),
       is_variadic_(is_variadic),
@@ -510,7 +513,8 @@ FunctionType::FunctionType(std::shared_ptr<Type> return_type,
       is_explicit_(is_explicit),
       is_elemental_(is_elemental),
       is_pure_(is_pure),
-      is_recursive_(is_recursive) {
+      is_recursive_(is_recursive),
+      is_main_subprogram_(is_main_subprogram) {
     parameter_types_.reserve(parameters_.size());
     for (const auto& parameter : parameters_) {
         parameter_types_.push_back(parameter.type);
@@ -560,6 +564,9 @@ std::string FunctionType::getDescription() const {
     }
     if (is_recursive_) {
         description += " [recursive]";
+    }
+    if (is_main_subprogram_) {
+        description += " [main_subprogram]";
     }
     return description;
 }
@@ -782,10 +789,11 @@ std::shared_ptr<Type> TypeSystem::createFunctionType(std::shared_ptr<Type> retur
                                                      bool is_explicit,
                                                      bool is_elemental,
                                                      bool is_pure,
-                                                     bool is_recursive) {
+                                                     bool is_recursive,
+                                                     bool is_main_subprogram) {
     auto type = std::make_shared<FunctionType>(return_type, parameter_types, is_variadic, is_prototyped,
                                                calling_convention, is_declaration, is_explicit,
-                                               is_elemental, is_pure, is_recursive);
+                                               is_elemental, is_pure, is_recursive, is_main_subprogram);
     type->setDwarfTag(DwarfTag::DW_TAG_subroutine_type);
     all_types_.push_back(type);
     return type;
@@ -800,10 +808,11 @@ std::shared_ptr<Type> TypeSystem::createFunctionType(std::shared_ptr<Type> retur
                                                      bool is_explicit,
                                                      bool is_elemental,
                                                      bool is_pure,
-                                                     bool is_recursive) {
+                                                     bool is_recursive,
+                                                     bool is_main_subprogram) {
     auto type = std::make_shared<FunctionType>(std::move(return_type), parameters, is_variadic, is_prototyped,
                                                calling_convention, is_declaration, is_explicit,
-                                               is_elemental, is_pure, is_recursive);
+                                               is_elemental, is_pure, is_recursive, is_main_subprogram);
     type->setDwarfTag(DwarfTag::DW_TAG_subroutine_type);
     all_types_.push_back(type);
     return type;
@@ -1312,6 +1321,7 @@ std::shared_ptr<Type> TypeSystem::resolveFunctionType(std::shared_ptr<DIE> die) 
     bool is_elemental = false;
     bool is_pure = false;
     bool is_recursive = false;
+    bool is_main_subprogram = false;
 
     auto prototyped_attr = die->getAttribute(DwarfAttribute::DW_AT_prototyped);
     if (prototyped_attr && prototyped_attr->getType() == AttributeValueType::FLAG) {
@@ -1340,6 +1350,10 @@ std::shared_ptr<Type> TypeSystem::resolveFunctionType(std::shared_ptr<DIE> die) 
     auto recursive_attr = die->getAttribute(DwarfAttribute::DW_AT_recursive);
     if (recursive_attr && recursive_attr->getType() == AttributeValueType::FLAG) {
         is_recursive = std::static_pointer_cast<FlagAttributeValue>(recursive_attr)->getValue();
+    }
+    auto main_subprogram_attr = die->getAttribute(DwarfAttribute::DW_AT_main_subprogram);
+    if (main_subprogram_attr && main_subprogram_attr->getType() == AttributeValueType::FLAG) {
+        is_main_subprogram = std::static_pointer_cast<FlagAttributeValue>(main_subprogram_attr)->getValue();
     }
 
     for (const auto& child : die->getChildren()) {
@@ -1375,7 +1389,8 @@ std::shared_ptr<Type> TypeSystem::resolveFunctionType(std::shared_ptr<DIE> die) 
     }
 
     return createFunctionType(resolved_return, parameters, is_variadic, is_prototyped, calling_convention,
-                              is_declaration, is_explicit, is_elemental, is_pure, is_recursive);
+                              is_declaration, is_explicit, is_elemental, is_pure, is_recursive,
+                              is_main_subprogram);
 }
 
 std::shared_ptr<Type> TypeSystem::resolveTypedefType(std::shared_ptr<DIE> die) {
