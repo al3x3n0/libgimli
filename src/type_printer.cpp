@@ -131,6 +131,11 @@ std::string formatSubroutineMetadataSuffix(const std::shared_ptr<DIE>& die) {
         suffix += " [inline=" + std::to_string(u->getValue()) + "]";
     }
 
+    auto priority_attr = die->getAttribute(DwarfAttribute::DW_AT_priority);
+    if (auto u = std::dynamic_pointer_cast<UnsignedAttributeValue>(priority_attr)) {
+        suffix += " [priority=" + std::to_string(u->getValue()) + "]";
+    }
+
     auto calling_convention_attr = die->getAttribute(DwarfAttribute::DW_AT_calling_convention);
     if (auto cc = std::dynamic_pointer_cast<UnsignedAttributeValue>(calling_convention_attr)) {
         suffix += " [calling_convention=" + std::to_string(cc->getValue()) + "]";

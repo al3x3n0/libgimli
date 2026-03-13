@@ -331,6 +331,7 @@ public:
                  bool is_variadic = false,
                  bool is_prototyped = false,
                  uint64_t inline_code = 0,
+                 uint64_t priority = 0,
                  uint64_t calling_convention = 0,
                  bool is_external = false,
                  bool is_declaration = false,
@@ -347,6 +348,7 @@ public:
                  bool is_variadic = false,
                  bool is_prototyped = false,
                  uint64_t inline_code = 0,
+                 uint64_t priority = 0,
                  uint64_t calling_convention = 0,
                  bool is_external = false,
                  bool is_declaration = false,
@@ -370,6 +372,7 @@ public:
     bool isVariadic() const { return is_variadic_; }
     bool isPrototyped() const { return is_prototyped_; }
     uint64_t getInlineCode() const { return inline_code_; }
+    uint64_t getPriority() const { return priority_; }
     uint64_t getCallingConvention() const { return calling_convention_; }
     bool isExternal() const { return is_external_; }
     bool isDeclaration() const { return is_declaration_; }
@@ -389,6 +392,7 @@ private:
     bool is_variadic_;
     bool is_prototyped_;
     uint64_t inline_code_;
+    uint64_t priority_;
     uint64_t calling_convention_;
     bool is_external_;
     bool is_declaration_;
@@ -519,6 +523,7 @@ public:
                                              bool is_variadic = false,
                                              bool is_prototyped = false,
                                              uint64_t inline_code = 0,
+                                             uint64_t priority = 0,
                                              uint64_t calling_convention = 0,
                                              bool is_external = false,
                                              bool is_declaration = false,
@@ -535,6 +540,7 @@ public:
                                              bool is_variadic = false,
                                              bool is_prototyped = false,
                                              uint64_t inline_code = 0,
+                                             uint64_t priority = 0,
                                              uint64_t calling_convention = 0,
                                              bool is_external = false,
                                              bool is_declaration = false,
