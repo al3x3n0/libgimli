@@ -15852,9 +15852,11 @@ void testTypeSystem() {
     
     // Test composite type creation
     auto struct_type = std::dynamic_pointer_cast<CompositeType>(
-        type_system.createCompositeType(CompositeType::Kind::STRUCT, "Point", 8));
+        type_system.createCompositeType(CompositeType::Kind::STRUCT, "Point", 8, 2));
     assert(struct_type->getName() == "Point");
     assert(struct_type->getSize() == 8);
+    assert(struct_type->getVisibility() == 2);
+    assert(struct_type->getDescription().find("[visibility=2]") != std::string::npos);
     
     struct_type->addMember("x", int_type, 0);
     struct_type->addMember("y", int_type, 4);
@@ -16044,10 +16046,12 @@ void testTypeSystem() {
         auto interface_die = add_die(DwarfTag::DW_TAG_interface_type, 0x68);
         interface_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("Runnable"));
         interface_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(8));
+        interface_die->addAttribute(DwarfAttribute::DW_AT_visibility, std::make_shared<UnsignedAttributeValue>(1));
 
         auto struct_die = add_die(DwarfTag::DW_TAG_structure_type, 0x70);
         struct_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("Widget"));
         struct_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(16));
+        struct_die->addAttribute(DwarfAttribute::DW_AT_visibility, std::make_shared<UnsignedAttributeValue>(2));
 
         auto member_die = add_die(DwarfTag::DW_TAG_member, 0x71);
         member_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("flags"));
@@ -16263,9 +16267,11 @@ void testTypeSystem() {
         assert(resolved_interface);
         assert(resolved_interface->getKind() == CompositeType::Kind::INTERFACE);
         assert(resolved_interface->getName() == "Runnable");
+        assert(resolved_interface->getVisibility() == 1);
 
         auto resolved_struct = std::dynamic_pointer_cast<CompositeType>(resolving_system.resolveType(struct_die));
         assert(resolved_struct);
+        assert(resolved_struct->getVisibility() == 2);
         assert(resolved_struct->getMembers().size() == 4);
         assert(resolved_struct->getMembers()[0].bit_size == 3);
         assert(resolved_struct->getMembers()[0].bit_offset == 1);
@@ -16409,9 +16415,11 @@ void testTypePrinter() {
 
     auto class_die = add_die(DwarfTag::DW_TAG_class_type, 0x146);
     class_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("Widget"));
+    class_die->addAttribute(DwarfAttribute::DW_AT_visibility, std::make_shared<UnsignedAttributeValue>(2));
 
     auto interface_die = add_die(DwarfTag::DW_TAG_interface_type, 0x1465);
     interface_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("Runnable"));
+    interface_die->addAttribute(DwarfAttribute::DW_AT_visibility, std::make_shared<UnsignedAttributeValue>(1));
 
     auto member_ptr_die = add_die(DwarfTag::DW_TAG_ptr_to_member_type, 0x147);
     member_ptr_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<TypeAttributeValue>(0x130));
@@ -16467,6 +16475,7 @@ void testTypePrinter() {
     auto struct_die = add_die(DwarfTag::DW_TAG_structure_type, 0x150);
     struct_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("Widget"));
     struct_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(16));
+    struct_die->addAttribute(DwarfAttribute::DW_AT_visibility, std::make_shared<UnsignedAttributeValue>(2));
     auto member_die = add_die(DwarfTag::DW_TAG_member, 0x151);
     member_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("value"));
     member_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<TypeAttributeValue>(0x130));
@@ -16518,6 +16527,7 @@ void testTypePrinter() {
 
     auto interface_decl_die = add_die(DwarfTag::DW_TAG_interface_type, 0x152);
     interface_decl_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("Runnable"));
+    interface_decl_die->addAttribute(DwarfAttribute::DW_AT_visibility, std::make_shared<UnsignedAttributeValue>(1));
     auto iface_member_die = add_die(DwarfTag::DW_TAG_member, 0x153);
     iface_member_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("state"));
     iface_member_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<TypeAttributeValue>(0x130));
@@ -16582,7 +16592,7 @@ void testTypePrinter() {
     assert(printer.formatType(anonymous_file_die) == "file<int>[1..4] [rank=1]");
     assert(printer.formatType(rref_die) == "Alias&&");
     assert(printer.formatType(atomic_die) == "_Atomic(Alias)");
-    assert(printer.formatType(interface_die) == "interface Runnable");
+    assert(printer.formatType(interface_die) == "interface Runnable [visibility=1]");
     assert(printer.formatType(member_ptr_die) == "Alias Widget::*");
     assert(printer.formatType(enum_die) == "enum class ScopedColor : int");
     std::string enum_text = printer.formatEnum(enum_die, true);
@@ -16600,7 +16610,7 @@ void testTypePrinter() {
     assert(printer.formatFunction(flag_variadic_func_die) == "int <anonymous>(Alias prefix, ...)");
 
     std::string struct_text = printer.formatStructure(struct_die, true);
-    assert(struct_text.find("struct Widget") != std::string::npos);
+    assert(struct_text.find("struct Widget [visibility=2]") != std::string::npos);
     assert(struct_text.find("value : 3") != std::string::npos);
     assert(struct_text.find("offset: 8") != std::string::npos);
     assert(struct_text.find("bit_offset: 1") != std::string::npos);
@@ -16611,11 +16621,11 @@ void testTypePrinter() {
     assert(struct_text.find("offset: 12") != std::string::npos);
     assert(struct_text.find("legacy_bits : 5") != std::string::npos);
     assert(struct_text.find("bit_offset: 9") != std::string::npos);
-    assert(struct_text.find("inherits from: public Widget /* offset: -8 */") != std::string::npos);
-    assert(struct_text.find("inherits from: protected virtual Widget /* offset: -16 */") != std::string::npos);
+    assert(struct_text.find("inherits from: public Widget [visibility=2] /* offset: -8 */") != std::string::npos);
+    assert(struct_text.find("inherits from: protected virtual Widget [visibility=2] /* offset: -16 */") != std::string::npos);
 
     std::string interface_text = printer.formatStructure(interface_decl_die, true);
-    assert(interface_text.find("interface Runnable") != std::string::npos);
+    assert(interface_text.find("interface Runnable [visibility=1]") != std::string::npos);
     assert(interface_text.find("Alias state") != std::string::npos);
 
     std::cout << "TypePrinter tests passed!" << std::endl;

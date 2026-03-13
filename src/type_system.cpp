@@ -169,8 +169,8 @@ std::shared_ptr<Type> ModifiedType::resolve() {
 }
 
 // CompositeType implementation
-CompositeType::CompositeType(Kind kind, const std::string& name, uint64_t size)
-    : kind_(kind), name_(name), size_(size) {
+CompositeType::CompositeType(Kind kind, const std::string& name, uint64_t size, uint64_t visibility)
+    : kind_(kind), name_(name), size_(size), visibility_(visibility) {
 }
 
 std::string CompositeType::getName() const {
@@ -184,6 +184,9 @@ uint64_t CompositeType::getSize() const {
 std::string CompositeType::getDescription() const {
     std::stringstream ss;
     ss << getName() << " (" << size_ << " bytes)";
+    if (visibility_ != 0) {
+        ss << " [visibility=" << visibility_ << "]";
+    }
     if (!members_.empty()) {
         ss << " with " << members_.size() << " members";
     }
@@ -887,8 +890,9 @@ std::shared_ptr<Type> TypeSystem::createModifiedType(ModifiedTypeKind kind,
 }
 
 std::shared_ptr<Type> TypeSystem::createCompositeType(CompositeType::Kind kind, const std::string& name,
-                                                      uint64_t size) {
-    auto type = std::make_shared<CompositeType>(kind, name, size);
+                                                      uint64_t size,
+                                                      uint64_t visibility) {
+    auto type = std::make_shared<CompositeType>(kind, name, size, visibility);
     switch (kind) {
         case CompositeType::Kind::STRUCT:
             type->setDwarfTag(DwarfTag::DW_TAG_structure_type);
@@ -1222,6 +1226,7 @@ std::shared_ptr<Type> TypeSystem::resolveArrayType(std::shared_ptr<DIE> die) {
 std::shared_ptr<Type> TypeSystem::resolveCompositeType(std::shared_ptr<DIE> die) {
     std::string name = getTypeName(die);
     uint64_t size = getTypeSize(die);
+    uint64_t visibility = 0;
     
     CompositeType::Kind kind = CompositeType::Kind::STRUCT;
     if (die->getTag() == DwarfTag::DW_TAG_union_type) {
@@ -1231,8 +1236,13 @@ std::shared_ptr<Type> TypeSystem::resolveCompositeType(std::shared_ptr<DIE> die)
     } else if (die->getTag() == DwarfTag::DW_TAG_interface_type) {
         kind = CompositeType::Kind::INTERFACE;
     }
+
+    auto visibility_attr = die->getAttribute(DwarfAttribute::DW_AT_visibility);
+    if (visibility_attr && visibility_attr->getType() == AttributeValueType::UNSIGNED) {
+        visibility = std::static_pointer_cast<UnsignedAttributeValue>(visibility_attr)->getValue();
+    }
     
-    auto composite_type = std::make_shared<CompositeType>(kind, name, size);
+    auto composite_type = std::make_shared<CompositeType>(kind, name, size, visibility);
     all_types_.push_back(composite_type);
     
     // Parse members

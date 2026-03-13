@@ -147,13 +147,14 @@ public:
         INTERFACE
     };
     
-    CompositeType(Kind kind, const std::string& name, uint64_t size = 0);
+    CompositeType(Kind kind, const std::string& name, uint64_t size = 0, uint64_t visibility = 0);
     std::string getName() const override;
     uint64_t getSize() const override;
     std::string getDescription() const override;
     bool isComplete() const override;
     std::shared_ptr<Type> resolve() override;
     Kind getKind() const { return kind_; }
+    uint64_t getVisibility() const { return visibility_; }
     
     // Member management
     void addMember(const std::string& name, std::shared_ptr<Type> type, uint64_t offset = 0);
@@ -171,6 +172,7 @@ private:
     Kind kind_;
     std::string name_;
     uint64_t size_;
+    uint64_t visibility_;
     
     std::vector<dwarf::Member> members_;
     std::vector<dwarf::BaseClass> base_classes_;
@@ -468,7 +470,8 @@ public:
                                              uint64_t size = 0,
                                              const std::string& name = "");
     std::shared_ptr<Type> createCompositeType(CompositeType::Kind kind, const std::string& name,
-                                              uint64_t size = 0);
+                                              uint64_t size = 0,
+                                              uint64_t visibility = 0);
     std::shared_ptr<Type> createEnumType(const std::string& name, 
                                          std::shared_ptr<Type> underlying_type,
                                          bool is_scoped = false);

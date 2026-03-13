@@ -176,6 +176,19 @@ std::string formatSubroutineMetadataSuffix(const std::shared_ptr<DIE>& die) {
     return suffix;
 }
 
+std::string formatTypeVisibilitySuffix(const std::shared_ptr<DIE>& die) {
+    if (!die) {
+        return "";
+    }
+
+    auto visibility_attr = die->getAttribute(DwarfAttribute::DW_AT_visibility);
+    if (auto u = std::dynamic_pointer_cast<UnsignedAttributeValue>(visibility_attr)) {
+        return " [visibility=" + std::to_string(u->getValue()) + "]";
+    }
+
+    return "";
+}
+
 } // namespace
 
 // RecursionGuard implementation
@@ -371,6 +384,8 @@ std::string TypePrinter::formatStructure(const std::shared_ptr<DIE>& type_die,
     if (!name.empty()) {
         result += name;
     }
+
+    result += formatTypeVisibilitySuffix(type_die);
 
     if (!include_members) {
         return result;
@@ -1004,34 +1019,34 @@ std::string TypePrinter::formatTypedefType(const std::shared_ptr<DIE>& die) cons
 std::string TypePrinter::formatStructType(const std::shared_ptr<DIE>& die) const {
     std::string name = die->getName();
     if (name.empty()) {
-        return "struct <anonymous>";
+        return "struct <anonymous>" + formatTypeVisibilitySuffix(die);
     }
-    return "struct " + name;
+    return "struct " + name + formatTypeVisibilitySuffix(die);
 }
 
 std::string TypePrinter::formatUnionType(const std::shared_ptr<DIE>& die) const {
     std::string name = die->getName();
     if (name.empty()) {
-        return "union <anonymous>";
+        return "union <anonymous>" + formatTypeVisibilitySuffix(die);
     }
-    return "union " + name;
+    return "union " + name + formatTypeVisibilitySuffix(die);
 }
 
 std::string TypePrinter::formatClassType(const std::shared_ptr<DIE>& die) const {
     std::string name = die->getName();
     if (name.empty()) {
-        return "class <anonymous>";
+        return "class <anonymous>" + formatTypeVisibilitySuffix(die);
     }
     // For classes, just use the name without "class" prefix (C++ style)
-    return name;
+    return name + formatTypeVisibilitySuffix(die);
 }
 
 std::string TypePrinter::formatInterfaceType(const std::shared_ptr<DIE>& die) const {
     std::string name = die->getName();
     if (name.empty()) {
-        return "interface <anonymous>";
+        return "interface <anonymous>" + formatTypeVisibilitySuffix(die);
     }
-    return "interface " + name;
+    return "interface " + name + formatTypeVisibilitySuffix(die);
 }
 
 std::string TypePrinter::formatEnumType(const std::shared_ptr<DIE>& die) const {
