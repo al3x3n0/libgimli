@@ -15781,6 +15781,12 @@ void testTypeSystem() {
     assert(visible_typedef->getVisibility() == 1);
     assert(visible_typedef->getDescription().find("[visibility=1]") != std::string::npos);
 
+    auto utf8_string_type = std::dynamic_pointer_cast<StringType>(
+        type_system.createStringType("Utf8String", int_type, 16, 4, 1, true));
+    assert(utf8_string_type);
+    assert(utf8_string_type->usesUtf8());
+    assert(utf8_string_type->getDescription().find("[use_UTF8]") != std::string::npos);
+
     // Test tag-based queries
     {
         auto ptr_types = type_system.getTypesByTag(DwarfTag::DW_TAG_pointer_type);
@@ -15975,6 +15981,7 @@ void testTypeSystem() {
         string_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(16));
         string_die->addAttribute(DwarfAttribute::DW_AT_string_length, std::make_shared<UnsignedAttributeValue>(4));
         string_die->addAttribute(DwarfAttribute::DW_AT_visibility, std::make_shared<UnsignedAttributeValue>(1));
+        string_die->addAttribute(DwarfAttribute::DW_AT_use_UTF8, std::make_shared<FlagAttributeValue>(true));
 
         auto expr_string_die = add_die(DwarfTag::DW_TAG_string_type, 0x18a);
         expr_string_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("expr_string"));
@@ -16243,6 +16250,7 @@ void testTypeSystem() {
         assert(resolved_string->getSize() == 16);
         assert(resolved_string->getLength() == 4);
         assert(resolved_string->getVisibility() == 1);
+        assert(resolved_string->usesUtf8());
         assert(resolved_string->getCharacterType());
         assert(resolved_string->getCharacterType()->getName() == "int");
 
@@ -16468,6 +16476,7 @@ void testTypePrinter() {
     string_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(16));
     string_die->addAttribute(DwarfAttribute::DW_AT_string_length, std::make_shared<UnsignedAttributeValue>(4));
     string_die->addAttribute(DwarfAttribute::DW_AT_visibility, std::make_shared<UnsignedAttributeValue>(1));
+    string_die->addAttribute(DwarfAttribute::DW_AT_use_UTF8, std::make_shared<FlagAttributeValue>(true));
 
     auto expr_string_die = add_die(DwarfTag::DW_TAG_string_type, 0x1085);
     expr_string_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("CountedExprString"));
@@ -16697,7 +16706,7 @@ void testTypePrinter() {
     assert(printer.formatType(ptr_die) == "const int*");
     assert(printer.formatType(typedef_die) == "Alias [visibility=1]");
     assert(printer.formatType(unspecified_die) == "decltype(auto)");
-    assert(printer.formatType(string_die) == "utf8_string [length=4] [visibility=1]");
+    assert(printer.formatType(string_die) == "utf8_string [length=4] [visibility=1] [use_UTF8]");
     assert(printer.formatType(expr_string_die) == "CountedExprString [length=6]");
     assert(printer.formatType(set_die) == "IntSet [visibility=2]");
     assert(printer.formatType(file_die) == "IntFile [rank=1] [visibility=2]");

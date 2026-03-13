@@ -366,12 +366,14 @@ StringType::StringType(const std::string& name,
                        std::shared_ptr<Type> character_type,
                        uint64_t size,
                        uint64_t length,
-                       uint64_t visibility)
+                       uint64_t visibility,
+                       bool use_utf8)
     : name_(name),
       character_type_(std::move(character_type)),
       size_(size),
       length_(length),
-      visibility_(visibility) {
+      visibility_(visibility),
+      use_utf8_(use_utf8) {
 }
 
 std::string StringType::getName() const {
@@ -402,6 +404,12 @@ std::string StringType::getDescription() const {
     }
     if (length_ != 0) {
         ss << " [length=" << length_ << "]";
+    }
+    if (visibility_ != 0) {
+        ss << " [visibility=" << visibility_ << "]";
+    }
+    if (use_utf8_) {
+        ss << " [use_UTF8]";
     }
     return ss.str();
 }
@@ -854,8 +862,9 @@ std::shared_ptr<Type> TypeSystem::createStringType(const std::string& name,
                                                    std::shared_ptr<Type> character_type,
                                                    uint64_t size,
                                                    uint64_t length,
-                                                   uint64_t visibility) {
-    auto type = std::make_shared<StringType>(name, std::move(character_type), size, length, visibility);
+                                                   uint64_t visibility,
+                                                   bool use_utf8) {
+    auto type = std::make_shared<StringType>(name, std::move(character_type), size, length, visibility, use_utf8);
     type->setDwarfTag(DwarfTag::DW_TAG_string_type);
     all_types_.push_back(type);
     return type;
@@ -1284,6 +1293,7 @@ std::shared_ptr<Type> TypeSystem::resolveStringType(std::shared_ptr<DIE> die) {
     std::shared_ptr<Type> resolved_char = char_die ? resolveType(char_die) : nullptr;
     uint64_t length = 0;
     uint64_t visibility = 0;
+    bool use_utf8 = false;
     if (auto decoded_length =
             decodeConstantOffsetAttribute(die->getAttribute(DwarfAttribute::DW_AT_string_length))) {
         if (*decoded_length >= 0) {
@@ -1294,7 +1304,11 @@ std::shared_ptr<Type> TypeSystem::resolveStringType(std::shared_ptr<DIE> die) {
     if (visibility_attr && visibility_attr->getType() == AttributeValueType::UNSIGNED) {
         visibility = std::static_pointer_cast<UnsignedAttributeValue>(visibility_attr)->getValue();
     }
-    return createStringType(getTypeName(die), resolved_char, getTypeSize(die), length, visibility);
+    auto use_utf8_attr = die->getAttribute(DwarfAttribute::DW_AT_use_UTF8);
+    if (use_utf8_attr && use_utf8_attr->getType() == AttributeValueType::FLAG) {
+        use_utf8 = std::static_pointer_cast<FlagAttributeValue>(use_utf8_attr)->getValue();
+    }
+    return createStringType(getTypeName(die), resolved_char, getTypeSize(die), length, visibility, use_utf8);
 }
 
 std::shared_ptr<Type> TypeSystem::resolveSetType(std::shared_ptr<DIE> die) {
