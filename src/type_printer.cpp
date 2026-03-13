@@ -1128,35 +1128,63 @@ std::string TypePrinter::formatTypedefType(const std::shared_ptr<DIE>& die) cons
 
 std::string TypePrinter::formatStructType(const std::shared_ptr<DIE>& die) const {
     std::string name = die->getName();
-    if (name.empty()) {
-        return "struct <anonymous>" + formatTypeVisibilitySuffix(die);
+    std::string suffix = formatTypeVisibilitySuffix(die);
+    auto identifier_case_attr = die->getAttribute(DwarfAttribute::DW_AT_identifier_case);
+    if (identifier_case_attr && identifier_case_attr->getType() == AttributeValueType::UNSIGNED) {
+        suffix += " [identifier_case=" +
+                  std::to_string(std::static_pointer_cast<UnsignedAttributeValue>(identifier_case_attr)->getValue()) +
+                  "]";
     }
-    return "struct " + name + formatTypeVisibilitySuffix(die);
+    if (name.empty()) {
+        return "struct <anonymous>" + suffix;
+    }
+    return "struct " + name + suffix;
 }
 
 std::string TypePrinter::formatUnionType(const std::shared_ptr<DIE>& die) const {
     std::string name = die->getName();
-    if (name.empty()) {
-        return "union <anonymous>" + formatTypeVisibilitySuffix(die);
+    std::string suffix = formatTypeVisibilitySuffix(die);
+    auto identifier_case_attr = die->getAttribute(DwarfAttribute::DW_AT_identifier_case);
+    if (identifier_case_attr && identifier_case_attr->getType() == AttributeValueType::UNSIGNED) {
+        suffix += " [identifier_case=" +
+                  std::to_string(std::static_pointer_cast<UnsignedAttributeValue>(identifier_case_attr)->getValue()) +
+                  "]";
     }
-    return "union " + name + formatTypeVisibilitySuffix(die);
+    if (name.empty()) {
+        return "union <anonymous>" + suffix;
+    }
+    return "union " + name + suffix;
 }
 
 std::string TypePrinter::formatClassType(const std::shared_ptr<DIE>& die) const {
     std::string name = die->getName();
+    std::string suffix = formatTypeVisibilitySuffix(die);
+    auto identifier_case_attr = die->getAttribute(DwarfAttribute::DW_AT_identifier_case);
+    if (identifier_case_attr && identifier_case_attr->getType() == AttributeValueType::UNSIGNED) {
+        suffix += " [identifier_case=" +
+                  std::to_string(std::static_pointer_cast<UnsignedAttributeValue>(identifier_case_attr)->getValue()) +
+                  "]";
+    }
     if (name.empty()) {
-        return "class <anonymous>" + formatTypeVisibilitySuffix(die);
+        return "class <anonymous>" + suffix;
     }
     // For classes, just use the name without "class" prefix (C++ style)
-    return name + formatTypeVisibilitySuffix(die);
+    return name + suffix;
 }
 
 std::string TypePrinter::formatInterfaceType(const std::shared_ptr<DIE>& die) const {
     std::string name = die->getName();
-    if (name.empty()) {
-        return "interface <anonymous>" + formatTypeVisibilitySuffix(die);
+    std::string suffix = formatTypeVisibilitySuffix(die);
+    auto identifier_case_attr = die->getAttribute(DwarfAttribute::DW_AT_identifier_case);
+    if (identifier_case_attr && identifier_case_attr->getType() == AttributeValueType::UNSIGNED) {
+        suffix += " [identifier_case=" +
+                  std::to_string(std::static_pointer_cast<UnsignedAttributeValue>(identifier_case_attr)->getValue()) +
+                  "]";
     }
-    return "interface " + name + formatTypeVisibilitySuffix(die);
+    if (name.empty()) {
+        return "interface <anonymous>" + suffix;
+    }
+    return "interface " + name + suffix;
 }
 
 std::string TypePrinter::formatEnumType(const std::shared_ptr<DIE>& die) const {

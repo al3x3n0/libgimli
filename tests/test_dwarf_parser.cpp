@@ -15899,11 +15899,13 @@ void testTypeSystem() {
     
     // Test composite type creation
     auto struct_type = std::dynamic_pointer_cast<CompositeType>(
-        type_system.createCompositeType(CompositeType::Kind::STRUCT, "Point", 8, 2));
+        type_system.createCompositeType(CompositeType::Kind::STRUCT, "Point", 8, 2, 3));
     assert(struct_type->getName() == "Point");
     assert(struct_type->getSize() == 8);
     assert(struct_type->getVisibility() == 2);
+    assert(struct_type->getIdentifierCase() == 3);
     assert(struct_type->getDescription().find("[visibility=2]") != std::string::npos);
+    assert(struct_type->getDescription().find("[identifier_case=3]") != std::string::npos);
     
     struct_type->addMember("x", int_type, 0);
     struct_type->addMember("y", int_type, 4);
@@ -16122,6 +16124,7 @@ void testTypeSystem() {
         struct_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("Widget"));
         struct_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(16));
         struct_die->addAttribute(DwarfAttribute::DW_AT_visibility, std::make_shared<UnsignedAttributeValue>(2));
+        struct_die->addAttribute(DwarfAttribute::DW_AT_identifier_case, std::make_shared<UnsignedAttributeValue>(3));
 
         auto member_die = add_die(DwarfTag::DW_TAG_member, 0x71);
         member_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("flags"));
@@ -16375,6 +16378,7 @@ void testTypeSystem() {
         auto resolved_struct = std::dynamic_pointer_cast<CompositeType>(resolving_system.resolveType(struct_die));
         assert(resolved_struct);
         assert(resolved_struct->getVisibility() == 2);
+        assert(resolved_struct->getIdentifierCase() == 3);
         assert(resolved_struct->getMembers().size() == 4);
         assert(resolved_struct->getMembers()[0].bit_size == 3);
         assert(resolved_struct->getMembers()[0].bit_offset == 1);
@@ -16611,6 +16615,7 @@ void testTypePrinter() {
     struct_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("Widget"));
     struct_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(16));
     struct_die->addAttribute(DwarfAttribute::DW_AT_visibility, std::make_shared<UnsignedAttributeValue>(2));
+    struct_die->addAttribute(DwarfAttribute::DW_AT_identifier_case, std::make_shared<UnsignedAttributeValue>(3));
     auto member_die = add_die(DwarfTag::DW_TAG_member, 0x151);
     member_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("value"));
     member_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<TypeAttributeValue>(0x130));
@@ -16748,7 +16753,7 @@ void testTypePrinter() {
     assert(printer.formatFunction(flag_variadic_func_die) == "int <anonymous>(Alias [visibility=1] prefix, ...)");
 
     std::string struct_text = printer.formatStructure(struct_die, true);
-    assert(struct_text.find("struct Widget [visibility=2]") != std::string::npos);
+    assert(struct_text.find("struct Widget [visibility=2] [identifier_case=3]") != std::string::npos);
     assert(struct_text.find("value : 3") != std::string::npos);
     assert(struct_text.find("offset: 8") != std::string::npos);
     assert(struct_text.find("bit_offset: 1") != std::string::npos);
