@@ -99,6 +99,7 @@ public:
                   uint64_t address_class = 0,
                   uint64_t binary_scale = 0,
                   uint64_t decimal_scale = 0,
+                  uint64_t decimal_sign = 0,
                   uint64_t digit_count = 0,
                   const std::string& picture_string = "",
                   bool is_small = false,
@@ -113,6 +114,7 @@ public:
     uint64_t getAddressClass() const { return address_class_; }
     uint64_t getBinaryScale() const { return binary_scale_; }
     uint64_t getDecimalScale() const { return decimal_scale_; }
+    uint64_t getDecimalSign() const { return decimal_sign_; }
     uint64_t getDigitCount() const { return digit_count_; }
     const std::string& getPictureString() const { return picture_string_; }
     bool isSmall() const { return is_small_; }
@@ -126,6 +128,7 @@ private:
     uint64_t address_class_;
     uint64_t binary_scale_;
     uint64_t decimal_scale_;
+    uint64_t decimal_sign_;
     uint64_t digit_count_;
     std::string picture_string_;
     bool is_small_;
@@ -457,6 +460,7 @@ public:
                                               uint64_t address_class = 0,
                                               uint64_t binary_scale = 0,
                                               uint64_t decimal_scale = 0,
+                                              uint64_t decimal_sign = 0,
                                               uint64_t digit_count = 0,
                                               const std::string& picture_string = "",
                                               bool is_small = false,

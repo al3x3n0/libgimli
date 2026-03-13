@@ -820,6 +820,11 @@ std::string TypePrinter::formatBaseType(const std::shared_ptr<DIE>& die) const {
         name += " [decimal_scale=" + std::to_string(uint_val->getValue()) + "]";
     }
 
+    auto decimal_sign_attr = die->getAttribute(DwarfAttribute::DW_AT_decimal_sign);
+    if (auto uint_val = std::dynamic_pointer_cast<UnsignedAttributeValue>(decimal_sign_attr)) {
+        name += " [decimal_sign=" + std::to_string(uint_val->getValue()) + "]";
+    }
+
     auto digit_count_attr = die->getAttribute(DwarfAttribute::DW_AT_digit_count);
     if (auto uint_val = std::dynamic_pointer_cast<UnsignedAttributeValue>(digit_count_attr)) {
         name += " [digit_count=" + std::to_string(uint_val->getValue()) + "]";
