@@ -15883,9 +15883,11 @@ void testTypeSystem() {
     assert(enum_type->getEnumeratorName(-1) == "NEGATIVE");
 
     auto scoped_enum_type = std::dynamic_pointer_cast<EnumType>(
-        type_system.createEnumType("ScopedColor", int_type, true));
+        type_system.createEnumType("ScopedColor", int_type, true, 1));
     assert(scoped_enum_type->isScoped());
+    assert(scoped_enum_type->getVisibility() == 1);
     assert(scoped_enum_type->getDescription().find("enum class ScopedColor") == 0);
+    assert(scoped_enum_type->getDescription().find("[visibility=1]") != std::string::npos);
 
     // Test DIE-driven type resolution preserves wrappers and richer metadata.
     {
@@ -15985,6 +15987,7 @@ void testTypeSystem() {
         enum_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("SignedEnum"));
         enum_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x10));
         enum_die->addAttribute(DwarfAttribute::DW_AT_enum_class, std::make_shared<FlagAttributeValue>(true));
+        enum_die->addAttribute(DwarfAttribute::DW_AT_visibility, std::make_shared<UnsignedAttributeValue>(1));
         auto negative_enum_die = add_die(DwarfTag::DW_TAG_enumerator, 0x49);
         negative_enum_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("NEGATIVE"));
         negative_enum_die->addAttribute(DwarfAttribute::DW_AT_const_value, std::make_shared<SignedAttributeValue>(-7));
@@ -16230,6 +16233,7 @@ void testTypeSystem() {
         assert(resolved_enum);
         assert(resolved_enum->getName() == "SignedEnum");
         assert(resolved_enum->isScoped());
+        assert(resolved_enum->getVisibility() == 1);
         assert(resolved_enum->getEnumerators().size() == 2);
         assert(resolved_enum->getEnumerators()[0].value == -7);
         assert(resolved_enum->getEnumeratorName(-7) == "NEGATIVE");
@@ -16429,6 +16433,7 @@ void testTypePrinter() {
     enum_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("ScopedColor"));
     enum_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<TypeAttributeValue>(0x100));
     enum_die->addAttribute(DwarfAttribute::DW_AT_enum_class, std::make_shared<FlagAttributeValue>(true));
+    enum_die->addAttribute(DwarfAttribute::DW_AT_visibility, std::make_shared<UnsignedAttributeValue>(1));
     auto negative_enum_value_die = add_die(DwarfTag::DW_TAG_enumerator, 0x1476);
     negative_enum_value_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("NEGATIVE"));
     negative_enum_value_die->addAttribute(DwarfAttribute::DW_AT_const_value, std::make_shared<SignedAttributeValue>(-7));
@@ -16594,7 +16599,7 @@ void testTypePrinter() {
     assert(printer.formatType(atomic_die) == "_Atomic(Alias)");
     assert(printer.formatType(interface_die) == "interface Runnable [visibility=1]");
     assert(printer.formatType(member_ptr_die) == "Alias Widget::*");
-    assert(printer.formatType(enum_die) == "enum class ScopedColor : int");
+    assert(printer.formatType(enum_die) == "enum class ScopedColor : int [visibility=1]");
     std::string enum_text = printer.formatEnum(enum_die, true);
     assert(enum_text.find("NEGATIVE = -7") != std::string::npos);
     assert(enum_text.find("POSITIVE = 5") != std::string::npos);

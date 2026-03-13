@@ -377,7 +377,10 @@ public:
         int64_t value;
     };
     
-    EnumType(const std::string& name, std::shared_ptr<Type> underlying_type, bool is_scoped = false);
+    EnumType(const std::string& name,
+             std::shared_ptr<Type> underlying_type,
+             bool is_scoped = false,
+             uint64_t visibility = 0);
     std::string getName() const override;
     uint64_t getSize() const override;
     std::string getDescription() const override;
@@ -388,12 +391,14 @@ public:
     const std::vector<Enumerator>& getEnumerators() const { return enumerators_; }
     std::shared_ptr<Type> getUnderlyingType() const { return underlying_type_; }
     bool isScoped() const { return is_scoped_; }
+    uint64_t getVisibility() const { return visibility_; }
     std::string getEnumeratorName(int64_t value) const;
     
 private:
     std::string name_;
     std::shared_ptr<Type> underlying_type_;
     bool is_scoped_;
+    uint64_t visibility_;
     std::vector<Enumerator> enumerators_;
 };
 
@@ -474,7 +479,8 @@ public:
                                               uint64_t visibility = 0);
     std::shared_ptr<Type> createEnumType(const std::string& name, 
                                          std::shared_ptr<Type> underlying_type,
-                                         bool is_scoped = false);
+                                         bool is_scoped = false,
+                                         uint64_t visibility = 0);
     
     // Type resolution
     std::shared_ptr<Type> resolveType(std::shared_ptr<DIE> die);
