@@ -1193,10 +1193,20 @@ std::string TypePrinter::formatPtrToMemberType(const std::shared_ptr<DIE>& die,
         class_name = "<unknown>";
     }
 
+    std::string result;
     if (var_name.empty()) {
-        return member_str + " " + class_name + "::*";
+        result = member_str + " " + class_name + "::*";
+    } else {
+        result = member_str + " " + class_name + "::*" + var_name;
     }
-    return member_str + " " + class_name + "::*" + var_name;
+
+    if (auto visibility = decodeConstantOffsetAttribute(die->getAttribute(DwarfAttribute::DW_AT_visibility))) {
+        if (*visibility >= 0) {
+            result += " [visibility=" + std::to_string(*visibility) + "]";
+        }
+    }
+
+    return result;
 }
 
 std::shared_ptr<DIE> TypePrinter::getReferencedType(const std::shared_ptr<DIE>& die) const {

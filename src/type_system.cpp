@@ -635,10 +635,12 @@ std::shared_ptr<Type> FunctionType::resolve() {
 // MemberPointerType implementation
 MemberPointerType::MemberPointerType(std::shared_ptr<Type> member_type,
                                      std::shared_ptr<Type> containing_type,
-                                     uint64_t size)
+                                     uint64_t size,
+                                     uint64_t visibility)
     : member_type_(std::move(member_type)),
       containing_type_(std::move(containing_type)),
-      size_(size) {
+      size_(size),
+      visibility_(visibility) {
 }
 
 std::string MemberPointerType::getName() const {
@@ -656,6 +658,9 @@ std::string MemberPointerType::getDescription() const {
     ss << getName();
     if (size_ != 0) {
         ss << " (" << size_ << " bytes)";
+    }
+    if (visibility_ != 0) {
+        ss << " [visibility=" << visibility_ << "]";
     }
     return ss.str();
 }
@@ -775,10 +780,12 @@ std::shared_ptr<Type> TypeSystem::createAtomicType(std::shared_ptr<Type> value_t
 }
 
 std::shared_ptr<Type> TypeSystem::createMemberPointerType(std::shared_ptr<Type> member_type,
-                                                          std::shared_ptr<Type> containing_type) {
+                                                          std::shared_ptr<Type> containing_type,
+                                                          uint64_t visibility) {
     auto type = std::make_shared<MemberPointerType>(std::move(member_type),
                                                     std::move(containing_type),
-                                                    pointer_size_bytes_);
+                                                    pointer_size_bytes_,
+                                                    visibility);
     type->setDwarfTag(DwarfTag::DW_TAG_ptr_to_member_type);
     all_types_.push_back(type);
     return type;
@@ -1151,6 +1158,7 @@ std::shared_ptr<Type> TypeSystem::resolvePointerType(std::shared_ptr<DIE> die) {
 std::shared_ptr<Type> TypeSystem::resolveMemberPointerType(std::shared_ptr<DIE> die) {
     auto member_die = getTypeReference(die);
     std::shared_ptr<Type> resolved_member = member_die ? resolveType(member_die) : nullptr;
+    uint64_t visibility = 0;
 
     std::shared_ptr<Type> resolved_containing;
     auto containing_attr = die->getAttribute(DwarfAttribute::DW_AT_containing_type);
@@ -1164,7 +1172,12 @@ std::shared_ptr<Type> TypeSystem::resolveMemberPointerType(std::shared_ptr<DIE> 
         resolved_containing = resolveType(die_lookup_(containing_offset));
     }
 
-    return createMemberPointerType(resolved_member, resolved_containing);
+    auto visibility_attr = die->getAttribute(DwarfAttribute::DW_AT_visibility);
+    if (visibility_attr && visibility_attr->getType() == AttributeValueType::UNSIGNED) {
+        visibility = std::static_pointer_cast<UnsignedAttributeValue>(visibility_attr)->getValue();
+    }
+
+    return createMemberPointerType(resolved_member, resolved_containing, visibility);
 }
 
 std::shared_ptr<Type> TypeSystem::resolveStringType(std::shared_ptr<DIE> die) {

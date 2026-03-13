@@ -15996,6 +15996,7 @@ void testTypeSystem() {
         auto member_ptr_die = add_die(DwarfTag::DW_TAG_ptr_to_member_type, 0x47);
         member_ptr_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x30));
         member_ptr_die->addAttribute(DwarfAttribute::DW_AT_containing_type, std::make_shared<TypeAttributeValue>(0x60));
+        member_ptr_die->addAttribute(DwarfAttribute::DW_AT_visibility, std::make_shared<UnsignedAttributeValue>(2));
 
         auto enum_die = add_die(DwarfTag::DW_TAG_enumeration_type, 0x48);
         enum_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("SignedEnum"));
@@ -16247,6 +16248,7 @@ void testTypeSystem() {
         assert(resolved_member_ptr->getSize() == 8);
         assert(resolved_member_ptr->getMemberType()->getName() == "MyInt");
         assert(resolved_member_ptr->getContainingType()->getName() == "Base");
+        assert(resolved_member_ptr->getVisibility() == 2);
         assert(resolved_member_ptr->getName() == "MyInt Base::*");
 
         auto resolved_enum = std::dynamic_pointer_cast<EnumType>(resolving_system.resolveType(enum_die));
@@ -16454,6 +16456,7 @@ void testTypePrinter() {
     auto member_ptr_die = add_die(DwarfTag::DW_TAG_ptr_to_member_type, 0x147);
     member_ptr_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<TypeAttributeValue>(0x130));
     member_ptr_die->addAttribute(DwarfAttribute::DW_AT_containing_type, std::make_shared<TypeAttributeValue>(0x146));
+    member_ptr_die->addAttribute(DwarfAttribute::DW_AT_visibility, std::make_shared<UnsignedAttributeValue>(2));
 
     auto enum_die = add_die(DwarfTag::DW_TAG_enumeration_type, 0x1475);
     enum_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("ScopedColor"));
@@ -16625,7 +16628,7 @@ void testTypePrinter() {
     assert(printer.formatType(rref_die) == "Alias [visibility=1]&&");
     assert(printer.formatType(atomic_die) == "_Atomic(Alias [visibility=1])");
     assert(printer.formatType(interface_die) == "interface Runnable [visibility=1]");
-    assert(printer.formatType(member_ptr_die) == "Alias [visibility=1] Widget::*");
+    assert(printer.formatType(member_ptr_die) == "Alias [visibility=1] Widget::* [visibility=2]");
     assert(printer.formatType(enum_die) == "enum class ScopedColor : int [visibility=1]");
     std::string enum_text = printer.formatEnum(enum_die, true);
     assert(enum_text.find("NEGATIVE = -7") != std::string::npos);

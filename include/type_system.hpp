@@ -369,7 +369,8 @@ class MemberPointerType : public Type {
 public:
     MemberPointerType(std::shared_ptr<Type> member_type,
                       std::shared_ptr<Type> containing_type,
-                      uint64_t size);
+                      uint64_t size,
+                      uint64_t visibility = 0);
     std::string getName() const override;
     uint64_t getSize() const override;
     std::string getDescription() const override;
@@ -378,11 +379,13 @@ public:
 
     std::shared_ptr<Type> getMemberType() const { return member_type_; }
     std::shared_ptr<Type> getContainingType() const { return containing_type_; }
+    uint64_t getVisibility() const { return visibility_; }
 
 private:
     std::shared_ptr<Type> member_type_;
     std::shared_ptr<Type> containing_type_;
     uint64_t size_;
+    uint64_t visibility_;
 };
 
 // Enum types
@@ -435,7 +438,8 @@ public:
     std::shared_ptr<Type> createRvalueReferenceType(std::shared_ptr<Type> referee_type);
     std::shared_ptr<Type> createAtomicType(std::shared_ptr<Type> value_type);
     std::shared_ptr<Type> createMemberPointerType(std::shared_ptr<Type> member_type,
-                                                  std::shared_ptr<Type> containing_type);
+                                                  std::shared_ptr<Type> containing_type,
+                                                  uint64_t visibility = 0);
     std::shared_ptr<Type> createStringType(const std::string& name,
                                            std::shared_ptr<Type> character_type,
                                            uint64_t size,
