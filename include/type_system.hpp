@@ -342,7 +342,8 @@ public:
                  bool is_main_subprogram = false,
                  bool is_const_expr = false,
                  uint64_t visibility = 0,
-                 const std::string& linkage_name = "");
+                 const std::string& linkage_name = "",
+                 const std::string& description_text = "");
     FunctionType(std::shared_ptr<Type> return_type,
                  const std::vector<FunctionParameter>& parameters,
                  bool is_variadic = false,
@@ -359,7 +360,8 @@ public:
                  bool is_main_subprogram = false,
                  bool is_const_expr = false,
                  uint64_t visibility = 0,
-                 const std::string& linkage_name = "");
+                 const std::string& linkage_name = "",
+                 const std::string& description_text = "");
     std::string getName() const override;
     uint64_t getSize() const override;
     std::string getDescription() const override;
@@ -384,6 +386,7 @@ public:
     bool isConstExpr() const { return is_const_expr_; }
     uint64_t getVisibility() const { return visibility_; }
     const std::string& getLinkageName() const { return linkage_name_; }
+    const std::string& getDescriptionText() const { return description_text_; }
     
 private:
     std::shared_ptr<Type> return_type_;
@@ -404,6 +407,7 @@ private:
     bool is_const_expr_;
     uint64_t visibility_;
     std::string linkage_name_;
+    std::string description_text_;
 };
 
 class MemberPointerType : public Type {
@@ -534,7 +538,8 @@ public:
                                              bool is_main_subprogram = false,
                                              bool is_const_expr = false,
                                              uint64_t visibility = 0,
-                                             const std::string& linkage_name = "");
+                                             const std::string& linkage_name = "",
+                                             const std::string& description_text = "");
     std::shared_ptr<Type> createFunctionType(std::shared_ptr<Type> return_type,
                                              const std::vector<FunctionParameter>& parameters,
                                              bool is_variadic = false,
@@ -551,7 +556,8 @@ public:
                                              bool is_main_subprogram = false,
                                              bool is_const_expr = false,
                                              uint64_t visibility = 0,
-                                             const std::string& linkage_name = "");
+                                             const std::string& linkage_name = "",
+                                             const std::string& description_text = "");
     std::shared_ptr<Type> createModifiedType(ModifiedTypeKind kind,
                                              std::shared_ptr<Type> underlying_type,
                                              uint64_t size = 0,
