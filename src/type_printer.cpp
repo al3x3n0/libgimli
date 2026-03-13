@@ -168,6 +168,11 @@ std::string formatSubroutineMetadataSuffix(const std::shared_ptr<DIE>& die) {
         }
     }
 
+    auto visibility_attr = die->getAttribute(DwarfAttribute::DW_AT_visibility);
+    if (auto u = std::dynamic_pointer_cast<UnsignedAttributeValue>(visibility_attr)) {
+        suffix += " [visibility=" + std::to_string(u->getValue()) + "]";
+    }
+
     return suffix;
 }
 

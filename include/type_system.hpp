@@ -294,7 +294,8 @@ public:
                  bool is_pure = false,
                  bool is_recursive = false,
                  bool is_main_subprogram = false,
-                 bool is_const_expr = false);
+                 bool is_const_expr = false,
+                 uint64_t visibility = 0);
     FunctionType(std::shared_ptr<Type> return_type,
                  const std::vector<FunctionParameter>& parameters,
                  bool is_variadic = false,
@@ -306,7 +307,8 @@ public:
                  bool is_pure = false,
                  bool is_recursive = false,
                  bool is_main_subprogram = false,
-                 bool is_const_expr = false);
+                 bool is_const_expr = false,
+                 uint64_t visibility = 0);
     std::string getName() const override;
     uint64_t getSize() const override;
     std::string getDescription() const override;
@@ -326,6 +328,7 @@ public:
     bool isRecursive() const { return is_recursive_; }
     bool isMainSubprogram() const { return is_main_subprogram_; }
     bool isConstExpr() const { return is_const_expr_; }
+    uint64_t getVisibility() const { return visibility_; }
     
 private:
     std::shared_ptr<Type> return_type_;
@@ -341,6 +344,7 @@ private:
     bool is_recursive_;
     bool is_main_subprogram_;
     bool is_const_expr_;
+    uint64_t visibility_;
 };
 
 class MemberPointerType : public Type {
@@ -444,7 +448,8 @@ public:
                                              bool is_pure = false,
                                              bool is_recursive = false,
                                              bool is_main_subprogram = false,
-                                             bool is_const_expr = false);
+                                             bool is_const_expr = false,
+                                             uint64_t visibility = 0);
     std::shared_ptr<Type> createFunctionType(std::shared_ptr<Type> return_type,
                                              const std::vector<FunctionParameter>& parameters,
                                              bool is_variadic = false,
@@ -456,7 +461,8 @@ public:
                                              bool is_pure = false,
                                              bool is_recursive = false,
                                              bool is_main_subprogram = false,
-                                             bool is_const_expr = false);
+                                             bool is_const_expr = false,
+                                             uint64_t visibility = 0);
     std::shared_ptr<Type> createModifiedType(ModifiedTypeKind kind,
                                              std::shared_ptr<Type> underlying_type,
                                              uint64_t size = 0,

@@ -15821,7 +15821,7 @@ void testTypeSystem() {
 
     std::vector<FunctionParameter> named_params = {{"value", int_type, true, true}};
     auto named_func_type =
-        type_system.createFunctionType(int_type, named_params, true, true, 2, true, true, true, true, true, true, true);
+        type_system.createFunctionType(int_type, named_params, true, true, 2, true, true, true, true, true, true, true, 2);
     auto named_func_type_ptr = std::dynamic_pointer_cast<FunctionType>(named_func_type);
     assert(named_func_type_ptr->getParameters().size() == 1);
     assert(named_func_type_ptr->getParameters()[0].name == "value");
@@ -15838,6 +15838,7 @@ void testTypeSystem() {
     assert(named_func_type_ptr->isRecursive());
     assert(named_func_type_ptr->isMainSubprogram());
     assert(named_func_type_ptr->isConstExpr());
+    assert(named_func_type_ptr->getVisibility() == 2);
     assert(named_func_type_ptr->getDescription().find("[prototyped]") != std::string::npos);
     assert(named_func_type_ptr->getDescription().find("[calling_convention=2]") != std::string::npos);
     assert(named_func_type_ptr->getDescription().find("[declaration]") != std::string::npos);
@@ -15847,6 +15848,7 @@ void testTypeSystem() {
     assert(named_func_type_ptr->getDescription().find("[recursive]") != std::string::npos);
     assert(named_func_type_ptr->getDescription().find("[main_subprogram]") != std::string::npos);
     assert(named_func_type_ptr->getDescription().find("[const_expr]") != std::string::npos);
+    assert(named_func_type_ptr->getDescription().find("[visibility=2]") != std::string::npos);
     
     // Test composite type creation
     auto struct_type = std::dynamic_pointer_cast<CompositeType>(
@@ -16109,6 +16111,7 @@ void testTypeSystem() {
         func_die->addAttribute(DwarfAttribute::DW_AT_recursive, std::make_shared<FlagAttributeValue>(true));
         func_die->addAttribute(DwarfAttribute::DW_AT_main_subprogram, std::make_shared<FlagAttributeValue>(true));
         func_die->addAttribute(DwarfAttribute::DW_AT_const_expr, std::make_shared<FlagAttributeValue>(true));
+        func_die->addAttribute(DwarfAttribute::DW_AT_visibility, std::make_shared<UnsignedAttributeValue>(2));
         auto param_die = add_die(DwarfTag::DW_TAG_formal_parameter, 0x81);
         param_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("value"));
         param_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x30));
@@ -16295,6 +16298,7 @@ void testTypeSystem() {
         assert(resolved_func->isRecursive());
         assert(resolved_func->isMainSubprogram());
         assert(resolved_func->isConstExpr());
+        assert(resolved_func->getVisibility() == 2);
         assert(resolved_func->getParameterTypes().size() == 1);
         assert(resolved_func->getParameterTypes()[0]->getName() == "MyInt");
         assert(resolved_func->getParameters().size() == 1);
@@ -16441,6 +16445,7 @@ void testTypePrinter() {
     func_die->addAttribute(DwarfAttribute::DW_AT_recursive, std::make_shared<FlagAttributeValue>(true));
     func_die->addAttribute(DwarfAttribute::DW_AT_main_subprogram, std::make_shared<FlagAttributeValue>(true));
     func_die->addAttribute(DwarfAttribute::DW_AT_const_expr, std::make_shared<FlagAttributeValue>(true));
+    func_die->addAttribute(DwarfAttribute::DW_AT_visibility, std::make_shared<UnsignedAttributeValue>(2));
     auto param_die = add_die(DwarfTag::DW_TAG_formal_parameter, 0x149);
     param_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("self"));
     param_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<TypeAttributeValue>(0x130));
@@ -16588,10 +16593,10 @@ void testTypePrinter() {
     assert(printer.formatType(expr_bound_array_die) == "int[-1..3]");
     assert(printer.formatTypedef(typedef_die) == "typedef const int* Alias");
     assert(printer.formatType(func_die) ==
-           "int (*)(/* object_pointer, artificial */ Alias self, ...) [prototyped] [calling_convention=5] [declaration] [explicit] [elemental] [pure] [recursive] [main_subprogram] [const_expr]");
+           "int (*)(/* object_pointer, artificial */ Alias self, ...) [prototyped] [calling_convention=5] [declaration] [explicit] [elemental] [pure] [recursive] [main_subprogram] [const_expr] [visibility=2]");
     assert(printer.formatType(flag_variadic_func_die) == "int (*)(Alias prefix, ...)");
     assert(printer.formatFunction(func_die) ==
-           "int <anonymous>(/* object_pointer, artificial */ Alias self, ...) [prototyped] [calling_convention=5] [declaration] [explicit] [elemental] [pure] [recursive] [main_subprogram] [const_expr]");
+           "int <anonymous>(/* object_pointer, artificial */ Alias self, ...) [prototyped] [calling_convention=5] [declaration] [explicit] [elemental] [pure] [recursive] [main_subprogram] [const_expr] [visibility=2]");
     assert(printer.formatFunction(flag_variadic_func_die) == "int <anonymous>(Alias prefix, ...)");
 
     std::string struct_text = printer.formatStructure(struct_die, true);
