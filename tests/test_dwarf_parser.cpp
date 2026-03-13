@@ -15772,6 +15772,7 @@ void testTypeSystem() {
     std::vector<ArrayBound> strided_bounds = {{1, 4}};
     auto strided_array_type = type_system.createArrayType(int_type, strided_bounds, 16, 128);
     auto strided_array_type_ptr = std::dynamic_pointer_cast<ArrayType>(strided_array_type);
+    assert(strided_array_type_ptr->getName() == "int[1..4]");
     assert(strided_array_type_ptr->getByteStride() == 16);
     assert(strided_array_type_ptr->getBitStride() == 128);
     assert(strided_array_type_ptr->getDescription().find("[byte_stride=16]") != std::string::npos);
@@ -16167,6 +16168,7 @@ void testTypeSystem() {
 
         auto resolved_array = std::dynamic_pointer_cast<ArrayType>(resolving_system.resolveType(elem_die));
         assert(resolved_array);
+        assert(resolved_array->getName() == "int[-2..2]");
         assert(resolved_array->getDimensions().size() == 1);
         assert(resolved_array->getDimensions()[0] == 5);
         assert(resolved_array->getBounds().size() == 1);

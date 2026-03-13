@@ -244,8 +244,13 @@ ArrayType::ArrayType(std::shared_ptr<Type> element_type,
 std::string ArrayType::getName() const {
     std::stringstream ss;
     ss << element_type_->getName();
-    for (uint64_t dim : dimensions_) {
-        ss << "[" << dim << "]";
+    for (const auto& bound : bounds_) {
+        if (bound.lower_bound == 0) {
+            ss << "[" << bound.count << "]";
+        } else {
+            int64_t upper = bound.lower_bound + static_cast<int64_t>(bound.count) - 1;
+            ss << "[" << bound.lower_bound << ".." << upper << "]";
+        }
     }
     return ss.str();
 }
