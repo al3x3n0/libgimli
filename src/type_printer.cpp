@@ -126,6 +126,27 @@ std::string formatSubroutineMetadataSuffix(const std::shared_ptr<DIE>& die) {
         }
     }
 
+    auto explicit_attr = die->getAttribute(DwarfAttribute::DW_AT_explicit);
+    if (auto flag = std::dynamic_pointer_cast<FlagAttributeValue>(explicit_attr)) {
+        if (flag->getValue()) {
+            suffix += " [explicit]";
+        }
+    }
+
+    auto elemental_attr = die->getAttribute(DwarfAttribute::DW_AT_elemental);
+    if (auto flag = std::dynamic_pointer_cast<FlagAttributeValue>(elemental_attr)) {
+        if (flag->getValue()) {
+            suffix += " [elemental]";
+        }
+    }
+
+    auto pure_attr = die->getAttribute(DwarfAttribute::DW_AT_pure);
+    if (auto flag = std::dynamic_pointer_cast<FlagAttributeValue>(pure_attr)) {
+        if (flag->getValue()) {
+            suffix += " [pure]";
+        }
+    }
+
     return suffix;
 }
 

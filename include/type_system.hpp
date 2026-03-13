@@ -272,13 +272,19 @@ public:
                  bool is_variadic = false,
                  bool is_prototyped = false,
                  uint64_t calling_convention = 0,
-                 bool is_declaration = false);
+                 bool is_declaration = false,
+                 bool is_explicit = false,
+                 bool is_elemental = false,
+                 bool is_pure = false);
     FunctionType(std::shared_ptr<Type> return_type,
                  const std::vector<FunctionParameter>& parameters,
                  bool is_variadic = false,
                  bool is_prototyped = false,
                  uint64_t calling_convention = 0,
-                 bool is_declaration = false);
+                 bool is_declaration = false,
+                 bool is_explicit = false,
+                 bool is_elemental = false,
+                 bool is_pure = false);
     std::string getName() const override;
     uint64_t getSize() const override;
     std::string getDescription() const override;
@@ -292,6 +298,9 @@ public:
     bool isPrototyped() const { return is_prototyped_; }
     uint64_t getCallingConvention() const { return calling_convention_; }
     bool isDeclaration() const { return is_declaration_; }
+    bool isExplicit() const { return is_explicit_; }
+    bool isElemental() const { return is_elemental_; }
+    bool isPure() const { return is_pure_; }
     
 private:
     std::shared_ptr<Type> return_type_;
@@ -301,6 +310,9 @@ private:
     bool is_prototyped_;
     uint64_t calling_convention_;
     bool is_declaration_;
+    bool is_explicit_;
+    bool is_elemental_;
+    bool is_pure_;
 };
 
 class MemberPointerType : public Type {
@@ -393,13 +405,19 @@ public:
                                              bool is_variadic = false,
                                              bool is_prototyped = false,
                                              uint64_t calling_convention = 0,
-                                             bool is_declaration = false);
+                                             bool is_declaration = false,
+                                             bool is_explicit = false,
+                                             bool is_elemental = false,
+                                             bool is_pure = false);
     std::shared_ptr<Type> createFunctionType(std::shared_ptr<Type> return_type,
                                              const std::vector<FunctionParameter>& parameters,
                                              bool is_variadic = false,
                                              bool is_prototyped = false,
                                              uint64_t calling_convention = 0,
-                                             bool is_declaration = false);
+                                             bool is_declaration = false,
+                                             bool is_explicit = false,
+                                             bool is_elemental = false,
+                                             bool is_pure = false);
     std::shared_ptr<Type> createModifiedType(ModifiedTypeKind kind,
                                              std::shared_ptr<Type> underlying_type,
                                              uint64_t size = 0,
