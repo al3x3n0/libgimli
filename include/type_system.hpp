@@ -332,6 +332,7 @@ public:
                  bool is_prototyped = false,
                  uint64_t inline_code = 0,
                  uint64_t calling_convention = 0,
+                 bool is_external = false,
                  bool is_declaration = false,
                  bool is_explicit = false,
                  bool is_elemental = false,
@@ -347,6 +348,7 @@ public:
                  bool is_prototyped = false,
                  uint64_t inline_code = 0,
                  uint64_t calling_convention = 0,
+                 bool is_external = false,
                  bool is_declaration = false,
                  bool is_explicit = false,
                  bool is_elemental = false,
@@ -369,6 +371,7 @@ public:
     bool isPrototyped() const { return is_prototyped_; }
     uint64_t getInlineCode() const { return inline_code_; }
     uint64_t getCallingConvention() const { return calling_convention_; }
+    bool isExternal() const { return is_external_; }
     bool isDeclaration() const { return is_declaration_; }
     bool isExplicit() const { return is_explicit_; }
     bool isElemental() const { return is_elemental_; }
@@ -387,6 +390,7 @@ private:
     bool is_prototyped_;
     uint64_t inline_code_;
     uint64_t calling_convention_;
+    bool is_external_;
     bool is_declaration_;
     bool is_explicit_;
     bool is_elemental_;
@@ -516,6 +520,7 @@ public:
                                              bool is_prototyped = false,
                                              uint64_t inline_code = 0,
                                              uint64_t calling_convention = 0,
+                                             bool is_external = false,
                                              bool is_declaration = false,
                                              bool is_explicit = false,
                                              bool is_elemental = false,
@@ -531,6 +536,7 @@ public:
                                              bool is_prototyped = false,
                                              uint64_t inline_code = 0,
                                              uint64_t calling_convention = 0,
+                                             bool is_external = false,
                                              bool is_declaration = false,
                                              bool is_explicit = false,
                                              bool is_elemental = false,

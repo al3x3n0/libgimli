@@ -136,6 +136,13 @@ std::string formatSubroutineMetadataSuffix(const std::shared_ptr<DIE>& die) {
         suffix += " [calling_convention=" + std::to_string(cc->getValue()) + "]";
     }
 
+    auto external_attr = die->getAttribute(DwarfAttribute::DW_AT_external);
+    if (auto flag = std::dynamic_pointer_cast<FlagAttributeValue>(external_attr)) {
+        if (flag->getValue()) {
+            suffix += " [external]";
+        }
+    }
+
     auto declaration_attr = die->getAttribute(DwarfAttribute::DW_AT_declaration);
     if (auto flag = std::dynamic_pointer_cast<FlagAttributeValue>(declaration_attr)) {
         if (flag->getValue()) {

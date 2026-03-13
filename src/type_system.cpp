@@ -553,6 +553,7 @@ FunctionType::FunctionType(std::shared_ptr<Type> return_type,
                            bool is_prototyped,
                            uint64_t inline_code,
                            uint64_t calling_convention,
+                           bool is_external,
                            bool is_declaration,
                            bool is_explicit,
                            bool is_elemental,
@@ -568,6 +569,7 @@ FunctionType::FunctionType(std::shared_ptr<Type> return_type,
       is_prototyped_(is_prototyped),
       inline_code_(inline_code),
       calling_convention_(calling_convention),
+      is_external_(is_external),
       is_declaration_(is_declaration),
       is_explicit_(is_explicit),
       is_elemental_(is_elemental),
@@ -589,6 +591,7 @@ FunctionType::FunctionType(std::shared_ptr<Type> return_type,
                            bool is_prototyped,
                            uint64_t inline_code,
                            uint64_t calling_convention,
+                           bool is_external,
                            bool is_declaration,
                            bool is_explicit,
                            bool is_elemental,
@@ -604,6 +607,7 @@ FunctionType::FunctionType(std::shared_ptr<Type> return_type,
       is_prototyped_(is_prototyped),
       inline_code_(inline_code),
       calling_convention_(calling_convention),
+      is_external_(is_external),
       is_declaration_(is_declaration),
       is_explicit_(is_explicit),
       is_elemental_(is_elemental),
@@ -650,6 +654,9 @@ std::string FunctionType::getDescription() const {
         std::ostringstream oss;
         oss << " [calling_convention=" << calling_convention_ << "]";
         description += oss.str();
+    }
+    if (is_external_) {
+        description += " [external]";
     }
     if (is_declaration_) {
         description += " [declaration]";
@@ -930,6 +937,7 @@ std::shared_ptr<Type> TypeSystem::createFunctionType(std::shared_ptr<Type> retur
                                                      bool is_prototyped,
                                                      uint64_t inline_code,
                                                      uint64_t calling_convention,
+                                                     bool is_external,
                                                      bool is_declaration,
                                                      bool is_explicit,
                                                      bool is_elemental,
@@ -940,7 +948,7 @@ std::shared_ptr<Type> TypeSystem::createFunctionType(std::shared_ptr<Type> retur
                                                      uint64_t visibility,
                                                      const std::string& linkage_name) {
     auto type = std::make_shared<FunctionType>(return_type, parameter_types, is_variadic, is_prototyped,
-                                               inline_code, calling_convention, is_declaration, is_explicit,
+                                               inline_code, calling_convention, is_external, is_declaration, is_explicit,
                                                is_elemental, is_pure, is_recursive, is_main_subprogram,
                                                is_const_expr, visibility, linkage_name);
     type->setDwarfTag(DwarfTag::DW_TAG_subroutine_type);
@@ -954,6 +962,7 @@ std::shared_ptr<Type> TypeSystem::createFunctionType(std::shared_ptr<Type> retur
                                                      bool is_prototyped,
                                                      uint64_t inline_code,
                                                      uint64_t calling_convention,
+                                                     bool is_external,
                                                      bool is_declaration,
                                                      bool is_explicit,
                                                      bool is_elemental,
@@ -964,7 +973,7 @@ std::shared_ptr<Type> TypeSystem::createFunctionType(std::shared_ptr<Type> retur
                                                      uint64_t visibility,
                                                      const std::string& linkage_name) {
     auto type = std::make_shared<FunctionType>(std::move(return_type), parameters, is_variadic, is_prototyped,
-                                               inline_code, calling_convention, is_declaration, is_explicit,
+                                               inline_code, calling_convention, is_external, is_declaration, is_explicit,
                                                is_elemental, is_pure, is_recursive, is_main_subprogram,
                                                is_const_expr, visibility, linkage_name);
     type->setDwarfTag(DwarfTag::DW_TAG_subroutine_type);
@@ -1563,6 +1572,7 @@ std::shared_ptr<Type> TypeSystem::resolveFunctionType(std::shared_ptr<DIE> die) 
     bool is_prototyped = false;
     uint64_t inline_code = 0;
     uint64_t calling_convention = 0;
+    bool is_external = false;
     bool is_declaration = false;
     bool is_explicit = false;
     bool is_elemental = false;
@@ -1584,6 +1594,10 @@ std::shared_ptr<Type> TypeSystem::resolveFunctionType(std::shared_ptr<DIE> die) 
     auto calling_convention_attr = die->getAttribute(DwarfAttribute::DW_AT_calling_convention);
     if (calling_convention_attr && calling_convention_attr->getType() == AttributeValueType::UNSIGNED) {
         calling_convention = std::static_pointer_cast<UnsignedAttributeValue>(calling_convention_attr)->getValue();
+    }
+    auto external_attr = die->getAttribute(DwarfAttribute::DW_AT_external);
+    if (external_attr && external_attr->getType() == AttributeValueType::FLAG) {
+        is_external = std::static_pointer_cast<FlagAttributeValue>(external_attr)->getValue();
     }
     auto declaration_attr = die->getAttribute(DwarfAttribute::DW_AT_declaration);
     if (declaration_attr && declaration_attr->getType() == AttributeValueType::FLAG) {
@@ -1661,7 +1675,7 @@ std::shared_ptr<Type> TypeSystem::resolveFunctionType(std::shared_ptr<DIE> die) 
     }
 
     return createFunctionType(resolved_return, parameters, is_variadic, is_prototyped, inline_code, calling_convention,
-                              is_declaration, is_explicit, is_elemental, is_pure, is_recursive,
+                              is_external, is_declaration, is_explicit, is_elemental, is_pure, is_recursive,
                               is_main_subprogram, is_const_expr, visibility, linkage_name);
 }
 
