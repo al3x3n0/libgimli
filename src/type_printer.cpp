@@ -805,6 +805,35 @@ std::string TypePrinter::formatBaseType(const std::shared_ptr<DIE>& die) const {
         name += " [address_class=" + std::to_string(uint_val->getValue()) + "]";
     }
 
+    auto binary_scale_attr = die->getAttribute(DwarfAttribute::DW_AT_binary_scale);
+    if (auto uint_val = std::dynamic_pointer_cast<UnsignedAttributeValue>(binary_scale_attr)) {
+        name += " [binary_scale=" + std::to_string(uint_val->getValue()) + "]";
+    }
+
+    auto decimal_scale_attr = die->getAttribute(DwarfAttribute::DW_AT_decimal_scale);
+    if (auto uint_val = std::dynamic_pointer_cast<UnsignedAttributeValue>(decimal_scale_attr)) {
+        name += " [decimal_scale=" + std::to_string(uint_val->getValue()) + "]";
+    }
+
+    auto digit_count_attr = die->getAttribute(DwarfAttribute::DW_AT_digit_count);
+    if (auto uint_val = std::dynamic_pointer_cast<UnsignedAttributeValue>(digit_count_attr)) {
+        name += " [digit_count=" + std::to_string(uint_val->getValue()) + "]";
+    }
+
+    auto small_attr = die->getAttribute(DwarfAttribute::DW_AT_small);
+    if (auto flag_val = std::dynamic_pointer_cast<FlagAttributeValue>(small_attr)) {
+        if (flag_val->getValue()) {
+            name += " [small]";
+        }
+    }
+
+    auto threads_scaled_attr = die->getAttribute(DwarfAttribute::DW_AT_threads_scaled);
+    if (auto flag_val = std::dynamic_pointer_cast<FlagAttributeValue>(threads_scaled_attr)) {
+        if (flag_val->getValue()) {
+            name += " [threads_scaled]";
+        }
+    }
+
     return name;
 }
 

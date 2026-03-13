@@ -96,7 +96,12 @@ public:
                   uint64_t size,
                   const std::string& name = "",
                   uint64_t endianity = 0,
-                  uint64_t address_class = 0);
+                  uint64_t address_class = 0,
+                  uint64_t binary_scale = 0,
+                  uint64_t decimal_scale = 0,
+                  uint64_t digit_count = 0,
+                  bool is_small = false,
+                  bool threads_scaled = false);
     std::string getName() const override;
     uint64_t getSize() const override;
     std::string getDescription() const override;
@@ -105,6 +110,11 @@ public:
     Kind getKind() const { return kind_; }
     uint64_t getEndianity() const { return endianity_; }
     uint64_t getAddressClass() const { return address_class_; }
+    uint64_t getBinaryScale() const { return binary_scale_; }
+    uint64_t getDecimalScale() const { return decimal_scale_; }
+    uint64_t getDigitCount() const { return digit_count_; }
+    bool isSmall() const { return is_small_; }
+    bool isThreadsScaled() const { return threads_scaled_; }
     
 private:
     Kind kind_;
@@ -112,6 +122,11 @@ private:
     std::string name_;
     uint64_t endianity_;
     uint64_t address_class_;
+    uint64_t binary_scale_;
+    uint64_t decimal_scale_;
+    uint64_t digit_count_;
+    bool is_small_;
+    bool threads_scaled_;
 };
 
 class ModifiedType : public Type {
@@ -432,7 +447,12 @@ public:
     std::shared_ptr<Type> createPrimitiveType(PrimitiveType::Kind kind, uint64_t size,
                                               const std::string& name = "",
                                               uint64_t endianity = 0,
-                                              uint64_t address_class = 0);
+                                              uint64_t address_class = 0,
+                                              uint64_t binary_scale = 0,
+                                              uint64_t decimal_scale = 0,
+                                              uint64_t digit_count = 0,
+                                              bool is_small = false,
+                                              bool threads_scaled = false);
     std::shared_ptr<Type> createPointerType(std::shared_ptr<Type> pointee_type);
     std::shared_ptr<Type> createReferenceType(std::shared_ptr<Type> referee_type);
     std::shared_ptr<Type> createRvalueReferenceType(std::shared_ptr<Type> referee_type);
