@@ -571,7 +571,7 @@ FunctionType::FunctionType(std::shared_ptr<Type> return_type,
       linkage_name_(linkage_name) {
     parameters_.reserve(parameter_types_.size());
     for (const auto& parameter_type : parameter_types_) {
-        parameters_.push_back({"", parameter_type, false, false});
+        parameters_.push_back({"", parameter_type, false, false, false});
     }
 }
 
@@ -1633,7 +1633,13 @@ std::shared_ptr<Type> TypeSystem::resolveFunctionType(std::shared_ptr<DIE> die) 
                     is_artificial = std::static_pointer_cast<FlagAttributeValue>(artificial_attr)->getValue();
                 }
 
-                parameters.push_back({child->getName(), resolved_param, is_object_pointer, is_artificial});
+                bool is_optional = false;
+                auto optional_attr = child->getAttribute(DwarfAttribute::DW_AT_is_optional);
+                if (optional_attr && optional_attr->getType() == AttributeValueType::FLAG) {
+                    is_optional = std::static_pointer_cast<FlagAttributeValue>(optional_attr)->getValue();
+                }
+
+                parameters.push_back({child->getName(), resolved_param, is_object_pointer, is_artificial, is_optional});
             }
         } else if (child->getTag() == DwarfTag::DW_TAG_unspecified_parameters) {
             is_variadic = true;

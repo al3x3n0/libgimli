@@ -15847,7 +15847,7 @@ void testTypeSystem() {
     assert(func_type_ptr->getCallingConvention() == 0);
     assert(!func_type_ptr->isDeclaration());
 
-    std::vector<FunctionParameter> named_params = {{"value", int_type, true, true}};
+    std::vector<FunctionParameter> named_params = {{"value", int_type, true, true, true}};
     auto named_func_type =
         type_system.createFunctionType(int_type, named_params, true, true, 3, 2, true, true, true, true, true, true, true, 2, "_Z12VisibleValuei");
     auto named_func_type_ptr = std::dynamic_pointer_cast<FunctionType>(named_func_type);
@@ -15856,6 +15856,7 @@ void testTypeSystem() {
     assert(named_func_type_ptr->getParameters()[0].type == int_type);
     assert(named_func_type_ptr->getParameters()[0].is_object_pointer);
     assert(named_func_type_ptr->getParameters()[0].is_artificial);
+    assert(named_func_type_ptr->getParameters()[0].is_optional);
     assert(named_func_type_ptr->isVariadic());
     assert(named_func_type_ptr->isPrototyped());
     assert(named_func_type_ptr->getInlineCode() == 3);
@@ -16177,6 +16178,7 @@ void testTypeSystem() {
         param_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x30));
         param_die->addAttribute(DwarfAttribute::DW_AT_object_pointer, std::make_shared<FlagAttributeValue>(true));
         param_die->addAttribute(DwarfAttribute::DW_AT_artificial, std::make_shared<FlagAttributeValue>(true));
+        param_die->addAttribute(DwarfAttribute::DW_AT_is_optional, std::make_shared<FlagAttributeValue>(true));
         func_die->addChild(param_die);
         auto variadic_die = add_die(DwarfTag::DW_TAG_unspecified_parameters, 0x82);
         func_die->addChild(variadic_die);
@@ -16396,6 +16398,7 @@ void testTypeSystem() {
         assert(resolved_func->getParameters()[0].type->getName() == "MyInt");
         assert(resolved_func->getParameters()[0].is_object_pointer);
         assert(resolved_func->getParameters()[0].is_artificial);
+        assert(resolved_func->getParameters()[0].is_optional);
 
         auto resolved_flag_variadic_func = std::dynamic_pointer_cast<FunctionType>(
             resolving_system.resolveType(flag_variadic_func_die));
@@ -16564,6 +16567,7 @@ void testTypePrinter() {
     param_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<TypeAttributeValue>(0x130));
     param_die->addAttribute(DwarfAttribute::DW_AT_object_pointer, std::make_shared<FlagAttributeValue>(true));
     param_die->addAttribute(DwarfAttribute::DW_AT_artificial, std::make_shared<FlagAttributeValue>(true));
+    param_die->addAttribute(DwarfAttribute::DW_AT_is_optional, std::make_shared<FlagAttributeValue>(true));
     func_die->addChild(param_die);
     func_die->addChild(add_die(DwarfTag::DW_TAG_unspecified_parameters, 0x14a));
 
@@ -16711,10 +16715,10 @@ void testTypePrinter() {
     assert(printer.formatType(expr_bound_array_die) == "int[-1..3]");
     assert(printer.formatTypedef(typedef_die) == "typedef const int* Alias [visibility=1]");
     assert(printer.formatType(func_die) ==
-           "int (*)(/* object_pointer, artificial */ Alias [visibility=1] self, ...) [prototyped] [inline=1] [calling_convention=5] [declaration] [explicit] [elemental] [pure] [recursive] [main_subprogram] [const_expr] [visibility=2] [linkage_name=_Z8metadataP5Alias]");
+           "int (*)(/* optional, object_pointer, artificial */ Alias [visibility=1] self, ...) [prototyped] [inline=1] [calling_convention=5] [declaration] [explicit] [elemental] [pure] [recursive] [main_subprogram] [const_expr] [visibility=2] [linkage_name=_Z8metadataP5Alias]");
     assert(printer.formatType(flag_variadic_func_die) == "int (*)(Alias [visibility=1] prefix, ...)");
     assert(printer.formatFunction(func_die) ==
-           "int metadata(Alias*)(/* object_pointer, artificial */ Alias [visibility=1] self, ...) [prototyped] [inline=1] [calling_convention=5] [declaration] [explicit] [elemental] [pure] [recursive] [main_subprogram] [const_expr] [visibility=2] [linkage_name=_Z8metadataP5Alias]");
+           "int metadata(Alias*)(/* optional, object_pointer, artificial */ Alias [visibility=1] self, ...) [prototyped] [inline=1] [calling_convention=5] [declaration] [explicit] [elemental] [pure] [recursive] [main_subprogram] [const_expr] [visibility=2] [linkage_name=_Z8metadataP5Alias]");
     assert(printer.formatFunction(flag_variadic_func_die) == "int <anonymous>(Alias [visibility=1] prefix, ...)");
 
     std::string struct_text = printer.formatStructure(struct_die, true);

@@ -48,6 +48,7 @@ struct FunctionParameter {
     std::shared_ptr<Type> type;
     bool is_object_pointer = false;
     bool is_artificial = false;
+    bool is_optional = false;
 };
 
 enum class ModifiedTypeKind {

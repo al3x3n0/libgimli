@@ -82,11 +82,23 @@ std::string formatFormalParameterPrefix(const std::shared_ptr<DIE>& param_die) {
         is_artificial = flag->getValue();
     }
 
-    if (!is_object_pointer && !is_artificial) {
+    bool is_optional = false;
+    auto optional_attr = param_die->getAttribute(DwarfAttribute::DW_AT_is_optional);
+    if (auto flag = std::dynamic_pointer_cast<FlagAttributeValue>(optional_attr)) {
+        is_optional = flag->getValue();
+    }
+
+    if (!is_object_pointer && !is_artificial && !is_optional) {
         return "";
     }
 
     std::string prefix = "/* ";
+    if (is_optional) {
+        prefix += "optional";
+    }
+    if (is_optional && (is_object_pointer || is_artificial)) {
+        prefix += ", ";
+    }
     if (is_object_pointer) {
         prefix += "object_pointer";
     }
