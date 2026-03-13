@@ -178,6 +178,11 @@ std::string formatSubroutineMetadataSuffix(const std::shared_ptr<DIE>& die) {
         suffix += " [visibility=" + std::to_string(u->getValue()) + "]";
     }
 
+    auto linkage_attr = die->getAttribute(DwarfAttribute::DW_AT_linkage_name);
+    if (auto str = std::dynamic_pointer_cast<StringAttributeValue>(linkage_attr)) {
+        suffix += " [linkage_name=" + str->getValue() + "]";
+    }
+
     return suffix;
 }
 

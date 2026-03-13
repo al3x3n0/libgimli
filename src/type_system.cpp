@@ -552,7 +552,8 @@ FunctionType::FunctionType(std::shared_ptr<Type> return_type,
                            bool is_recursive,
                            bool is_main_subprogram,
                            bool is_const_expr,
-                           uint64_t visibility)
+                           uint64_t visibility,
+                           const std::string& linkage_name)
     : return_type_(std::move(return_type)),
       parameter_types_(parameter_types),
       is_variadic_(is_variadic),
@@ -566,7 +567,8 @@ FunctionType::FunctionType(std::shared_ptr<Type> return_type,
       is_recursive_(is_recursive),
       is_main_subprogram_(is_main_subprogram),
       is_const_expr_(is_const_expr),
-      visibility_(visibility) {
+      visibility_(visibility),
+      linkage_name_(linkage_name) {
     parameters_.reserve(parameter_types_.size());
     for (const auto& parameter_type : parameter_types_) {
         parameters_.push_back({"", parameter_type, false, false});
@@ -586,7 +588,8 @@ FunctionType::FunctionType(std::shared_ptr<Type> return_type,
                            bool is_recursive,
                            bool is_main_subprogram,
                            bool is_const_expr,
-                           uint64_t visibility)
+                           uint64_t visibility,
+                           const std::string& linkage_name)
     : return_type_(std::move(return_type)),
       parameters_(parameters),
       is_variadic_(is_variadic),
@@ -600,7 +603,8 @@ FunctionType::FunctionType(std::shared_ptr<Type> return_type,
       is_recursive_(is_recursive),
       is_main_subprogram_(is_main_subprogram),
       is_const_expr_(is_const_expr),
-      visibility_(visibility) {
+      visibility_(visibility),
+      linkage_name_(linkage_name) {
     parameter_types_.reserve(parameters_.size());
     for (const auto& parameter : parameters_) {
         parameter_types_.push_back(parameter.type);
@@ -662,6 +666,9 @@ std::string FunctionType::getDescription() const {
     }
     if (visibility_ != 0) {
         description += " [visibility=" + std::to_string(visibility_) + "]";
+    }
+    if (!linkage_name_.empty()) {
+        description += " [linkage_name=" + linkage_name_ + "]";
     }
     return description;
 }
@@ -921,11 +928,12 @@ std::shared_ptr<Type> TypeSystem::createFunctionType(std::shared_ptr<Type> retur
                                                      bool is_recursive,
                                                      bool is_main_subprogram,
                                                      bool is_const_expr,
-                                                     uint64_t visibility) {
+                                                     uint64_t visibility,
+                                                     const std::string& linkage_name) {
     auto type = std::make_shared<FunctionType>(return_type, parameter_types, is_variadic, is_prototyped,
                                                inline_code, calling_convention, is_declaration, is_explicit,
                                                is_elemental, is_pure, is_recursive, is_main_subprogram,
-                                               is_const_expr, visibility);
+                                               is_const_expr, visibility, linkage_name);
     type->setDwarfTag(DwarfTag::DW_TAG_subroutine_type);
     all_types_.push_back(type);
     return type;
@@ -944,11 +952,12 @@ std::shared_ptr<Type> TypeSystem::createFunctionType(std::shared_ptr<Type> retur
                                                      bool is_recursive,
                                                      bool is_main_subprogram,
                                                      bool is_const_expr,
-                                                     uint64_t visibility) {
+                                                     uint64_t visibility,
+                                                     const std::string& linkage_name) {
     auto type = std::make_shared<FunctionType>(std::move(return_type), parameters, is_variadic, is_prototyped,
                                                inline_code, calling_convention, is_declaration, is_explicit,
                                                is_elemental, is_pure, is_recursive, is_main_subprogram,
-                                               is_const_expr, visibility);
+                                               is_const_expr, visibility, linkage_name);
     type->setDwarfTag(DwarfTag::DW_TAG_subroutine_type);
     all_types_.push_back(type);
     return type;
@@ -1548,6 +1557,7 @@ std::shared_ptr<Type> TypeSystem::resolveFunctionType(std::shared_ptr<DIE> die) 
     bool is_main_subprogram = false;
     bool is_const_expr = false;
     uint64_t visibility = 0;
+    std::string linkage_name;
 
     auto prototyped_attr = die->getAttribute(DwarfAttribute::DW_AT_prototyped);
     if (prototyped_attr && prototyped_attr->getType() == AttributeValueType::FLAG) {
@@ -1593,6 +1603,10 @@ std::shared_ptr<Type> TypeSystem::resolveFunctionType(std::shared_ptr<DIE> die) 
     if (visibility_attr && visibility_attr->getType() == AttributeValueType::UNSIGNED) {
         visibility = std::static_pointer_cast<UnsignedAttributeValue>(visibility_attr)->getValue();
     }
+    auto linkage_name_attr = die->getAttribute(DwarfAttribute::DW_AT_linkage_name);
+    if (linkage_name_attr && linkage_name_attr->getType() == AttributeValueType::STRING) {
+        linkage_name = std::static_pointer_cast<StringAttributeValue>(linkage_name_attr)->getValue();
+    }
 
     for (const auto& child : die->getChildren()) {
         if (child->getTag() == DwarfTag::DW_TAG_formal_parameter) {
@@ -1628,7 +1642,7 @@ std::shared_ptr<Type> TypeSystem::resolveFunctionType(std::shared_ptr<DIE> die) 
 
     return createFunctionType(resolved_return, parameters, is_variadic, is_prototyped, inline_code, calling_convention,
                               is_declaration, is_explicit, is_elemental, is_pure, is_recursive,
-                              is_main_subprogram, is_const_expr, visibility);
+                              is_main_subprogram, is_const_expr, visibility, linkage_name);
 }
 
 std::shared_ptr<Type> TypeSystem::resolveTypedefType(std::shared_ptr<DIE> die) {
