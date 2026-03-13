@@ -119,7 +119,8 @@ public:
     ModifiedType(ModifiedTypeKind kind,
                  std::shared_ptr<Type> underlying_type,
                  uint64_t size = 0,
-                 const std::string& name = "");
+                 const std::string& name = "",
+                 uint64_t visibility = 0);
     std::string getName() const override;
     uint64_t getSize() const override;
     std::string getDescription() const override;
@@ -129,12 +130,14 @@ public:
     ModifiedTypeKind getKind() const { return kind_; }
     std::shared_ptr<Type> getUnderlyingType() const { return underlying_type_; }
     const std::string& getAliasName() const { return name_; }
+    uint64_t getVisibility() const { return visibility_; }
 
 private:
     ModifiedTypeKind kind_;
     std::shared_ptr<Type> underlying_type_;
     uint64_t size_;
     std::string name_;
+    uint64_t visibility_;
 };
 
 // Composite types
@@ -491,7 +494,8 @@ public:
     std::shared_ptr<Type> createModifiedType(ModifiedTypeKind kind,
                                              std::shared_ptr<Type> underlying_type,
                                              uint64_t size = 0,
-                                             const std::string& name = "");
+                                             const std::string& name = "",
+                                             uint64_t visibility = 0);
     std::shared_ptr<Type> createCompositeType(CompositeType::Kind kind, const std::string& name,
                                               uint64_t size = 0,
                                               uint64_t visibility = 0);

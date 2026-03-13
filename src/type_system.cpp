@@ -121,8 +121,13 @@ std::shared_ptr<Type> PrimitiveType::resolve() {
 ModifiedType::ModifiedType(ModifiedTypeKind kind,
                            std::shared_ptr<Type> underlying_type,
                            uint64_t size,
-                           const std::string& name)
-    : kind_(kind), underlying_type_(std::move(underlying_type)), size_(size), name_(name) {
+                           const std::string& name,
+                           uint64_t visibility)
+    : kind_(kind),
+      underlying_type_(std::move(underlying_type)),
+      size_(size),
+      name_(name),
+      visibility_(visibility) {
 }
 
 std::string ModifiedType::getName() const {
@@ -154,6 +159,7 @@ uint64_t ModifiedType::getSize() const {
 std::string ModifiedType::getDescription() const {
     std::stringstream ss;
     ss << getName();
+    if (visibility_ != 0) ss << " [visibility=" << visibility_ << "]";
     uint64_t size = getSize();
     if (size != 0) ss << " (" << size << " bytes)";
     return ss.str();
@@ -890,8 +896,9 @@ std::shared_ptr<Type> TypeSystem::createFunctionType(std::shared_ptr<Type> retur
 std::shared_ptr<Type> TypeSystem::createModifiedType(ModifiedTypeKind kind,
                                                      std::shared_ptr<Type> underlying_type,
                                                      uint64_t size,
-                                                     const std::string& name) {
-    auto type = std::make_shared<ModifiedType>(kind, std::move(underlying_type), size, name);
+                                                     const std::string& name,
+                                                     uint64_t visibility) {
+    auto type = std::make_shared<ModifiedType>(kind, std::move(underlying_type), size, name, visibility);
     switch (kind) {
         case ModifiedTypeKind::TYPEDEF:
             type->setDwarfTag(DwarfTag::DW_TAG_typedef);
@@ -1518,25 +1525,36 @@ std::shared_ptr<Type> TypeSystem::resolveFunctionType(std::shared_ptr<DIE> die) 
 
 std::shared_ptr<Type> TypeSystem::resolveTypedefType(std::shared_ptr<DIE> die) {
     std::string name = getTypeName(die);
+    uint64_t visibility = 0;
+    auto visibility_attr = die->getAttribute(DwarfAttribute::DW_AT_visibility);
+    if (visibility_attr && visibility_attr->getType() == AttributeValueType::UNSIGNED) {
+        visibility = std::static_pointer_cast<UnsignedAttributeValue>(visibility_attr)->getValue();
+    }
 
     auto underlying_type = getTypeReference(die);
     std::shared_ptr<Type> resolved_underlying = underlying_type ? resolveType(underlying_type) : nullptr;
 
     if (resolved_underlying) {
-        return createModifiedType(ModifiedTypeKind::TYPEDEF, resolved_underlying, resolved_underlying->getSize(), name);
+        return createModifiedType(ModifiedTypeKind::TYPEDEF, resolved_underlying, resolved_underlying->getSize(), name,
+                                  visibility);
     } else {
-        return createModifiedType(ModifiedTypeKind::TYPEDEF, nullptr, 0, name);
+        return createModifiedType(ModifiedTypeKind::TYPEDEF, nullptr, 0, name, visibility);
     }
 }
 
 std::shared_ptr<Type> TypeSystem::resolveModifiedType(std::shared_ptr<DIE> die, ModifiedTypeKind kind) {
     auto underlying_die = getTypeReference(die);
     std::shared_ptr<Type> resolved_underlying = underlying_die ? resolveType(underlying_die) : nullptr;
+    uint64_t visibility = 0;
+    auto visibility_attr = die->getAttribute(DwarfAttribute::DW_AT_visibility);
+    if (visibility_attr && visibility_attr->getType() == AttributeValueType::UNSIGNED) {
+        visibility = std::static_pointer_cast<UnsignedAttributeValue>(visibility_attr)->getValue();
+    }
     const uint64_t size = (kind == ModifiedTypeKind::REFERENCE ||
                            kind == ModifiedTypeKind::RVALUE_REFERENCE)
                               ? pointer_size_bytes_
                               : getTypeSize(die);
-    return createModifiedType(kind, resolved_underlying, size, getTypeName(die));
+    return createModifiedType(kind, resolved_underlying, size, getTypeName(die), visibility);
 }
 
 // Attribute helpers

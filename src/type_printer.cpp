@@ -599,7 +599,7 @@ std::string TypePrinter::formatTypedef(const std::shared_ptr<DIE>& typedef_die) 
     auto underlying_type = die_lookup_(underlying_type_offset);
     std::string underlying = formatType(underlying_type);
 
-    return "typedef " + underlying + " " + alias_name;
+    return "typedef " + underlying + " " + alias_name + formatTypeVisibilitySuffix(typedef_die);
 }
 
 uint64_t TypePrinter::getTypeSize(const std::shared_ptr<DIE>& type_die) const {
@@ -981,12 +981,13 @@ std::string TypePrinter::formatArrayType(const std::shared_ptr<DIE>& die,
 std::string TypePrinter::formatConstType(const std::shared_ptr<DIE>& die,
                                          const std::string& var_name) const {
     auto underlying = getReferencedType(die);
+    std::string visibility_suffix = formatTypeVisibilitySuffix(die);
 
     if (!underlying) {
         if (var_name.empty()) {
-            return "const void";
+            return "const void" + visibility_suffix;
         }
-        return "const void " + var_name;
+        return "const void " + var_name + visibility_suffix;
     }
 
     // For pointers: int *const vs const int*
@@ -994,38 +995,40 @@ std::string TypePrinter::formatConstType(const std::shared_ptr<DIE>& die,
         auto pointee = getReferencedType(underlying);
         std::string pointee_str = formatType(pointee);
         if (var_name.empty()) {
-            return pointee_str + " *const";
+            return pointee_str + " *const" + visibility_suffix;
         }
-        return pointee_str + " *const " + var_name;
+        return pointee_str + " *const " + var_name + visibility_suffix;
     }
 
     std::string underlying_str = formatType(underlying);
     if (var_name.empty()) {
-        return "const " + underlying_str;
+        return "const " + underlying_str + visibility_suffix;
     }
-    return "const " + underlying_str + " " + var_name;
+    return "const " + underlying_str + " " + var_name + visibility_suffix;
 }
 
 std::string TypePrinter::formatVolatileType(const std::shared_ptr<DIE>& die,
                                              const std::string& var_name) const {
     auto underlying = getReferencedType(die);
     std::string underlying_str = formatType(underlying);
+    std::string visibility_suffix = formatTypeVisibilitySuffix(die);
 
     if (var_name.empty()) {
-        return "volatile " + underlying_str;
+        return "volatile " + underlying_str + visibility_suffix;
     }
-    return "volatile " + underlying_str + " " + var_name;
+    return "volatile " + underlying_str + " " + var_name + visibility_suffix;
 }
 
 std::string TypePrinter::formatRestrictType(const std::shared_ptr<DIE>& die,
                                              const std::string& var_name) const {
     auto underlying = getReferencedType(die);
     std::string underlying_str = formatType(underlying);
+    std::string visibility_suffix = formatTypeVisibilitySuffix(die);
 
     if (var_name.empty()) {
-        return underlying_str + " restrict";
+        return underlying_str + " restrict" + visibility_suffix;
     }
-    return underlying_str + " restrict " + var_name;
+    return underlying_str + " restrict " + var_name + visibility_suffix;
 }
 
 std::string TypePrinter::formatTypedefType(const std::shared_ptr<DIE>& die) const {
@@ -1033,9 +1036,9 @@ std::string TypePrinter::formatTypedefType(const std::shared_ptr<DIE>& die) cons
     if (name.empty()) {
         // Fall back to underlying type
         auto underlying = getReferencedType(die);
-        return formatType(underlying);
+        return formatType(underlying) + formatTypeVisibilitySuffix(die);
     }
-    return name;
+    return name + formatTypeVisibilitySuffix(die);
 }
 
 std::string TypePrinter::formatStructType(const std::shared_ptr<DIE>& die) const {

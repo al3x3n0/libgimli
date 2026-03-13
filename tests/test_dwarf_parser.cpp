@@ -15757,6 +15757,12 @@ void testTypeSystem() {
     assert(int_ptr_type->getName() == "int*");
     assert(int_ptr_type->getSize() == sizeof(void*));
 
+    auto visible_typedef = std::dynamic_pointer_cast<ModifiedType>(
+        type_system.createModifiedType(ModifiedTypeKind::TYPEDEF, int_type, int_type->getSize(), "VisibleInt", 1));
+    assert(visible_typedef);
+    assert(visible_typedef->getVisibility() == 1);
+    assert(visible_typedef->getDescription().find("[visibility=1]") != std::string::npos);
+
     // Test tag-based queries
     {
         auto ptr_types = type_system.getTypesByTag(DwarfTag::DW_TAG_pointer_type);
@@ -15976,6 +15982,7 @@ void testTypeSystem() {
         auto typedef_die = add_die(DwarfTag::DW_TAG_typedef, 0x30);
         typedef_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("MyInt"));
         typedef_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x20));
+        typedef_die->addAttribute(DwarfAttribute::DW_AT_visibility, std::make_shared<UnsignedAttributeValue>(1));
 
         auto ref_die = add_die(DwarfTag::DW_TAG_reference_type, 0x40);
         ref_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x30));
@@ -16150,6 +16157,7 @@ void testTypeSystem() {
         assert(resolved_typedef);
         assert(resolved_typedef->getKind() == ModifiedTypeKind::TYPEDEF);
         assert(resolved_typedef->getName() == "MyInt");
+        assert(resolved_typedef->getVisibility() == 1);
         assert(resolved_typedef->getUnderlyingType());
         assert(resolved_typedef->getUnderlyingType()->getName() == "const int");
 
@@ -16427,6 +16435,7 @@ void testTypePrinter() {
     auto typedef_die = add_die(DwarfTag::DW_TAG_typedef, 0x130);
     typedef_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("Alias"));
     typedef_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x120));
+    typedef_die->addAttribute(DwarfAttribute::DW_AT_visibility, std::make_shared<UnsignedAttributeValue>(1));
 
     auto rref_die = add_die(DwarfTag::DW_TAG_rvalue_reference_type, 0x140);
     rref_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x130));
@@ -16606,17 +16615,17 @@ void testTypePrinter() {
     assert(printer.formatType(be_int_die) == "be_int [endianity=1]");
     assert(printer.formatType(seg_int_die) == "seg_int [address_class=7]");
     assert(printer.formatType(ptr_die) == "const int*");
-    assert(printer.formatType(typedef_die) == "Alias");
+    assert(printer.formatType(typedef_die) == "Alias [visibility=1]");
     assert(printer.formatType(unspecified_die) == "decltype(auto)");
     assert(printer.formatType(string_die) == "utf8_string [length=4] [visibility=1]");
     assert(printer.formatType(expr_string_die) == "CountedExprString [length=6]");
     assert(printer.formatType(set_die) == "IntSet [visibility=2]");
     assert(printer.formatType(file_die) == "IntFile [rank=1] [visibility=2]");
     assert(printer.formatType(anonymous_file_die) == "file<int>[1..4] [rank=1] [visibility=2]");
-    assert(printer.formatType(rref_die) == "Alias&&");
-    assert(printer.formatType(atomic_die) == "_Atomic(Alias)");
+    assert(printer.formatType(rref_die) == "Alias [visibility=1]&&");
+    assert(printer.formatType(atomic_die) == "_Atomic(Alias [visibility=1])");
     assert(printer.formatType(interface_die) == "interface Runnable [visibility=1]");
-    assert(printer.formatType(member_ptr_die) == "Alias Widget::*");
+    assert(printer.formatType(member_ptr_die) == "Alias [visibility=1] Widget::*");
     assert(printer.formatType(enum_die) == "enum class ScopedColor : int [visibility=1]");
     std::string enum_text = printer.formatEnum(enum_die, true);
     assert(enum_text.find("NEGATIVE = -7") != std::string::npos);
@@ -16624,13 +16633,13 @@ void testTypePrinter() {
     assert(printer.formatType(array_die) == "int[-2..2] [byte_stride=16] [bit_stride=128] [rank=1] [visibility=2]");
     assert(printer.formatType(expr_stride_array_die) == "int[3] [byte_stride=24] [bit_stride=64]");
     assert(printer.formatType(expr_bound_array_die) == "int[-1..3]");
-    assert(printer.formatTypedef(typedef_die) == "typedef const int* Alias");
+    assert(printer.formatTypedef(typedef_die) == "typedef const int* Alias [visibility=1]");
     assert(printer.formatType(func_die) ==
-           "int (*)(/* object_pointer, artificial */ Alias self, ...) [prototyped] [calling_convention=5] [declaration] [explicit] [elemental] [pure] [recursive] [main_subprogram] [const_expr] [visibility=2]");
-    assert(printer.formatType(flag_variadic_func_die) == "int (*)(Alias prefix, ...)");
+           "int (*)(/* object_pointer, artificial */ Alias [visibility=1] self, ...) [prototyped] [calling_convention=5] [declaration] [explicit] [elemental] [pure] [recursive] [main_subprogram] [const_expr] [visibility=2]");
+    assert(printer.formatType(flag_variadic_func_die) == "int (*)(Alias [visibility=1] prefix, ...)");
     assert(printer.formatFunction(func_die) ==
-           "int <anonymous>(/* object_pointer, artificial */ Alias self, ...) [prototyped] [calling_convention=5] [declaration] [explicit] [elemental] [pure] [recursive] [main_subprogram] [const_expr] [visibility=2]");
-    assert(printer.formatFunction(flag_variadic_func_die) == "int <anonymous>(Alias prefix, ...)");
+           "int <anonymous>(/* object_pointer, artificial */ Alias [visibility=1] self, ...) [prototyped] [calling_convention=5] [declaration] [explicit] [elemental] [pure] [recursive] [main_subprogram] [const_expr] [visibility=2]");
+    assert(printer.formatFunction(flag_variadic_func_die) == "int <anonymous>(Alias [visibility=1] prefix, ...)");
 
     std::string struct_text = printer.formatStructure(struct_die, true);
     assert(struct_text.find("struct Widget [visibility=2]") != std::string::npos);
@@ -16640,7 +16649,7 @@ void testTypePrinter() {
     assert(struct_text.find("tail") != std::string::npos);
     assert(struct_text.find("offset: -4") != std::string::npos);
     assert(struct_text.find("payload") != std::string::npos);
-    assert(struct_text.find("private static mutable Alias payload") != std::string::npos);
+    assert(struct_text.find("private static mutable Alias [visibility=1] payload") != std::string::npos);
     assert(struct_text.find("offset: 12") != std::string::npos);
     assert(struct_text.find("legacy_bits : 5") != std::string::npos);
     assert(struct_text.find("bit_offset: 9") != std::string::npos);
@@ -16649,7 +16658,7 @@ void testTypePrinter() {
 
     std::string interface_text = printer.formatStructure(interface_decl_die, true);
     assert(interface_text.find("interface Runnable [visibility=1]") != std::string::npos);
-    assert(interface_text.find("Alias state") != std::string::npos);
+    assert(interface_text.find("Alias [visibility=1] state") != std::string::npos);
 
     std::cout << "TypePrinter tests passed!" << std::endl;
 }
