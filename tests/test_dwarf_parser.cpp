@@ -15782,10 +15782,12 @@ void testTypeSystem() {
     assert(visible_typedef->getDescription().find("[visibility=1]") != std::string::npos);
 
     auto utf8_string_type = std::dynamic_pointer_cast<StringType>(
-        type_system.createStringType("Utf8String", int_type, 16, 4, 1, true));
+        type_system.createStringType("Utf8String", int_type, 16, 4, 1, true, true));
     assert(utf8_string_type);
     assert(utf8_string_type->usesUtf8());
+    assert(utf8_string_type->isDeclaration());
     assert(utf8_string_type->getDescription().find("[use_UTF8]") != std::string::npos);
+    assert(utf8_string_type->getDescription().find("[declaration]") != std::string::npos);
 
     // Test tag-based queries
     {
@@ -15823,9 +15825,10 @@ void testTypeSystem() {
     assert(strided_array_type_ptr->getDescription().find("[bit_stride=128]") != std::string::npos);
 
     auto bounded_string_type = std::dynamic_pointer_cast<StringType>(
-        type_system.createStringType("CountedString", int_type, 16, 4, 1));
+        type_system.createStringType("CountedString", int_type, 16, 4, 1, false, true));
     assert(bounded_string_type->getLength() == 4);
     assert(bounded_string_type->getVisibility() == 1);
+    assert(bounded_string_type->isDeclaration());
     assert(bounded_string_type->getDescription().find("[length=4]") != std::string::npos);
 
     std::vector<ArrayBound> file_bounds = {{1, 4}};
@@ -15997,6 +16000,7 @@ void testTypeSystem() {
         string_die->addAttribute(DwarfAttribute::DW_AT_string_length, std::make_shared<UnsignedAttributeValue>(4));
         string_die->addAttribute(DwarfAttribute::DW_AT_visibility, std::make_shared<UnsignedAttributeValue>(1));
         string_die->addAttribute(DwarfAttribute::DW_AT_use_UTF8, std::make_shared<FlagAttributeValue>(true));
+        string_die->addAttribute(DwarfAttribute::DW_AT_declaration, std::make_shared<FlagAttributeValue>(true));
 
         auto expr_string_die = add_die(DwarfTag::DW_TAG_string_type, 0x18a);
         expr_string_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("expr_string"));
@@ -16271,6 +16275,7 @@ void testTypeSystem() {
         assert(resolved_string->getLength() == 4);
         assert(resolved_string->getVisibility() == 1);
         assert(resolved_string->usesUtf8());
+        assert(resolved_string->isDeclaration());
         assert(resolved_string->getCharacterType());
         assert(resolved_string->getCharacterType()->getName() == "int");
 
@@ -16525,6 +16530,7 @@ void testTypePrinter() {
     string_die->addAttribute(DwarfAttribute::DW_AT_string_length, std::make_shared<UnsignedAttributeValue>(4));
     string_die->addAttribute(DwarfAttribute::DW_AT_visibility, std::make_shared<UnsignedAttributeValue>(1));
     string_die->addAttribute(DwarfAttribute::DW_AT_use_UTF8, std::make_shared<FlagAttributeValue>(true));
+    string_die->addAttribute(DwarfAttribute::DW_AT_declaration, std::make_shared<FlagAttributeValue>(true));
 
     auto expr_string_die = add_die(DwarfTag::DW_TAG_string_type, 0x1085);
     expr_string_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("CountedExprString"));
@@ -16761,7 +16767,7 @@ void testTypePrinter() {
     assert(printer.formatType(ptr_die) == "const int*");
     assert(printer.formatType(typedef_die) == "Alias [visibility=1]");
     assert(printer.formatType(unspecified_die) == "decltype(auto)");
-    assert(printer.formatType(string_die) == "utf8_string [length=4] [visibility=1] [use_UTF8]");
+    assert(printer.formatType(string_die) == "utf8_string [length=4] [visibility=1] [use_UTF8] [declaration]");
     assert(printer.formatType(expr_string_die) == "CountedExprString [length=6]");
     assert(printer.formatType(set_die) == "IntSet [visibility=2]");
     assert(printer.formatType(file_die) == "IntFile [rank=1] [visibility=2]");

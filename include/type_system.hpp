@@ -250,7 +250,8 @@ public:
                uint64_t size,
                uint64_t length = 0,
                uint64_t visibility = 0,
-               bool use_utf8 = false);
+               bool use_utf8 = false,
+               bool is_declaration = false);
     std::string getName() const override;
     uint64_t getSize() const override;
     std::string getDescription() const override;
@@ -261,6 +262,7 @@ public:
     uint64_t getLength() const { return length_; }
     uint64_t getVisibility() const { return visibility_; }
     bool usesUtf8() const { return use_utf8_; }
+    bool isDeclaration() const { return is_declaration_; }
 
 private:
     std::string name_;
@@ -269,6 +271,7 @@ private:
     uint64_t length_;
     uint64_t visibility_;
     bool use_utf8_;
+    bool is_declaration_;
 };
 
 class SetType : public Type {
@@ -505,7 +508,8 @@ public:
                                            uint64_t size,
                                            uint64_t length = 0,
                                            uint64_t visibility = 0,
-                                           bool use_utf8 = false);
+                                           bool use_utf8 = false,
+                                           bool is_declaration = false);
     std::shared_ptr<Type> createSetType(const std::string& name,
                                         std::shared_ptr<Type> element_type,
                                         uint64_t size,

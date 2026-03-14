@@ -981,6 +981,12 @@ std::string TypePrinter::formatStringType(const std::shared_ptr<DIE>& die,
             name += " [use_UTF8]";
         }
     }
+    auto declaration_attr = die->getAttribute(DwarfAttribute::DW_AT_declaration);
+    if (auto flag_val = std::dynamic_pointer_cast<FlagAttributeValue>(declaration_attr)) {
+        if (flag_val->getValue()) {
+            name += " [declaration]";
+        }
+    }
 
     return var_name.empty() ? name : name + " " + var_name;
 }
