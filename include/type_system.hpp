@@ -306,13 +306,15 @@ public:
              uint64_t size,
              uint64_t element_count = 0,
              uint64_t rank = 0,
-             uint64_t visibility = 0);
+             uint64_t visibility = 0,
+             bool is_declaration = false);
     FileType(const std::string& name,
              std::shared_ptr<Type> element_type,
              uint64_t size,
              const std::vector<ArrayBound>& bounds,
              uint64_t rank = 0,
-             uint64_t visibility = 0);
+             uint64_t visibility = 0,
+             bool is_declaration = false);
     std::string getName() const override;
     uint64_t getSize() const override;
     std::string getDescription() const override;
@@ -324,6 +326,7 @@ public:
     const std::vector<ArrayBound>& getBounds() const { return bounds_; }
     uint64_t getRank() const { return rank_; }
     uint64_t getVisibility() const { return visibility_; }
+    bool isDeclaration() const { return is_declaration_; }
 
 private:
     std::string name_;
@@ -332,6 +335,7 @@ private:
     std::vector<ArrayBound> bounds_;
     uint64_t rank_;
     uint64_t visibility_;
+    bool is_declaration_;
 };
 
 // Function types
@@ -523,13 +527,15 @@ public:
                                          uint64_t size,
                                          uint64_t element_count = 0,
                                          uint64_t rank = 0,
-                                         uint64_t visibility = 0);
+                                         uint64_t visibility = 0,
+                                         bool is_declaration = false);
     std::shared_ptr<Type> createFileType(const std::string& name,
                                          std::shared_ptr<Type> element_type,
                                          uint64_t size,
                                          const std::vector<ArrayBound>& bounds,
                                          uint64_t rank = 0,
-                                         uint64_t visibility = 0);
+                                         uint64_t visibility = 0,
+                                         bool is_declaration = false);
     std::shared_ptr<Type> createArrayType(std::shared_ptr<Type> element_type, 
                                           const std::vector<uint64_t>& dimensions);
     std::shared_ptr<Type> createArrayType(std::shared_ptr<Type> element_type,

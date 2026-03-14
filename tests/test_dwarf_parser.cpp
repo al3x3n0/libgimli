@@ -15839,6 +15839,14 @@ void testTypeSystem() {
     assert(declaration_set_type->getDescription().find("[visibility=2]") != std::string::npos);
     assert(declaration_set_type->getDescription().find("[declaration]") != std::string::npos);
 
+    auto declaration_file_type = std::dynamic_pointer_cast<FileType>(
+        type_system.createFileType("VisibleFile", int_type, 64, uint64_t{4}, 1, 2, true));
+    assert(declaration_file_type);
+    assert(declaration_file_type->getVisibility() == 2);
+    assert(declaration_file_type->isDeclaration());
+    assert(declaration_file_type->getDescription().find("[visibility=2]") != std::string::npos);
+    assert(declaration_file_type->getDescription().find("[declaration]") != std::string::npos);
+
     std::vector<ArrayBound> file_bounds = {{1, 4}};
     auto bounded_file_type = std::dynamic_pointer_cast<FileType>(
         type_system.createFileType("", int_type, 64, file_bounds, 1, 2));
@@ -16033,6 +16041,7 @@ void testTypeSystem() {
         file_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(64));
         file_die->addAttribute(DwarfAttribute::DW_AT_rank, std::make_shared<UnsignedAttributeValue>(1));
         file_die->addAttribute(DwarfAttribute::DW_AT_visibility, std::make_shared<UnsignedAttributeValue>(2));
+        file_die->addAttribute(DwarfAttribute::DW_AT_declaration, std::make_shared<FlagAttributeValue>(true));
         auto file_count = add_die(DwarfTag::DW_TAG_subrange_type, 0x1b);
         file_count->addAttribute(DwarfAttribute::DW_AT_count, std::make_shared<UnsignedAttributeValue>(4));
         file_die->addChild(file_count);
@@ -16042,6 +16051,7 @@ void testTypeSystem() {
         anonymous_file_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(64));
         anonymous_file_die->addAttribute(DwarfAttribute::DW_AT_rank, std::make_shared<UnsignedAttributeValue>(1));
         anonymous_file_die->addAttribute(DwarfAttribute::DW_AT_visibility, std::make_shared<UnsignedAttributeValue>(2));
+        anonymous_file_die->addAttribute(DwarfAttribute::DW_AT_declaration, std::make_shared<FlagAttributeValue>(true));
         auto anonymous_file_count = add_die(DwarfTag::DW_TAG_subrange_type, 0x1d);
         anonymous_file_count->addAttribute(DwarfAttribute::DW_AT_lower_bound, std::make_shared<SignedAttributeValue>(1));
         anonymous_file_count->addAttribute(DwarfAttribute::DW_AT_upper_bound, std::make_shared<UnsignedAttributeValue>(4));
@@ -16317,6 +16327,7 @@ void testTypeSystem() {
         assert(resolved_file->getBounds()[0].count == 4);
         assert(resolved_file->getRank() == 1);
         assert(resolved_file->getVisibility() == 2);
+        assert(resolved_file->isDeclaration());
         assert(resolved_file->getElementType());
         assert(resolved_file->getElementType()->getName() == "int");
 
@@ -16324,6 +16335,7 @@ void testTypeSystem() {
         assert(resolved_anonymous_file);
         assert(resolved_anonymous_file->getName() == "file<int>[1..4]");
         assert(resolved_anonymous_file->getElementCount() == 4);
+        assert(resolved_anonymous_file->isDeclaration());
         assert(resolved_anonymous_file->getBounds().size() == 1);
         assert(resolved_anonymous_file->getBounds()[0].lower_bound == 1);
         assert(resolved_anonymous_file->getBounds()[0].count == 4);
@@ -16570,10 +16582,12 @@ void testTypePrinter() {
     file_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(64));
     file_die->addAttribute(DwarfAttribute::DW_AT_rank, std::make_shared<UnsignedAttributeValue>(1));
     file_die->addAttribute(DwarfAttribute::DW_AT_visibility, std::make_shared<UnsignedAttributeValue>(2));
+    file_die->addAttribute(DwarfAttribute::DW_AT_declaration, std::make_shared<FlagAttributeValue>(true));
     auto anonymous_file_die = add_die(DwarfTag::DW_TAG_file_type, 0x10a5);
     anonymous_file_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x100));
     anonymous_file_die->addAttribute(DwarfAttribute::DW_AT_rank, std::make_shared<UnsignedAttributeValue>(1));
     anonymous_file_die->addAttribute(DwarfAttribute::DW_AT_visibility, std::make_shared<UnsignedAttributeValue>(2));
+    anonymous_file_die->addAttribute(DwarfAttribute::DW_AT_declaration, std::make_shared<FlagAttributeValue>(true));
     auto anonymous_file_subrange_die = add_die(DwarfTag::DW_TAG_subrange_type, 0x10a6);
     anonymous_file_subrange_die->addAttribute(DwarfAttribute::DW_AT_lower_bound, std::make_shared<SignedAttributeValue>(1));
     anonymous_file_subrange_die->addAttribute(DwarfAttribute::DW_AT_upper_bound, std::make_shared<SignedAttributeValue>(4));
@@ -16786,8 +16800,8 @@ void testTypePrinter() {
     assert(printer.formatType(string_die) == "utf8_string [length=4] [visibility=1] [use_UTF8] [declaration]");
     assert(printer.formatType(expr_string_die) == "CountedExprString [length=6]");
     assert(printer.formatType(set_die) == "IntSet [visibility=2] [declaration]");
-    assert(printer.formatType(file_die) == "IntFile [rank=1] [visibility=2]");
-    assert(printer.formatType(anonymous_file_die) == "file<int>[1..4] [rank=1] [visibility=2]");
+    assert(printer.formatType(file_die) == "IntFile [rank=1] [visibility=2] [declaration]");
+    assert(printer.formatType(anonymous_file_die) == "file<int>[1..4] [rank=1] [visibility=2] [declaration]");
     assert(printer.formatType(rref_die) == "Alias [visibility=1]&&");
     assert(printer.formatType(atomic_die) == "_Atomic(Alias [visibility=1])");
     assert(printer.formatType(interface_die) == "interface Runnable [visibility=1] [declaration]");

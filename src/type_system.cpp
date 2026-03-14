@@ -488,11 +488,13 @@ FileType::FileType(const std::string& name,
                    uint64_t size,
                    uint64_t element_count,
                    uint64_t rank,
-                   uint64_t visibility)
+                   uint64_t visibility,
+                   bool is_declaration)
     : name_(name),
       element_type_(std::move(element_type)),
       size_(size),
-      rank_(rank) {
+      rank_(rank),
+      is_declaration_(is_declaration) {
     visibility_ = visibility;
     if (element_count != 0) {
         bounds_.push_back({0, element_count});
@@ -507,13 +509,15 @@ FileType::FileType(const std::string& name,
                    uint64_t size,
                    const std::vector<ArrayBound>& bounds,
                    uint64_t rank,
-                   uint64_t visibility)
+                   uint64_t visibility,
+                   bool is_declaration)
     : name_(name),
       element_type_(std::move(element_type)),
       size_(size),
       bounds_(bounds),
       rank_(rank != 0 ? rank : bounds_.size()),
-      visibility_(visibility) {
+      visibility_(visibility),
+      is_declaration_(is_declaration) {
 }
 
 std::string FileType::getName() const {
@@ -548,6 +552,12 @@ std::string FileType::getDescription() const {
     ss << getName();
     if (size_ != 0) {
         ss << " (" << size_ << " bytes)";
+    }
+    if (visibility_ != 0) {
+        ss << " [visibility=" << visibility_ << "]";
+    }
+    if (is_declaration_) {
+        ss << " [declaration]";
     }
     return ss.str();
 }
@@ -936,8 +946,10 @@ std::shared_ptr<Type> TypeSystem::createFileType(const std::string& name,
                                                  uint64_t size,
                                                  uint64_t element_count,
                                                  uint64_t rank,
-                                                 uint64_t visibility) {
-    auto type = std::make_shared<FileType>(name, std::move(element_type), size, element_count, rank, visibility);
+                                                 uint64_t visibility,
+                                                 bool is_declaration) {
+    auto type = std::make_shared<FileType>(name, std::move(element_type), size, element_count, rank, visibility,
+                                           is_declaration);
     type->setDwarfTag(DwarfTag::DW_TAG_file_type);
     all_types_.push_back(type);
     return type;
@@ -948,8 +960,10 @@ std::shared_ptr<Type> TypeSystem::createFileType(const std::string& name,
                                                  uint64_t size,
                                                  const std::vector<ArrayBound>& bounds,
                                                  uint64_t rank,
-                                                 uint64_t visibility) {
-    auto type = std::make_shared<FileType>(name, std::move(element_type), size, bounds, rank, visibility);
+                                                 uint64_t visibility,
+                                                 bool is_declaration) {
+    auto type = std::make_shared<FileType>(name, std::move(element_type), size, bounds, rank, visibility,
+                                           is_declaration);
     type->setDwarfTag(DwarfTag::DW_TAG_file_type);
     all_types_.push_back(type);
     return type;
@@ -1400,6 +1414,7 @@ std::shared_ptr<Type> TypeSystem::resolveFileType(std::shared_ptr<DIE> die) {
     std::shared_ptr<Type> resolved_element = element_die ? resolveType(element_die) : nullptr;
     uint64_t rank = 0;
     uint64_t visibility = 0;
+    bool is_declaration = false;
     if (auto decoded_rank = decodeConstantOffsetAttribute(die->getAttribute(DwarfAttribute::DW_AT_rank))) {
         if (*decoded_rank >= 0) {
             rank = static_cast<uint64_t>(*decoded_rank);
@@ -1408,6 +1423,10 @@ std::shared_ptr<Type> TypeSystem::resolveFileType(std::shared_ptr<DIE> die) {
     auto visibility_attr = die->getAttribute(DwarfAttribute::DW_AT_visibility);
     if (visibility_attr && visibility_attr->getType() == AttributeValueType::UNSIGNED) {
         visibility = std::static_pointer_cast<UnsignedAttributeValue>(visibility_attr)->getValue();
+    }
+    auto declaration_attr = die->getAttribute(DwarfAttribute::DW_AT_declaration);
+    if (auto flag = std::dynamic_pointer_cast<FlagAttributeValue>(declaration_attr)) {
+        is_declaration = flag->getValue();
     }
 
     std::vector<ArrayBound> bounds;
@@ -1418,9 +1437,11 @@ std::shared_ptr<Type> TypeSystem::resolveFileType(std::shared_ptr<DIE> die) {
     }
 
     if (!bounds.empty()) {
-        return createFileType(getTypeName(die), resolved_element, getTypeSize(die), bounds, rank, visibility);
+        return createFileType(getTypeName(die), resolved_element, getTypeSize(die), bounds, rank, visibility,
+                              is_declaration);
     }
-    return createFileType(getTypeName(die), resolved_element, getTypeSize(die), uint64_t{0}, rank, visibility);
+    return createFileType(getTypeName(die), resolved_element, getTypeSize(die), uint64_t{0}, rank, visibility,
+                          is_declaration);
 }
 
 std::shared_ptr<Type> TypeSystem::resolveArrayType(std::shared_ptr<DIE> die) {
