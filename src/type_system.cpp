@@ -211,8 +211,9 @@ std::shared_ptr<Type> ModifiedType::resolve() {
 
 // CompositeType implementation
 CompositeType::CompositeType(Kind kind, const std::string& name, uint64_t size, uint64_t visibility,
-                             uint64_t identifier_case)
-    : kind_(kind), name_(name), size_(size), visibility_(visibility), identifier_case_(identifier_case) {
+                             uint64_t identifier_case, bool is_declaration)
+    : kind_(kind), name_(name), size_(size), visibility_(visibility),
+      identifier_case_(identifier_case), is_declaration_(is_declaration) {
 }
 
 std::string CompositeType::getName() const {
@@ -231,6 +232,9 @@ std::string CompositeType::getDescription() const {
     }
     if (identifier_case_ != 0) {
         ss << " [identifier_case=" << identifier_case_ << "]";
+    }
+    if (is_declaration_) {
+        ss << " [declaration]";
     }
     if (!members_.empty()) {
         ss << " with " << members_.size() << " members";
@@ -1039,8 +1043,10 @@ std::shared_ptr<Type> TypeSystem::createModifiedType(ModifiedTypeKind kind,
 std::shared_ptr<Type> TypeSystem::createCompositeType(CompositeType::Kind kind, const std::string& name,
                                                       uint64_t size,
                                                       uint64_t visibility,
-                                                      uint64_t identifier_case) {
-    auto type = std::make_shared<CompositeType>(kind, name, size, visibility, identifier_case);
+                                                      uint64_t identifier_case,
+                                                      bool is_declaration) {
+    auto type = std::make_shared<CompositeType>(kind, name, size, visibility, identifier_case,
+                                                is_declaration);
     switch (kind) {
         case CompositeType::Kind::STRUCT:
             type->setDwarfTag(DwarfTag::DW_TAG_structure_type);
@@ -1444,6 +1450,7 @@ std::shared_ptr<Type> TypeSystem::resolveCompositeType(std::shared_ptr<DIE> die)
     uint64_t size = getTypeSize(die);
     uint64_t visibility = 0;
     uint64_t identifier_case = 0;
+    bool is_declaration = false;
     
     CompositeType::Kind kind = CompositeType::Kind::STRUCT;
     if (die->getTag() == DwarfTag::DW_TAG_union_type) {
@@ -1462,8 +1469,13 @@ std::shared_ptr<Type> TypeSystem::resolveCompositeType(std::shared_ptr<DIE> die)
     if (identifier_case_attr && identifier_case_attr->getType() == AttributeValueType::UNSIGNED) {
         identifier_case = std::static_pointer_cast<UnsignedAttributeValue>(identifier_case_attr)->getValue();
     }
+    auto declaration_attr = die->getAttribute(DwarfAttribute::DW_AT_declaration);
+    if (auto flag = std::dynamic_pointer_cast<FlagAttributeValue>(declaration_attr)) {
+        is_declaration = flag->getValue();
+    }
     
-    auto composite_type = std::make_shared<CompositeType>(kind, name, size, visibility, identifier_case);
+    auto composite_type = std::make_shared<CompositeType>(kind, name, size, visibility, identifier_case,
+                                                          is_declaration);
     all_types_.push_back(composite_type);
     
     // Parse members
