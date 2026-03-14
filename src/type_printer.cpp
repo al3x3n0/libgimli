@@ -1215,6 +1215,12 @@ std::string TypePrinter::formatEnumType(const std::shared_ptr<DIE>& die) const {
     if (auto u = std::dynamic_pointer_cast<UnsignedAttributeValue>(visibility_attr)) {
         result += " [visibility=" + std::to_string(u->getValue()) + "]";
     }
+    auto declaration_attr = die->getAttribute(DwarfAttribute::DW_AT_declaration);
+    if (auto flag = std::dynamic_pointer_cast<FlagAttributeValue>(declaration_attr)) {
+        if (flag->getValue()) {
+            result += " [declaration]";
+        }
+    }
 
     return result;
 }

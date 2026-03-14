@@ -764,11 +764,13 @@ std::shared_ptr<Type> MemberPointerType::resolve() {
 EnumType::EnumType(const std::string& name,
                    std::shared_ptr<Type> underlying_type,
                    bool is_scoped,
-                   uint64_t visibility)
+                   uint64_t visibility,
+                   bool is_declaration)
     : name_(name),
       underlying_type_(underlying_type),
       is_scoped_(is_scoped),
-      visibility_(visibility) {
+      visibility_(visibility),
+      is_declaration_(is_declaration) {
 }
 
 std::string EnumType::getName() const {
@@ -787,6 +789,9 @@ std::string EnumType::getDescription() const {
     ss << name_ << " (" << getSize() << " bytes)";
     if (visibility_ != 0) {
         ss << " [visibility=" << visibility_ << "]";
+    }
+    if (is_declaration_) {
+        ss << " [declaration]";
     }
     if (!enumerators_.empty()) {
         ss << " with " << enumerators_.size() << " values";
@@ -1068,8 +1073,10 @@ std::shared_ptr<Type> TypeSystem::createCompositeType(CompositeType::Kind kind, 
 std::shared_ptr<Type> TypeSystem::createEnumType(const std::string& name, 
                                                  std::shared_ptr<Type> underlying_type,
                                                  bool is_scoped,
-                                                 uint64_t visibility) {
-    auto type = std::make_shared<EnumType>(name, underlying_type, is_scoped, visibility);
+                                                 uint64_t visibility,
+                                                 bool is_declaration) {
+    auto type = std::make_shared<EnumType>(name, underlying_type, is_scoped, visibility,
+                                           is_declaration);
     type->setDwarfTag(DwarfTag::DW_TAG_enumeration_type);
     all_types_.push_back(type);
     return type;
@@ -1571,6 +1578,7 @@ std::shared_ptr<Type> TypeSystem::resolveEnumType(std::shared_ptr<DIE> die) {
     
     bool is_scoped = false;
     uint64_t visibility = 0;
+    bool is_declaration = false;
     auto enum_class_attr = die->getAttribute(DwarfAttribute::DW_AT_enum_class);
     if (enum_class_attr && enum_class_attr->getType() == AttributeValueType::FLAG) {
         is_scoped = std::static_pointer_cast<FlagAttributeValue>(enum_class_attr)->getValue();
@@ -1579,9 +1587,13 @@ std::shared_ptr<Type> TypeSystem::resolveEnumType(std::shared_ptr<DIE> die) {
     if (visibility_attr && visibility_attr->getType() == AttributeValueType::UNSIGNED) {
         visibility = std::static_pointer_cast<UnsignedAttributeValue>(visibility_attr)->getValue();
     }
+    auto declaration_attr = die->getAttribute(DwarfAttribute::DW_AT_declaration);
+    if (auto flag = std::dynamic_pointer_cast<FlagAttributeValue>(declaration_attr)) {
+        is_declaration = flag->getValue();
+    }
 
     auto enum_type = std::dynamic_pointer_cast<EnumType>(
-        createEnumType(name, resolved_underlying, is_scoped, visibility));
+        createEnumType(name, resolved_underlying, is_scoped, visibility, is_declaration));
     
     // Parse enumerators
     for (const auto& child : die->getChildren()) {
