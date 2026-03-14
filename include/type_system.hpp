@@ -279,7 +279,8 @@ public:
     SetType(const std::string& name,
             std::shared_ptr<Type> element_type,
             uint64_t size,
-            uint64_t visibility = 0);
+            uint64_t visibility = 0,
+            bool is_declaration = false);
     std::string getName() const override;
     uint64_t getSize() const override;
     std::string getDescription() const override;
@@ -288,12 +289,14 @@ public:
 
     std::shared_ptr<Type> getElementType() const { return element_type_; }
     uint64_t getVisibility() const { return visibility_; }
+    bool isDeclaration() const { return is_declaration_; }
 
 private:
     std::string name_;
     std::shared_ptr<Type> element_type_;
     uint64_t size_;
     uint64_t visibility_;
+    bool is_declaration_;
 };
 
 class FileType : public Type {
@@ -513,7 +516,8 @@ public:
     std::shared_ptr<Type> createSetType(const std::string& name,
                                         std::shared_ptr<Type> element_type,
                                         uint64_t size,
-                                        uint64_t visibility = 0);
+                                        uint64_t visibility = 0,
+                                        bool is_declaration = false);
     std::shared_ptr<Type> createFileType(const std::string& name,
                                          std::shared_ptr<Type> element_type,
                                          uint64_t size,

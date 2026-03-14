@@ -439,8 +439,10 @@ std::shared_ptr<Type> StringType::resolve() {
 SetType::SetType(const std::string& name,
                  std::shared_ptr<Type> element_type,
                  uint64_t size,
-                 uint64_t visibility)
-    : name_(name), element_type_(std::move(element_type)), size_(size), visibility_(visibility) {
+                 uint64_t visibility,
+                 bool is_declaration)
+    : name_(name), element_type_(std::move(element_type)), size_(size), visibility_(visibility),
+      is_declaration_(is_declaration) {
 }
 
 std::string SetType::getName() const {
@@ -462,6 +464,12 @@ std::string SetType::getDescription() const {
     ss << getName();
     if (size_ != 0) {
         ss << " (" << size_ << " bytes)";
+    }
+    if (visibility_ != 0) {
+        ss << " [visibility=" << visibility_ << "]";
+    }
+    if (is_declaration_) {
+        ss << " [declaration]";
     }
     return ss.str();
 }
@@ -914,8 +922,10 @@ std::shared_ptr<Type> TypeSystem::createStringType(const std::string& name,
 std::shared_ptr<Type> TypeSystem::createSetType(const std::string& name,
                                                 std::shared_ptr<Type> element_type,
                                                 uint64_t size,
-                                                uint64_t visibility) {
-    auto type = std::make_shared<SetType>(name, std::move(element_type), size, visibility);
+                                                uint64_t visibility,
+                                                bool is_declaration) {
+    auto type = std::make_shared<SetType>(name, std::move(element_type), size, visibility,
+                                          is_declaration);
     type->setDwarfTag(DwarfTag::DW_TAG_set_type);
     all_types_.push_back(type);
     return type;
@@ -1373,11 +1383,16 @@ std::shared_ptr<Type> TypeSystem::resolveSetType(std::shared_ptr<DIE> die) {
     auto element_die = getTypeReference(die);
     std::shared_ptr<Type> resolved_element = element_die ? resolveType(element_die) : nullptr;
     uint64_t visibility = 0;
+    bool is_declaration = false;
     auto visibility_attr = die->getAttribute(DwarfAttribute::DW_AT_visibility);
     if (visibility_attr && visibility_attr->getType() == AttributeValueType::UNSIGNED) {
         visibility = std::static_pointer_cast<UnsignedAttributeValue>(visibility_attr)->getValue();
     }
-    return createSetType(getTypeName(die), resolved_element, getTypeSize(die), visibility);
+    auto declaration_attr = die->getAttribute(DwarfAttribute::DW_AT_declaration);
+    if (auto flag = std::dynamic_pointer_cast<FlagAttributeValue>(declaration_attr)) {
+        is_declaration = flag->getValue();
+    }
+    return createSetType(getTypeName(die), resolved_element, getTypeSize(die), visibility, is_declaration);
 }
 
 std::shared_ptr<Type> TypeSystem::resolveFileType(std::shared_ptr<DIE> die) {

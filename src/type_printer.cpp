@@ -1007,6 +1007,12 @@ std::string TypePrinter::formatSetType(const std::shared_ptr<DIE>& die,
             name += " [visibility=" + std::to_string(*visibility) + "]";
         }
     }
+    auto declaration_attr = die->getAttribute(DwarfAttribute::DW_AT_declaration);
+    if (auto flag_val = std::dynamic_pointer_cast<FlagAttributeValue>(declaration_attr)) {
+        if (flag_val->getValue()) {
+            name += " [declaration]";
+        }
+    }
     return var_name.empty() ? name : name + " " + var_name;
 }
 

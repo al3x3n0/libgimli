@@ -15831,6 +15831,14 @@ void testTypeSystem() {
     assert(bounded_string_type->isDeclaration());
     assert(bounded_string_type->getDescription().find("[length=4]") != std::string::npos);
 
+    auto declaration_set_type = std::dynamic_pointer_cast<SetType>(
+        type_system.createSetType("VisibleSet", int_type, 32, 2, true));
+    assert(declaration_set_type);
+    assert(declaration_set_type->getVisibility() == 2);
+    assert(declaration_set_type->isDeclaration());
+    assert(declaration_set_type->getDescription().find("[visibility=2]") != std::string::npos);
+    assert(declaration_set_type->getDescription().find("[declaration]") != std::string::npos);
+
     std::vector<ArrayBound> file_bounds = {{1, 4}};
     auto bounded_file_type = std::dynamic_pointer_cast<FileType>(
         type_system.createFileType("", int_type, 64, file_bounds, 1, 2));
@@ -16017,6 +16025,7 @@ void testTypeSystem() {
         set_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<ReferenceAttributeValue>(0x10));
         set_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(32));
         set_die->addAttribute(DwarfAttribute::DW_AT_visibility, std::make_shared<UnsignedAttributeValue>(2));
+        set_die->addAttribute(DwarfAttribute::DW_AT_declaration, std::make_shared<FlagAttributeValue>(true));
 
         auto file_die = add_die(DwarfTag::DW_TAG_file_type, 0x1a);
         file_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("IntFile"));
@@ -16278,6 +16287,12 @@ void testTypeSystem() {
         assert(resolved_string->isDeclaration());
         assert(resolved_string->getCharacterType());
         assert(resolved_string->getCharacterType()->getName() == "int");
+
+        auto resolved_decl_set = std::dynamic_pointer_cast<SetType>(resolving_system.resolveType(set_die));
+        assert(resolved_decl_set);
+        assert(resolved_decl_set->getName() == "IntSet");
+        assert(resolved_decl_set->getVisibility() == 2);
+        assert(resolved_decl_set->isDeclaration());
 
         auto resolved_expr_string = std::dynamic_pointer_cast<StringType>(resolving_system.resolveType(expr_string_die));
         assert(resolved_expr_string);
@@ -16547,6 +16562,7 @@ void testTypePrinter() {
     set_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<TypeAttributeValue>(0x100));
     set_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(32));
     set_die->addAttribute(DwarfAttribute::DW_AT_visibility, std::make_shared<UnsignedAttributeValue>(2));
+    set_die->addAttribute(DwarfAttribute::DW_AT_declaration, std::make_shared<FlagAttributeValue>(true));
 
     auto file_die = add_die(DwarfTag::DW_TAG_file_type, 0x10a);
     file_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("IntFile"));
@@ -16769,7 +16785,7 @@ void testTypePrinter() {
     assert(printer.formatType(unspecified_die) == "decltype(auto)");
     assert(printer.formatType(string_die) == "utf8_string [length=4] [visibility=1] [use_UTF8] [declaration]");
     assert(printer.formatType(expr_string_die) == "CountedExprString [length=6]");
-    assert(printer.formatType(set_die) == "IntSet [visibility=2]");
+    assert(printer.formatType(set_die) == "IntSet [visibility=2] [declaration]");
     assert(printer.formatType(file_die) == "IntFile [rank=1] [visibility=2]");
     assert(printer.formatType(anonymous_file_die) == "file<int>[1..4] [rank=1] [visibility=2]");
     assert(printer.formatType(rref_die) == "Alias [visibility=1]&&");
