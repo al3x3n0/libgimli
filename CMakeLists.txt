@@ -39,6 +39,7 @@ set(SOURCES
     src/debug_sup_parser.cpp
     src/debug_names_parser.cpp
     src/debug_macro_parser.cpp
+    src/legacy_dwarf_parser.cpp
     src/cfi_parser.cpp
     src/cfi_symbolic.cpp
     src/dwarf_compare.cpp
@@ -74,6 +75,7 @@ set(HEADERS
     include/debug_sup_parser.hpp
     include/debug_names_parser.hpp
     include/debug_macro_parser.hpp
+    include/legacy_dwarf_parser.hpp
     include/cfi_parser.hpp
     include/cfi_symbolic.hpp
     include/dwarf_compare.hpp

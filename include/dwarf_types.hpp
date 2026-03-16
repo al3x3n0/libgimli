@@ -34,9 +34,11 @@ enum class AddressSize : uint8_t {
     ADDR_64 = 8
 };
 
-// DWARF tag values (simplified set)
+// DWARF tag values used by the public parser model.
 enum class DwarfTag : uint16_t {
     DW_TAG_compile_unit = 0x11,
+    DW_TAG_imported_declaration = 0x08,
+    DW_TAG_label = 0x0a,
     DW_TAG_partial_unit = 0x3c,          // DWARF 5
     DW_TAG_type_unit = 0x41,             // DWARF 5
     DW_TAG_skeleton_unit = 0x4a,         // DWARF 5
@@ -58,21 +60,24 @@ enum class DwarfTag : uint16_t {
     DW_TAG_enumeration_type = 0x04,
     DW_TAG_typedef = 0x16,
     DW_TAG_const_type = 0x26,
-    DW_TAG_volatile_type = 0x27,
-    DW_TAG_restrict_type = 0x28,
+    DW_TAG_volatile_type = 0x35,
+    DW_TAG_restrict_type = 0x37,
     DW_TAG_reference_type = 0x10,
     DW_TAG_rvalue_reference_type = 0x42,
     DW_TAG_atomic_type = 0x47,
     DW_TAG_subrange_type = 0x21,
     DW_TAG_class_type = 0x02,
     DW_TAG_interface_type = 0x38,
+    DW_TAG_module = 0x1e,
+    DW_TAG_namespace = 0x39,
+    DW_TAG_imported_unit = 0x3d,
     DW_TAG_subroutine_type = 0x15,
-    DW_TAG_enumerator = 0x4a,
+    DW_TAG_enumerator = 0x28,
     DW_TAG_member = 0x0d,
     DW_TAG_inheritance = 0x1c,
     DW_TAG_inlined_subroutine = 0x1d,
     DW_TAG_lexical_block = 0x0b,
-    DW_TAG_unspecified_parameters = 0x0c
+    DW_TAG_unspecified_parameters = 0x18
 };
 
 // DWARF attribute form values

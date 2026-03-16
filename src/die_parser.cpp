@@ -93,16 +93,27 @@ uint64_t DIE::getByteSize() const {
 bool DIE::isType() const {
     switch (tag_) {
         case DwarfTag::DW_TAG_base_type:
+        case DwarfTag::DW_TAG_unspecified_type:
+        case DwarfTag::DW_TAG_string_type:
+        case DwarfTag::DW_TAG_set_type:
+        case DwarfTag::DW_TAG_file_type:
         case DwarfTag::DW_TAG_pointer_type:
+        case DwarfTag::DW_TAG_ptr_to_member_type:
         case DwarfTag::DW_TAG_array_type:
         case DwarfTag::DW_TAG_structure_type:
         case DwarfTag::DW_TAG_union_type:
+        case DwarfTag::DW_TAG_class_type:
+        case DwarfTag::DW_TAG_interface_type:
         case DwarfTag::DW_TAG_enumeration_type:
         case DwarfTag::DW_TAG_typedef:
         case DwarfTag::DW_TAG_const_type:
         case DwarfTag::DW_TAG_volatile_type:
         case DwarfTag::DW_TAG_restrict_type:
+        case DwarfTag::DW_TAG_reference_type:
+        case DwarfTag::DW_TAG_rvalue_reference_type:
+        case DwarfTag::DW_TAG_atomic_type:
         case DwarfTag::DW_TAG_subrange_type:
+        case DwarfTag::DW_TAG_subroutine_type:
             return true;
         default:
             return false;
@@ -230,6 +241,9 @@ std::vector<std::shared_ptr<DIE>> DIEParser::parseCompilationUnits() {
         uint64_t abbrev_offset;
         uint8_t address_size;
         uint8_t unit_type_raw = 0;
+        uint64_t unit_type_signature = 0;
+        uint64_t unit_type_offset = 0;
+        bool has_type_unit_signature = false;
         
         if (version >= 5) {
             // DWARF 5 format: version, unit_type, address_size, abbrev_offset
@@ -256,8 +270,9 @@ std::vector<std::shared_ptr<DIE>> DIEParser::parseCompilationUnits() {
                     offset = unit_end;
                     continue;
                 }
-                (void)readU64(offset); // type_signature
-                (void)(is_dwarf64 ? readU64(offset) : readU32(offset)); // type_offset
+                unit_type_signature = readU64(offset);
+                unit_type_offset = is_dwarf64 ? readU64(offset) : readU32(offset);
+                has_type_unit_signature = true;
             } else if (unit_type == DwarfUnitType::DW_UT_skeleton || unit_type == DwarfUnitType::DW_UT_split_compile) {
                 // dwo_id (8 bytes)
                 if (offset + 8 > unit_end) {
@@ -293,6 +308,13 @@ std::vector<std::shared_ptr<DIE>> DIEParser::parseCompilationUnits() {
         // Parse the compilation unit DIE
         auto cu_die = parseDIE(offset, debug_abbrev_, abbrev_offset, /*cu_base_offset=*/biased_start_offset, offset_size, unit_end);
         if (cu_die) {
+            if (has_type_unit_signature) {
+                cu_die->addAttribute(DwarfAttribute::DW_AT_signature,
+                                     std::make_shared<UnsignedAttributeValue>(unit_type_signature));
+                cu_die->addAttribute(DwarfAttribute::DW_AT_type,
+                                     std::make_shared<TypeAttributeValue>(biased_start_offset + unit_type_offset,
+                                                                          "<type-unit>"));
+            }
             compilation_units.push_back(cu_die);
             DEBUG_OUT("Debug: Successfully parsed compilation unit DIE");
         } else {

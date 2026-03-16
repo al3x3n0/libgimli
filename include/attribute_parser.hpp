@@ -112,6 +112,13 @@ public:
     std::shared_ptr<AttributeValue> parseLineAttribute(DwarfAttribute attr, DwarfForm form, uint64_t& offset) const;
     std::shared_ptr<AttributeValue> parseTypeAttribute(DwarfAttribute attr, DwarfForm form, uint64_t& offset) const;
     std::shared_ptr<AttributeValue> parseConstValueAttribute(DwarfAttribute attr, DwarfForm form, uint64_t& offset) const;
+    std::shared_ptr<AttributeValue> parseReferenceMetadataAttribute(DwarfAttribute attr, DwarfForm form, uint64_t& offset) const;
+    std::shared_ptr<AttributeValue> parseAddressMetadataAttribute(DwarfAttribute attr, DwarfForm form, uint64_t& offset) const;
+    std::shared_ptr<AttributeValue> parseScalarMetadataAttribute(DwarfAttribute attr, DwarfForm form, uint64_t& offset) const;
+    std::shared_ptr<AttributeValue> parseOffsetScalarMetadataAttribute(DwarfAttribute attr, DwarfForm form, uint64_t& offset) const;
+    std::shared_ptr<AttributeValue> parseStringMetadataAttribute(DwarfAttribute attr, DwarfForm form, uint64_t& offset) const;
+    std::shared_ptr<AttributeValue> parseFlagMetadataAttribute(DwarfAttribute attr, DwarfForm form, uint64_t& offset) const;
+    std::shared_ptr<AttributeValue> parseExpressionBlockMetadataAttribute(DwarfAttribute attr, DwarfForm form, uint64_t& offset) const;
     
     // Utility methods
     std::string getString(uint64_t offset) const;
@@ -339,6 +346,16 @@ private:
 
 class LineAttributeValue : public AttributeValue {
 public:
+    struct PreservedField {
+        uint64_t content_type;
+        std::shared_ptr<AttributeValue> value;
+    };
+
+    struct DirectoryEntry {
+        std::string path;
+        std::vector<PreservedField> preserved_fields;
+    };
+
     struct LineEntry {
         uint64_t address;
         uint32_t file;
@@ -358,36 +375,45 @@ public:
         uint64_t dir_index;
         uint64_t mtime;
         uint64_t size;
+        std::vector<uint8_t> md5;
+        std::vector<PreservedField> preserved_fields;
     };
 
     LineAttributeValue(const std::vector<LineEntry>& lines,
                        const std::vector<std::string>& directories = {},
-                       const std::vector<FileEntry>& files = {});
+                       const std::vector<FileEntry>& files = {},
+                       const std::vector<DirectoryEntry>& directory_entries = {});
     AttributeValueType getType() const override { return AttributeValueType::BLOCK; }
     std::string toString() const override;
 
     const std::vector<LineEntry>& getLines() const { return lines_; }
     const std::vector<std::string>& getDirectories() const { return directories_; }
+    const std::vector<DirectoryEntry>& getDirectoryEntries() const { return directory_entries_; }
     const std::vector<FileEntry>& getFiles() const { return files_; }
 
 private:
     std::vector<LineEntry> lines_;
     std::vector<std::string> directories_;
+    std::vector<DirectoryEntry> directory_entries_;
     std::vector<FileEntry> files_;
 };
 
 class TypeAttributeValue : public AttributeValue {
 public:
-    TypeAttributeValue(uint64_t offset, const std::string& name = "");
+    TypeAttributeValue(uint64_t offset,
+                       const std::string& name = "",
+                       bool is_signature_reference = false);
     AttributeValueType getType() const override { return AttributeValueType::REFERENCE; }
     std::string toString() const override;
     
     uint64_t getOffset() const { return offset_; }
     const std::string& getName() const { return name_; }
+    bool isSignatureReference() const { return is_signature_reference_; }
     
 private:
     uint64_t offset_;
     std::string name_;
+    bool is_signature_reference_ = false;
 };
 
 } // namespace dwarf

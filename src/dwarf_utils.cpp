@@ -26,6 +26,8 @@ bool DwarfUtils::isLittleEndian() {
 // Tag name conversion
 std::string DwarfUtils::tagToString(DwarfTag tag) {
     switch (tag) {
+        case DwarfTag::DW_TAG_imported_declaration: return "DW_TAG_imported_declaration";
+        case DwarfTag::DW_TAG_label: return "DW_TAG_label";
         case DwarfTag::DW_TAG_compile_unit: return "DW_TAG_compile_unit";
         case DwarfTag::DW_TAG_partial_unit: return "DW_TAG_partial_unit";
         case DwarfTag::DW_TAG_type_unit: return "DW_TAG_type_unit";
@@ -56,7 +58,11 @@ std::string DwarfUtils::tagToString(DwarfTag tag) {
         case DwarfTag::DW_TAG_subrange_type: return "DW_TAG_subrange_type";
         case DwarfTag::DW_TAG_class_type: return "DW_TAG_class_type";
         case DwarfTag::DW_TAG_interface_type: return "DW_TAG_interface_type";
+        case DwarfTag::DW_TAG_module: return "DW_TAG_module";
+        case DwarfTag::DW_TAG_namespace: return "DW_TAG_namespace";
+        case DwarfTag::DW_TAG_imported_unit: return "DW_TAG_imported_unit";
         case DwarfTag::DW_TAG_subroutine_type: return "DW_TAG_subroutine_type";
+        case DwarfTag::DW_TAG_enumerator: return "DW_TAG_enumerator";
         case DwarfTag::DW_TAG_member: return "DW_TAG_member";
         case DwarfTag::DW_TAG_inheritance: return "DW_TAG_inheritance";
         case DwarfTag::DW_TAG_inlined_subroutine: return "DW_TAG_inlined_subroutine";
@@ -67,6 +73,8 @@ std::string DwarfUtils::tagToString(DwarfTag tag) {
 }
 
 DwarfTag DwarfUtils::stringToTag(const std::string& str) {
+    if (str == "DW_TAG_imported_declaration") return DwarfTag::DW_TAG_imported_declaration;
+    if (str == "DW_TAG_label") return DwarfTag::DW_TAG_label;
     if (str == "DW_TAG_compile_unit") return DwarfTag::DW_TAG_compile_unit;
     if (str == "DW_TAG_partial_unit") return DwarfTag::DW_TAG_partial_unit;
     if (str == "DW_TAG_type_unit") return DwarfTag::DW_TAG_type_unit;
@@ -97,7 +105,11 @@ DwarfTag DwarfUtils::stringToTag(const std::string& str) {
     if (str == "DW_TAG_subrange_type") return DwarfTag::DW_TAG_subrange_type;
     if (str == "DW_TAG_class_type") return DwarfTag::DW_TAG_class_type;
     if (str == "DW_TAG_interface_type") return DwarfTag::DW_TAG_interface_type;
+    if (str == "DW_TAG_module") return DwarfTag::DW_TAG_module;
+    if (str == "DW_TAG_namespace") return DwarfTag::DW_TAG_namespace;
+    if (str == "DW_TAG_imported_unit") return DwarfTag::DW_TAG_imported_unit;
     if (str == "DW_TAG_subroutine_type") return DwarfTag::DW_TAG_subroutine_type;
+    if (str == "DW_TAG_enumerator") return DwarfTag::DW_TAG_enumerator;
     if (str == "DW_TAG_member") return DwarfTag::DW_TAG_member;
     if (str == "DW_TAG_inheritance") return DwarfTag::DW_TAG_inheritance;
     if (str == "DW_TAG_inlined_subroutine") return DwarfTag::DW_TAG_inlined_subroutine;
@@ -108,27 +120,117 @@ DwarfTag DwarfUtils::stringToTag(const std::string& str) {
 
 // Attribute name conversion
 DwarfAttribute DwarfUtils::stringToAttribute(const std::string& str) {
+    if (str == "DW_AT_sibling") return DwarfAttribute::DW_AT_sibling;
+    if (str == "DW_AT_location") return DwarfAttribute::DW_AT_location;
     if (str == "DW_AT_name") return DwarfAttribute::DW_AT_name;
+    if (str == "DW_AT_ordering") return DwarfAttribute::DW_AT_ordering;
+    if (str == "DW_AT_byte_size") return DwarfAttribute::DW_AT_byte_size;
+    if (str == "DW_AT_bit_offset") return DwarfAttribute::DW_AT_bit_offset;
+    if (str == "DW_AT_bit_size") return DwarfAttribute::DW_AT_bit_size;
+    if (str == "DW_AT_stmt_list") return DwarfAttribute::DW_AT_stmt_list;
     if (str == "DW_AT_type") return DwarfAttribute::DW_AT_type;
     if (str == "DW_AT_low_pc") return DwarfAttribute::DW_AT_low_pc;
     if (str == "DW_AT_high_pc") return DwarfAttribute::DW_AT_high_pc;
-    if (str == "DW_AT_location") return DwarfAttribute::DW_AT_location;
-    if (str == "DW_AT_byte_size") return DwarfAttribute::DW_AT_byte_size;
+    if (str == "DW_AT_language") return DwarfAttribute::DW_AT_language;
+    if (str == "DW_AT_discr") return DwarfAttribute::DW_AT_discr;
+    if (str == "DW_AT_discr_value") return DwarfAttribute::DW_AT_discr_value;
+    if (str == "DW_AT_visibility") return DwarfAttribute::DW_AT_visibility;
+    if (str == "DW_AT_import") return DwarfAttribute::DW_AT_import;
+    if (str == "DW_AT_string_length") return DwarfAttribute::DW_AT_string_length;
+    if (str == "DW_AT_common_reference") return DwarfAttribute::DW_AT_common_reference;
+    if (str == "DW_AT_comp_dir") return DwarfAttribute::DW_AT_comp_dir;
+    if (str == "DW_AT_const_value") return DwarfAttribute::DW_AT_const_value;
+    if (str == "DW_AT_containing_type") return DwarfAttribute::DW_AT_containing_type;
+    if (str == "DW_AT_default_value") return DwarfAttribute::DW_AT_default_value;
+    if (str == "DW_AT_inline") return DwarfAttribute::DW_AT_inline;
+    if (str == "DW_AT_is_optional") return DwarfAttribute::DW_AT_is_optional;
+    if (str == "DW_AT_lower_bound") return DwarfAttribute::DW_AT_lower_bound;
+    if (str == "DW_AT_producer") return DwarfAttribute::DW_AT_producer;
+    if (str == "DW_AT_prototyped") return DwarfAttribute::DW_AT_prototyped;
+    if (str == "DW_AT_return_addr") return DwarfAttribute::DW_AT_return_addr;
+    if (str == "DW_AT_start_scope") return DwarfAttribute::DW_AT_start_scope;
+    if (str == "DW_AT_bit_stride") return DwarfAttribute::DW_AT_bit_stride;
+    if (str == "DW_AT_upper_bound") return DwarfAttribute::DW_AT_upper_bound;
+    if (str == "DW_AT_abstract_origin") return DwarfAttribute::DW_AT_abstract_origin;
+    if (str == "DW_AT_accessibility") return DwarfAttribute::DW_AT_accessibility;
+    if (str == "DW_AT_address_class") return DwarfAttribute::DW_AT_address_class;
+    if (str == "DW_AT_artificial") return DwarfAttribute::DW_AT_artificial;
+    if (str == "DW_AT_base_types") return DwarfAttribute::DW_AT_base_types;
+    if (str == "DW_AT_calling_convention") return DwarfAttribute::DW_AT_calling_convention;
+    if (str == "DW_AT_count") return DwarfAttribute::DW_AT_count;
+    if (str == "DW_AT_data_member_location") return DwarfAttribute::DW_AT_data_member_location;
     if (str == "DW_AT_encoding") return DwarfAttribute::DW_AT_encoding;
     if (str == "DW_AT_decl_file") return DwarfAttribute::DW_AT_decl_file;
     if (str == "DW_AT_decl_line") return DwarfAttribute::DW_AT_decl_line;
     if (str == "DW_AT_decl_column") return DwarfAttribute::DW_AT_decl_column;
-    if (str == "DW_AT_stmt_list") return DwarfAttribute::DW_AT_stmt_list;
-    if (str == "DW_AT_comp_dir") return DwarfAttribute::DW_AT_comp_dir;
+    if (str == "DW_AT_declaration") return DwarfAttribute::DW_AT_declaration;
+    if (str == "DW_AT_discr_list") return DwarfAttribute::DW_AT_discr_list;
+    if (str == "DW_AT_external") return DwarfAttribute::DW_AT_external;
+    if (str == "DW_AT_frame_base") return DwarfAttribute::DW_AT_frame_base;
+    if (str == "DW_AT_friend") return DwarfAttribute::DW_AT_friend;
+    if (str == "DW_AT_identifier_case") return DwarfAttribute::DW_AT_identifier_case;
+    if (str == "DW_AT_macro_info") return DwarfAttribute::DW_AT_macro_info;
+    if (str == "DW_AT_namelist_item") return DwarfAttribute::DW_AT_namelist_item;
+    if (str == "DW_AT_priority") return DwarfAttribute::DW_AT_priority;
+    if (str == "DW_AT_segment") return DwarfAttribute::DW_AT_segment;
+    if (str == "DW_AT_specification") return DwarfAttribute::DW_AT_specification;
+    if (str == "DW_AT_static_link") return DwarfAttribute::DW_AT_static_link;
+    if (str == "DW_AT_use_location") return DwarfAttribute::DW_AT_use_location;
+    if (str == "DW_AT_variable_parameter") return DwarfAttribute::DW_AT_variable_parameter;
+    if (str == "DW_AT_virtuality") return DwarfAttribute::DW_AT_virtuality;
+    if (str == "DW_AT_vtable_elem_location") return DwarfAttribute::DW_AT_vtable_elem_location;
+    if (str == "DW_AT_allocated") return DwarfAttribute::DW_AT_allocated;
+    if (str == "DW_AT_associated") return DwarfAttribute::DW_AT_associated;
+    if (str == "DW_AT_data_location") return DwarfAttribute::DW_AT_data_location;
+    if (str == "DW_AT_byte_stride") return DwarfAttribute::DW_AT_byte_stride;
+    if (str == "DW_AT_entry_pc") return DwarfAttribute::DW_AT_entry_pc;
+    if (str == "DW_AT_use_UTF8") return DwarfAttribute::DW_AT_use_UTF8;
+    if (str == "DW_AT_extension") return DwarfAttribute::DW_AT_extension;
     if (str == "DW_AT_ranges") return DwarfAttribute::DW_AT_ranges;
+    if (str == "DW_AT_trampoline") return DwarfAttribute::DW_AT_trampoline;
+    if (str == "DW_AT_call_column") return DwarfAttribute::DW_AT_call_column;
+    if (str == "DW_AT_call_file") return DwarfAttribute::DW_AT_call_file;
+    if (str == "DW_AT_call_line") return DwarfAttribute::DW_AT_call_line;
+    if (str == "DW_AT_description") return DwarfAttribute::DW_AT_description;
+    if (str == "DW_AT_binary_scale") return DwarfAttribute::DW_AT_binary_scale;
+    if (str == "DW_AT_decimal_scale") return DwarfAttribute::DW_AT_decimal_scale;
+    if (str == "DW_AT_small") return DwarfAttribute::DW_AT_small;
+    if (str == "DW_AT_decimal_sign") return DwarfAttribute::DW_AT_decimal_sign;
+    if (str == "DW_AT_digit_count") return DwarfAttribute::DW_AT_digit_count;
+    if (str == "DW_AT_picture_string") return DwarfAttribute::DW_AT_picture_string;
+    if (str == "DW_AT_mutable") return DwarfAttribute::DW_AT_mutable;
+    if (str == "DW_AT_threads_scaled") return DwarfAttribute::DW_AT_threads_scaled;
+    if (str == "DW_AT_explicit") return DwarfAttribute::DW_AT_explicit;
+    if (str == "DW_AT_object_pointer") return DwarfAttribute::DW_AT_object_pointer;
+    if (str == "DW_AT_endianity") return DwarfAttribute::DW_AT_endianity;
+    if (str == "DW_AT_elemental") return DwarfAttribute::DW_AT_elemental;
+    if (str == "DW_AT_pure") return DwarfAttribute::DW_AT_pure;
+    if (str == "DW_AT_recursive") return DwarfAttribute::DW_AT_recursive;
+    if (str == "DW_AT_signature") return DwarfAttribute::DW_AT_signature;
+    if (str == "DW_AT_main_subprogram") return DwarfAttribute::DW_AT_main_subprogram;
+    if (str == "DW_AT_data_bit_offset") return DwarfAttribute::DW_AT_data_bit_offset;
+    if (str == "DW_AT_const_expr") return DwarfAttribute::DW_AT_const_expr;
+    if (str == "DW_AT_enum_class") return DwarfAttribute::DW_AT_enum_class;
+    if (str == "DW_AT_linkage_name") return DwarfAttribute::DW_AT_linkage_name;
     if (str == "DW_AT_addr_base") return DwarfAttribute::DW_AT_addr_base;
     if (str == "DW_AT_rnglists_base") return DwarfAttribute::DW_AT_rnglists_base;
     if (str == "DW_AT_loclists_base") return DwarfAttribute::DW_AT_loclists_base;
     if (str == "DW_AT_str_offsets_base") return DwarfAttribute::DW_AT_str_offsets_base;
+    if (str == "DW_AT_reference") return DwarfAttribute::DW_AT_reference;
+    if (str == "DW_AT_rvalue_reference") return DwarfAttribute::DW_AT_rvalue_reference;
+    if (str == "DW_AT_macros") return DwarfAttribute::DW_AT_macros;
+    if (str == "DW_AT_call_all_calls") return DwarfAttribute::DW_AT_call_all_calls;
+    if (str == "DW_AT_call_all_source_calls") return DwarfAttribute::DW_AT_call_all_source_calls;
+    if (str == "DW_AT_call_all_tail_calls") return DwarfAttribute::DW_AT_call_all_tail_calls;
+    if (str == "DW_AT_call_return_pc") return DwarfAttribute::DW_AT_call_return_pc;
+    if (str == "DW_AT_call_value") return DwarfAttribute::DW_AT_call_value;
+    if (str == "DW_AT_call_origin") return DwarfAttribute::DW_AT_call_origin;
+    if (str == "DW_AT_call_parameter") return DwarfAttribute::DW_AT_call_parameter;
     if (str == "DW_AT_dwo_name") return DwarfAttribute::DW_AT_dwo_name;
     if (str == "DW_AT_dwo_id") return DwarfAttribute::DW_AT_dwo_id;
     if (str == "DW_AT_GNU_dwo_name") return DwarfAttribute::DW_AT_GNU_dwo_name;
     if (str == "DW_AT_GNU_dwo_id") return DwarfAttribute::DW_AT_GNU_dwo_id;
+    if (str == "DW_AT_volatile") return DwarfAttribute::DW_AT_volatile;
     return static_cast<DwarfAttribute>(0);
 }
 
@@ -770,6 +872,7 @@ size_t DwarfUtils::getOperationSize(DwarfOp op,
         case DwarfOp::DW_OP_regx:
         case DwarfOp::DW_OP_fbreg:
         case DwarfOp::DW_OP_piece:
+        case DwarfOp::DW_OP_plus_uconst:
         case DwarfOp::DW_OP_addrx:
         case DwarfOp::DW_OP_constx:
         case DwarfOp::DW_OP_GNU_addr_index:
@@ -965,6 +1068,99 @@ std::vector<std::string> DwarfUtils::expressionToTokens(const std::vector<uint8_
     return expressionToTokens(expression, SizeContext{});
 }
 
+std::optional<DwarfUtils::PreservedAttributePayload> DwarfUtils::decodePreservedPayloadAttribute(
+    DwarfAttribute attr, const std::shared_ptr<AttributeValue>& value) {
+    return decodePreservedPayloadAttribute(attr, value, SizeContext{});
+}
+
+std::optional<DwarfUtils::PreservedAttributePayload> DwarfUtils::decodePreservedPayloadAttribute(
+    DwarfAttribute attr, const std::shared_ptr<AttributeValue>& value, const SizeContext& ctx) {
+    switch (attr) {
+        case DwarfAttribute::DW_AT_call_value:
+        case DwarfAttribute::DW_AT_call_parameter:
+        case DwarfAttribute::DW_AT_discr_list:
+            break;
+        default:
+            return std::nullopt;
+    }
+
+    if (!value) {
+        return std::nullopt;
+    }
+
+    if (auto expr = std::dynamic_pointer_cast<ExpressionAttributeValue>(value)) {
+        PreservedAttributePayload payload;
+        payload.kind = PreservedAttributePayload::Kind::EXPRESSION;
+        payload.bytes = expr->getExpression();
+        payload.tokens = expressionToTokens(payload.bytes, ctx);
+        return payload;
+    }
+
+    if (auto block = std::dynamic_pointer_cast<BlockAttributeValue>(value)) {
+        PreservedAttributePayload payload;
+        payload.kind = PreservedAttributePayload::Kind::BLOCK;
+        payload.bytes = block->getData();
+        payload.tokens = expressionToTokens(payload.bytes, ctx);
+        return payload;
+    }
+
+    return std::nullopt;
+}
+
+std::optional<DwarfUtils::DecodedPayloadSemantics> DwarfUtils::decodeCallSitePayloadAttribute(
+    DwarfAttribute attr, const std::shared_ptr<AttributeValue>& value) {
+    return decodeCallSitePayloadAttribute(attr, value, SizeContext{});
+}
+
+std::optional<DwarfUtils::DecodedPayloadSemantics> DwarfUtils::decodeCallSitePayloadAttribute(
+    DwarfAttribute attr, const std::shared_ptr<AttributeValue>& value, const SizeContext& ctx) {
+    switch (attr) {
+        case DwarfAttribute::DW_AT_call_value:
+        case DwarfAttribute::DW_AT_call_parameter:
+            break;
+        default:
+            return std::nullopt;
+    }
+
+    auto payload = decodePreservedPayloadAttribute(attr, value, ctx);
+    if (!payload) {
+        return std::nullopt;
+    }
+
+    DecodedPayloadSemantics decoded;
+    decoded.attribute = attr;
+    decoded.payload_kind = payload->kind;
+    decoded.bytes = payload->bytes;
+    decoded.tokens = payload->tokens;
+    decoded.assembly = expressionToAssembly(decoded.bytes, ctx);
+    return decoded;
+}
+
+std::optional<DwarfUtils::DecodedPayloadSemantics> DwarfUtils::decodeDiscriminantPayloadAttribute(
+    DwarfAttribute attr, const std::shared_ptr<AttributeValue>& value) {
+    return decodeDiscriminantPayloadAttribute(attr, value, SizeContext{});
+}
+
+std::optional<DwarfUtils::DecodedPayloadSemantics> DwarfUtils::decodeDiscriminantPayloadAttribute(
+    DwarfAttribute attr, const std::shared_ptr<AttributeValue>& value, const SizeContext& ctx) {
+    if (attr != DwarfAttribute::DW_AT_discr_list) {
+        return std::nullopt;
+    }
+
+    auto payload = decodePreservedPayloadAttribute(attr, value, ctx);
+    if (!payload) {
+        return std::nullopt;
+    }
+
+    DecodedPayloadSemantics decoded;
+    decoded.attribute = attr;
+    decoded.payload_kind = payload->kind;
+    decoded.bytes = payload->bytes;
+    decoded.tokens = payload->tokens;
+    decoded.assembly = expressionToAssembly(decoded.bytes, ctx);
+    return decoded;
+}
+
 std::vector<std::string> DwarfUtils::expressionToTokens(const std::vector<uint8_t>& expression,
                                                         const SizeContext& ctx) {
     std::vector<std::string> out;
@@ -1049,28 +1245,118 @@ void DwarfUtils::clearLastError() {
 
 std::string DwarfUtils::attributeToString(DwarfAttribute attr) {
     switch (attr) {
+        case DwarfAttribute::DW_AT_sibling: return "DW_AT_sibling";
+        case DwarfAttribute::DW_AT_location: return "DW_AT_location";
         case DwarfAttribute::DW_AT_name: return "DW_AT_name";
+        case DwarfAttribute::DW_AT_ordering: return "DW_AT_ordering";
+        case DwarfAttribute::DW_AT_byte_size: return "DW_AT_byte_size";
+        case DwarfAttribute::DW_AT_bit_offset: return "DW_AT_bit_offset";
+        case DwarfAttribute::DW_AT_bit_size: return "DW_AT_bit_size";
+        case DwarfAttribute::DW_AT_stmt_list: return "DW_AT_stmt_list";
         case DwarfAttribute::DW_AT_type: return "DW_AT_type";
         case DwarfAttribute::DW_AT_low_pc: return "DW_AT_low_pc";
         case DwarfAttribute::DW_AT_high_pc: return "DW_AT_high_pc";
-        case DwarfAttribute::DW_AT_location: return "DW_AT_location";
-        case DwarfAttribute::DW_AT_byte_size: return "DW_AT_byte_size";
+        case DwarfAttribute::DW_AT_language: return "DW_AT_language";
+        case DwarfAttribute::DW_AT_discr: return "DW_AT_discr";
+        case DwarfAttribute::DW_AT_discr_value: return "DW_AT_discr_value";
+        case DwarfAttribute::DW_AT_visibility: return "DW_AT_visibility";
+        case DwarfAttribute::DW_AT_import: return "DW_AT_import";
+        case DwarfAttribute::DW_AT_string_length: return "DW_AT_string_length";
+        case DwarfAttribute::DW_AT_common_reference: return "DW_AT_common_reference";
+        case DwarfAttribute::DW_AT_comp_dir: return "DW_AT_comp_dir";
+        case DwarfAttribute::DW_AT_const_value: return "DW_AT_const_value";
+        case DwarfAttribute::DW_AT_containing_type: return "DW_AT_containing_type";
+        case DwarfAttribute::DW_AT_default_value: return "DW_AT_default_value";
+        case DwarfAttribute::DW_AT_inline: return "DW_AT_inline";
+        case DwarfAttribute::DW_AT_is_optional: return "DW_AT_is_optional";
+        case DwarfAttribute::DW_AT_lower_bound: return "DW_AT_lower_bound";
+        case DwarfAttribute::DW_AT_producer: return "DW_AT_producer";
+        case DwarfAttribute::DW_AT_prototyped: return "DW_AT_prototyped";
+        case DwarfAttribute::DW_AT_return_addr: return "DW_AT_return_addr";
+        case DwarfAttribute::DW_AT_start_scope: return "DW_AT_start_scope";
+        case DwarfAttribute::DW_AT_bit_stride: return "DW_AT_bit_stride";
+        case DwarfAttribute::DW_AT_upper_bound: return "DW_AT_upper_bound";
+        case DwarfAttribute::DW_AT_abstract_origin: return "DW_AT_abstract_origin";
+        case DwarfAttribute::DW_AT_accessibility: return "DW_AT_accessibility";
+        case DwarfAttribute::DW_AT_address_class: return "DW_AT_address_class";
+        case DwarfAttribute::DW_AT_artificial: return "DW_AT_artificial";
+        case DwarfAttribute::DW_AT_base_types: return "DW_AT_base_types";
+        case DwarfAttribute::DW_AT_calling_convention: return "DW_AT_calling_convention";
+        case DwarfAttribute::DW_AT_count: return "DW_AT_count";
+        case DwarfAttribute::DW_AT_data_member_location: return "DW_AT_data_member_location";
         case DwarfAttribute::DW_AT_encoding: return "DW_AT_encoding";
         case DwarfAttribute::DW_AT_decl_file: return "DW_AT_decl_file";
         case DwarfAttribute::DW_AT_decl_line: return "DW_AT_decl_line";
         case DwarfAttribute::DW_AT_decl_column: return "DW_AT_decl_column";
-        case DwarfAttribute::DW_AT_stmt_list: return "DW_AT_stmt_list";
-        case DwarfAttribute::DW_AT_comp_dir: return "DW_AT_comp_dir";
+        case DwarfAttribute::DW_AT_declaration: return "DW_AT_declaration";
+        case DwarfAttribute::DW_AT_discr_list: return "DW_AT_discr_list";
+        case DwarfAttribute::DW_AT_external: return "DW_AT_external";
+        case DwarfAttribute::DW_AT_frame_base: return "DW_AT_frame_base";
+        case DwarfAttribute::DW_AT_friend: return "DW_AT_friend";
+        case DwarfAttribute::DW_AT_identifier_case: return "DW_AT_identifier_case";
+        case DwarfAttribute::DW_AT_macro_info: return "DW_AT_macro_info";
+        case DwarfAttribute::DW_AT_namelist_item: return "DW_AT_namelist_item";
+        case DwarfAttribute::DW_AT_priority: return "DW_AT_priority";
+        case DwarfAttribute::DW_AT_segment: return "DW_AT_segment";
+        case DwarfAttribute::DW_AT_specification: return "DW_AT_specification";
+        case DwarfAttribute::DW_AT_static_link: return "DW_AT_static_link";
+        case DwarfAttribute::DW_AT_use_location: return "DW_AT_use_location";
+        case DwarfAttribute::DW_AT_variable_parameter: return "DW_AT_variable_parameter";
+        case DwarfAttribute::DW_AT_virtuality: return "DW_AT_virtuality";
+        case DwarfAttribute::DW_AT_vtable_elem_location: return "DW_AT_vtable_elem_location";
+        case DwarfAttribute::DW_AT_allocated: return "DW_AT_allocated";
+        case DwarfAttribute::DW_AT_associated: return "DW_AT_associated";
+        case DwarfAttribute::DW_AT_data_location: return "DW_AT_data_location";
+        case DwarfAttribute::DW_AT_byte_stride: return "DW_AT_byte_stride";
+        case DwarfAttribute::DW_AT_entry_pc: return "DW_AT_entry_pc";
+        case DwarfAttribute::DW_AT_use_UTF8: return "DW_AT_use_UTF8";
+        case DwarfAttribute::DW_AT_extension: return "DW_AT_extension";
         case DwarfAttribute::DW_AT_ranges: return "DW_AT_ranges";
+        case DwarfAttribute::DW_AT_trampoline: return "DW_AT_trampoline";
+        case DwarfAttribute::DW_AT_call_column: return "DW_AT_call_column";
+        case DwarfAttribute::DW_AT_call_file: return "DW_AT_call_file";
+        case DwarfAttribute::DW_AT_call_line: return "DW_AT_call_line";
+        case DwarfAttribute::DW_AT_description: return "DW_AT_description";
+        case DwarfAttribute::DW_AT_binary_scale: return "DW_AT_binary_scale";
+        case DwarfAttribute::DW_AT_decimal_scale: return "DW_AT_decimal_scale";
+        case DwarfAttribute::DW_AT_small: return "DW_AT_small";
+        case DwarfAttribute::DW_AT_decimal_sign: return "DW_AT_decimal_sign";
+        case DwarfAttribute::DW_AT_digit_count: return "DW_AT_digit_count";
+        case DwarfAttribute::DW_AT_picture_string: return "DW_AT_picture_string";
+        case DwarfAttribute::DW_AT_mutable: return "DW_AT_mutable";
+        case DwarfAttribute::DW_AT_threads_scaled: return "DW_AT_threads_scaled";
+        case DwarfAttribute::DW_AT_explicit: return "DW_AT_explicit";
+        case DwarfAttribute::DW_AT_object_pointer: return "DW_AT_object_pointer";
+        case DwarfAttribute::DW_AT_endianity: return "DW_AT_endianity";
+        case DwarfAttribute::DW_AT_elemental: return "DW_AT_elemental";
+        case DwarfAttribute::DW_AT_pure: return "DW_AT_pure";
+        case DwarfAttribute::DW_AT_recursive: return "DW_AT_recursive";
+        case DwarfAttribute::DW_AT_signature: return "DW_AT_signature";
+        case DwarfAttribute::DW_AT_main_subprogram: return "DW_AT_main_subprogram";
+        case DwarfAttribute::DW_AT_data_bit_offset: return "DW_AT_data_bit_offset";
+        case DwarfAttribute::DW_AT_const_expr: return "DW_AT_const_expr";
+        case DwarfAttribute::DW_AT_enum_class: return "DW_AT_enum_class";
+        case DwarfAttribute::DW_AT_linkage_name: return "DW_AT_linkage_name";
         case DwarfAttribute::DW_AT_addr_base: return "DW_AT_addr_base";
         case DwarfAttribute::DW_AT_rnglists_base: return "DW_AT_rnglists_base";
         case DwarfAttribute::DW_AT_loclists_base: return "DW_AT_loclists_base";
         case DwarfAttribute::DW_AT_str_offsets_base: return "DW_AT_str_offsets_base";
+        case DwarfAttribute::DW_AT_reference: return "DW_AT_reference";
+        case DwarfAttribute::DW_AT_rvalue_reference: return "DW_AT_rvalue_reference";
+        case DwarfAttribute::DW_AT_macros: return "DW_AT_macros";
+        case DwarfAttribute::DW_AT_call_all_calls: return "DW_AT_call_all_calls";
+        case DwarfAttribute::DW_AT_call_all_source_calls: return "DW_AT_call_all_source_calls";
+        case DwarfAttribute::DW_AT_call_all_tail_calls: return "DW_AT_call_all_tail_calls";
+        case DwarfAttribute::DW_AT_call_return_pc: return "DW_AT_call_return_pc";
+        case DwarfAttribute::DW_AT_call_value: return "DW_AT_call_value";
+        case DwarfAttribute::DW_AT_call_origin: return "DW_AT_call_origin";
+        case DwarfAttribute::DW_AT_call_parameter: return "DW_AT_call_parameter";
         case DwarfAttribute::DW_AT_dwo_name: return "DW_AT_dwo_name";
         case DwarfAttribute::DW_AT_dwo_id: return "DW_AT_dwo_id";
         case DwarfAttribute::DW_AT_GNU_dwo_name: return "DW_AT_GNU_dwo_name";
         case DwarfAttribute::DW_AT_GNU_dwo_id: return "DW_AT_GNU_dwo_id";
-        default: return "DW_AT_unknown";
+        case DwarfAttribute::DW_AT_volatile: return "DW_AT_volatile";
+        default: return "DW_AT_unknown_" + std::to_string(static_cast<int>(attr));
     }
 }
 

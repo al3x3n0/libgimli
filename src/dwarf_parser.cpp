@@ -2,6 +2,7 @@
 #include "dwarf_utils.hpp"
 #include "attribute_parser.hpp"
 #include "debug_sup_parser.hpp"
+#include "legacy_dwarf_parser.hpp"
 #include <elfio/elfio_relocation.hpp>
 #include <iostream>
 #include <fstream>
@@ -167,6 +168,7 @@ DwarfParser::DwarfParser(const std::string& filename)
 
 bool DwarfParser::load() {
     support_telemetry_ = SupportTelemetry{};
+    type_signature_die_offset_cache_.clear();
     if (!loadELFFile()) {
         return false;
     }
@@ -186,6 +188,9 @@ bool DwarfParser::load() {
     // If this is a split DWARF skeleton, try to load and parse .dwo units so
     // queries (functions/variables/types/lines) can see full debug info.
     integrateSplitDwarf();
+
+    // Resolve standard DW_FORM_ref_sig8 references after all unit sources are loaded.
+    resolveTypeSignatureReferences();
 
     // Initialize source location resolver
     initializeSourceResolver();
@@ -252,6 +257,10 @@ bool DwarfParser::loadDWARFSections() {
     loadSection(constants::DEBUG_SUP_SECTION, debug_sup_);
     loadSection(constants::DEBUG_NAMES_SECTION, debug_names_);
     loadSection(constants::DEBUG_MACRO_SECTION, debug_macro_);
+    loadSection(constants::DEBUG_ARANGES_SECTION, debug_aranges_);
+    loadSection(constants::DEBUG_PUBNAMES_SECTION, debug_pubnames_);
+    loadSection(constants::DEBUG_PUBTYPES_SECTION, debug_pubtypes_);
+    loadSection(constants::DEBUG_MACINFO_SECTION, debug_macinfo_);
 
     // If we have a supplementary file reference, attempt to load it.
     // This enables DW_FORM_strp_sup and DW_FORM_ref_sup* resolution.
@@ -373,6 +382,21 @@ bool DwarfParser::loadDWARFSections() {
                                                            &debug_str_offsets_,
                                                            &debug_line_);
     }
+    if (!debug_macinfo_.empty()) {
+        macinfo_parser_ = std::make_unique<DebugMacinfoParser>(debug_macinfo_);
+    }
+    if (!debug_aranges_.empty()) {
+        DebugArangesParser aranges_parser(debug_aranges_);
+        aranges_ = aranges_parser.parse();
+    }
+    if (!debug_pubnames_.empty()) {
+        DebugPubTableParser pubnames_parser(debug_pubnames_);
+        pubnames_ = pubnames_parser.parse();
+    }
+    if (!debug_pubtypes_.empty()) {
+        DebugPubTableParser pubtypes_parser(debug_pubtypes_);
+        pubtypes_ = pubtypes_parser.parse();
+    }
 
     // Initialize CFI parser (prefer .eh_frame, fallback to .debug_frame)
     uint8_t addr_size = (address_size_ == AddressSize::ADDR_64) ? 8 : 4;
@@ -441,6 +465,7 @@ bool DwarfParser::parseCompilationUnits() {
     mergeVendorFormSkipSeverityBuckets(support_telemetry_, die_parser_->getUnsupportedVendorFormSkipSeverityBuckets());
     
     // Cache all DIEs
+    type_signature_die_offset_cache_.clear();
     for (const auto& cu : compilation_units_) {
         cacheDIE(cu);
     }
@@ -841,10 +866,58 @@ void DwarfParser::cacheDIE(std::shared_ptr<DIE> die) {
     if (!die) return;
     
     die_cache_[die->getOffset()] = die;
+    indexTypeUnitSignature(die);
     
     // Cache children recursively
     for (const auto& child : die->getChildren()) {
         cacheDIE(child);
+    }
+}
+
+void DwarfParser::indexTypeUnitSignature(std::shared_ptr<DIE> die) {
+    if (!die) return;
+    auto sig_attr = std::dynamic_pointer_cast<UnsignedAttributeValue>(
+        die->getAttribute(DwarfAttribute::DW_AT_signature));
+    if (!sig_attr) return;
+
+    uint64_t resolved_offset = die->getOffset();
+    if (auto type_attr = std::dynamic_pointer_cast<TypeAttributeValue>(
+            die->getAttribute(DwarfAttribute::DW_AT_type))) {
+        if (!type_attr->isSignatureReference() && type_attr->getOffset() != 0) {
+            resolved_offset = type_attr->getOffset();
+        }
+    }
+    type_signature_die_offset_cache_[sig_attr->getValue()] = resolved_offset;
+}
+
+void DwarfParser::resolveTypeSignatureReferences() {
+    for (const auto& cu : compilation_units_) {
+        resolveTypeSignatureReferences(cu);
+    }
+    for (const auto& cu : supplementary_units_) {
+        resolveTypeSignatureReferences(cu);
+    }
+}
+
+void DwarfParser::resolveTypeSignatureReferences(std::shared_ptr<DIE> die) {
+    if (!die) return;
+
+    std::vector<std::pair<DwarfAttribute, std::shared_ptr<TypeAttributeValue>>> replacements;
+    for (const auto& attr_kv : die->getAttributes()) {
+        auto type_attr = std::dynamic_pointer_cast<TypeAttributeValue>(attr_kv.second);
+        if (!type_attr || !type_attr->isSignatureReference()) continue;
+        auto it = type_signature_die_offset_cache_.find(type_attr->getOffset());
+        if (it == type_signature_die_offset_cache_.end()) continue;
+        replacements.emplace_back(attr_kv.first,
+                                  std::make_shared<TypeAttributeValue>(it->second, type_attr->getName()));
+    }
+
+    for (const auto& replacement : replacements) {
+        die->addAttribute(replacement.first, replacement.second);
+    }
+
+    for (const auto& child : die->getChildren()) {
+        resolveTypeSignatureReferences(child);
     }
 }
 
@@ -905,114 +978,164 @@ const DebugNamesHeader* DwarfParser::getPrimaryDebugNamesHeader() const {
 }
 
 std::vector<MacroDefinition> DwarfParser::getMacroDefinitions(uint64_t offset) const {
-    if (macro_parser_) {
-        if (offset == 0) {
-            for (const auto& cu : compilation_units_) {
-                auto defs = getMacroDefinitionsForCU(cu);
-                if (!defs.empty()) return defs;
-            }
+    if (offset == 0) {
+        for (const auto& cu : compilation_units_) {
+            auto defs = getMacroDefinitionsForCU(cu);
+            if (!defs.empty()) return defs;
         }
-        return macro_parser_->getDefinitions(offset);
+    }
+    if (macro_parser_) {
+        auto defs = macro_parser_->getDefinitions(offset);
+        if (!defs.empty()) return defs;
+    }
+    if (macinfo_parser_) {
+        return macinfo_parser_->getDefinitions(offset);
     }
     return {};
 }
 
 std::vector<MacroDefinition> DwarfParser::lookupMacro(const std::string& name, uint64_t offset) const {
-    if (macro_parser_) {
-        if (offset == 0) {
-            for (const auto& cu : compilation_units_) {
-                auto defs = lookupMacroForCU(cu, name);
-                if (!defs.empty()) return defs;
-            }
+    if (offset == 0) {
+        for (const auto& cu : compilation_units_) {
+            auto defs = lookupMacroForCU(cu, name);
+            if (!defs.empty()) return defs;
         }
-        return macro_parser_->lookupMacro(name, offset);
+    }
+    if (macro_parser_) {
+        auto defs = macro_parser_->lookupMacro(name, offset);
+        if (!defs.empty()) return defs;
+    }
+    if (macinfo_parser_) {
+        return macinfo_parser_->lookupMacro(name, offset);
     }
     return {};
 }
 
 std::vector<MacroDefinition> DwarfParser::getMacroDefinitionsForCU(const std::shared_ptr<DIE>& cu) const {
-    if (!macro_parser_ || !cu) return {};
+    if (!cu) return {};
 
-    uint64_t macro_offset = 0;
-    if (auto a = std::dynamic_pointer_cast<UnsignedAttributeValue>(cu->getAttribute(DwarfAttribute::DW_AT_macros))) {
-        macro_offset = a->getValue();
-    } else if (auto a2 = std::dynamic_pointer_cast<UnsignedAttributeValue>(cu->getAttribute(DwarfAttribute::DW_AT_macro_info))) {
-        // DW_AT_macro_info usually refers to .debug_macinfo (older), but some producers may still use it.
-        macro_offset = a2->getValue();
-    }
-    if (macro_offset == 0) return {};
-
-    uint64_t str_offsets_base = 0;
-    if (auto b = std::dynamic_pointer_cast<UnsignedAttributeValue>(cu->getAttribute(DwarfAttribute::DW_AT_str_offsets_base))) {
-        str_offsets_base = b->getValue();
-    }
-    macro_parser_->setStrOffsetsBase(str_offsets_base, cu->getOffsetSize());
-
-    auto defs = macro_parser_->getDefinitions(macro_offset);
-    if (!defs.empty()) return defs;
-
-    // If this CU's macro unit is empty, fall back to any other CU that has a macro offset.
-    // This helps in practice when only some units contain useful macro tables.
-    for (const auto& other : compilation_units_) {
-        if (!other || other == cu) continue;
-        uint64_t mo = 0;
-        if (auto a = std::dynamic_pointer_cast<UnsignedAttributeValue>(other->getAttribute(DwarfAttribute::DW_AT_macros))) {
-            mo = a->getValue();
-        } else if (auto a2 = std::dynamic_pointer_cast<UnsignedAttributeValue>(other->getAttribute(DwarfAttribute::DW_AT_macro_info))) {
-            mo = a2->getValue();
+    auto modernOffset = [&](const std::shared_ptr<DIE>& die) -> std::pair<bool, uint64_t> {
+        if (!die) return {false, 0};
+        if (auto a = std::dynamic_pointer_cast<UnsignedAttributeValue>(die->getAttribute(DwarfAttribute::DW_AT_macros))) {
+            return {true, a->getValue()};
         }
-        if (mo == 0) continue;
-        uint64_t sb = 0;
-        if (auto b2 = std::dynamic_pointer_cast<UnsignedAttributeValue>(other->getAttribute(DwarfAttribute::DW_AT_str_offsets_base))) {
-            sb = b2->getValue();
+        return {false, 0};
+    };
+    auto legacyOffset = [&](const std::shared_ptr<DIE>& die) -> std::pair<bool, uint64_t> {
+        if (!die) return {false, 0};
+        if (auto a = std::dynamic_pointer_cast<UnsignedAttributeValue>(die->getAttribute(DwarfAttribute::DW_AT_macro_info))) {
+            return {true, a->getValue()};
         }
-        macro_parser_->setStrOffsetsBase(sb, other->getOffsetSize());
-        auto d2 = macro_parser_->getDefinitions(mo);
-        if (!d2.empty()) return d2;
+        return {false, 0};
+    };
+
+    if (macro_parser_) {
+        auto [has_macro_attr, macro_offset] = modernOffset(cu);
+        if (has_macro_attr) {
+            uint64_t str_offsets_base = 0;
+            if (auto b = std::dynamic_pointer_cast<UnsignedAttributeValue>(cu->getAttribute(DwarfAttribute::DW_AT_str_offsets_base))) {
+                str_offsets_base = b->getValue();
+            }
+            macro_parser_->setStrOffsetsBase(str_offsets_base, cu->getOffsetSize());
+            auto defs = macro_parser_->getDefinitions(macro_offset);
+            if (!defs.empty()) return defs;
+
+            for (const auto& other : compilation_units_) {
+                if (!other || other == cu) continue;
+                auto [has_other_macro_attr, mo] = modernOffset(other);
+                if (!has_other_macro_attr) continue;
+                uint64_t sb = 0;
+                if (auto b2 = std::dynamic_pointer_cast<UnsignedAttributeValue>(other->getAttribute(DwarfAttribute::DW_AT_str_offsets_base))) {
+                    sb = b2->getValue();
+                }
+                macro_parser_->setStrOffsetsBase(sb, other->getOffsetSize());
+                auto d2 = macro_parser_->getDefinitions(mo);
+                if (!d2.empty()) return d2;
+            }
+            return defs;
+        }
     }
 
-    return defs;
+    if (macinfo_parser_) {
+        auto [has_legacy_attr, macro_offset] = legacyOffset(cu);
+        if (has_legacy_attr) {
+            auto defs = macinfo_parser_->getDefinitions(macro_offset);
+            if (!defs.empty()) return defs;
+            for (const auto& other : compilation_units_) {
+                if (!other || other == cu) continue;
+                auto [has_other_legacy_attr, mo] = legacyOffset(other);
+                if (!has_other_legacy_attr) continue;
+                auto d2 = macinfo_parser_->getDefinitions(mo);
+                if (!d2.empty()) return d2;
+            }
+            return defs;
+        }
+    }
+
+    return {};
 }
 
 std::vector<MacroDefinition> DwarfParser::lookupMacroForCU(const std::shared_ptr<DIE>& cu, const std::string& name) const {
-    if (!macro_parser_ || !cu) return {};
+    if (!cu) return {};
 
-    uint64_t macro_offset = 0;
-    if (auto a = std::dynamic_pointer_cast<UnsignedAttributeValue>(cu->getAttribute(DwarfAttribute::DW_AT_macros))) {
-        macro_offset = a->getValue();
-    } else if (auto a2 = std::dynamic_pointer_cast<UnsignedAttributeValue>(cu->getAttribute(DwarfAttribute::DW_AT_macro_info))) {
-        macro_offset = a2->getValue();
-    }
-    if (macro_offset == 0) return {};
-
-    uint64_t str_offsets_base = 0;
-    if (auto b = std::dynamic_pointer_cast<UnsignedAttributeValue>(cu->getAttribute(DwarfAttribute::DW_AT_str_offsets_base))) {
-        str_offsets_base = b->getValue();
-    }
-    macro_parser_->setStrOffsetsBase(str_offsets_base, cu->getOffsetSize());
-
-    auto defs = macro_parser_->lookupMacro(name, macro_offset);
-    if (!defs.empty()) return defs;
-
-    for (const auto& other : compilation_units_) {
-        if (!other || other == cu) continue;
-        uint64_t mo = 0;
-        if (auto a = std::dynamic_pointer_cast<UnsignedAttributeValue>(other->getAttribute(DwarfAttribute::DW_AT_macros))) {
-            mo = a->getValue();
-        } else if (auto a2 = std::dynamic_pointer_cast<UnsignedAttributeValue>(other->getAttribute(DwarfAttribute::DW_AT_macro_info))) {
-            mo = a2->getValue();
+    auto modernOffset = [&](const std::shared_ptr<DIE>& die) -> std::pair<bool, uint64_t> {
+        if (!die) return {false, 0};
+        if (auto a = std::dynamic_pointer_cast<UnsignedAttributeValue>(die->getAttribute(DwarfAttribute::DW_AT_macros))) {
+            return {true, a->getValue()};
         }
-        if (mo == 0) continue;
-        uint64_t sb = 0;
-        if (auto b2 = std::dynamic_pointer_cast<UnsignedAttributeValue>(other->getAttribute(DwarfAttribute::DW_AT_str_offsets_base))) {
-            sb = b2->getValue();
+        return {false, 0};
+    };
+    auto legacyOffset = [&](const std::shared_ptr<DIE>& die) -> std::pair<bool, uint64_t> {
+        if (!die) return {false, 0};
+        if (auto a = std::dynamic_pointer_cast<UnsignedAttributeValue>(die->getAttribute(DwarfAttribute::DW_AT_macro_info))) {
+            return {true, a->getValue()};
         }
-        macro_parser_->setStrOffsetsBase(sb, other->getOffsetSize());
-        auto d2 = macro_parser_->lookupMacro(name, mo);
-        if (!d2.empty()) return d2;
+        return {false, 0};
+    };
+
+    if (macro_parser_) {
+        auto [has_macro_attr, macro_offset] = modernOffset(cu);
+        if (has_macro_attr) {
+            uint64_t str_offsets_base = 0;
+            if (auto b = std::dynamic_pointer_cast<UnsignedAttributeValue>(cu->getAttribute(DwarfAttribute::DW_AT_str_offsets_base))) {
+                str_offsets_base = b->getValue();
+            }
+            macro_parser_->setStrOffsetsBase(str_offsets_base, cu->getOffsetSize());
+            auto defs = macro_parser_->lookupMacro(name, macro_offset);
+            if (!defs.empty()) return defs;
+            for (const auto& other : compilation_units_) {
+                if (!other || other == cu) continue;
+                auto [has_other_macro_attr, mo] = modernOffset(other);
+                if (!has_other_macro_attr) continue;
+                uint64_t sb = 0;
+                if (auto b2 = std::dynamic_pointer_cast<UnsignedAttributeValue>(other->getAttribute(DwarfAttribute::DW_AT_str_offsets_base))) {
+                    sb = b2->getValue();
+                }
+                macro_parser_->setStrOffsetsBase(sb, other->getOffsetSize());
+                auto d2 = macro_parser_->lookupMacro(name, mo);
+                if (!d2.empty()) return d2;
+            }
+            return defs;
+        }
     }
 
-    return defs;
+    if (macinfo_parser_) {
+        auto [has_legacy_attr, macro_offset] = legacyOffset(cu);
+        if (has_legacy_attr) {
+            auto defs = macinfo_parser_->lookupMacro(name, macro_offset);
+            if (!defs.empty()) return defs;
+            for (const auto& other : compilation_units_) {
+                if (!other || other == cu) continue;
+                auto [has_other_legacy_attr, mo] = legacyOffset(other);
+                if (!has_other_legacy_attr) continue;
+                auto d2 = macinfo_parser_->lookupMacro(name, mo);
+                if (!d2.empty()) return d2;
+            }
+            return defs;
+        }
+    }
+
+    return {};
 }
 
 std::shared_ptr<DIE> DwarfParser::findDIEByOffset(uint64_t offset) const {

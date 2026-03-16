@@ -589,6 +589,10 @@ std::shared_ptr<AttributeValue> AttributeParser::parseAttribute(DwarfForm form, 
 }
 
 std::shared_ptr<AttributeValue> AttributeParser::parseAttribute(DwarfAttribute attr, DwarfForm form, uint64_t& offset) const {
+    if (attr == DwarfAttribute::DW_AT_str_offsets_base) {
+        return parseOffsetScalarMetadataAttribute(attr, form, offset);
+    }
+
     // Route to specialized parsers for specific attributes
     switch (attr) {
         case DwarfAttribute::DW_AT_stmt_list:
@@ -612,6 +616,100 @@ std::shared_ptr<AttributeValue> AttributeParser::parseAttribute(DwarfAttribute a
         case DwarfAttribute::DW_AT_specification:
         case DwarfAttribute::DW_AT_import:
             return parseTypeAttribute(attr, form, offset);
+
+        case DwarfAttribute::DW_AT_containing_type:
+        case DwarfAttribute::DW_AT_friend:
+        case DwarfAttribute::DW_AT_common_reference:
+        case DwarfAttribute::DW_AT_call_origin:
+        case DwarfAttribute::DW_AT_base_types:
+        case DwarfAttribute::DW_AT_namelist_item:
+        case DwarfAttribute::DW_AT_trampoline:
+        case DwarfAttribute::DW_AT_extension:
+            return parseReferenceMetadataAttribute(attr, form, offset);
+
+        case DwarfAttribute::DW_AT_entry_pc:
+        case DwarfAttribute::DW_AT_call_return_pc:
+            return parseAddressMetadataAttribute(attr, form, offset);
+
+        case DwarfAttribute::DW_AT_binary_scale:
+        case DwarfAttribute::DW_AT_decimal_scale:
+        case DwarfAttribute::DW_AT_decimal_sign:
+        case DwarfAttribute::DW_AT_digit_count:
+        case DwarfAttribute::DW_AT_endianity:
+        case DwarfAttribute::DW_AT_address_class:
+        case DwarfAttribute::DW_AT_visibility:
+        case DwarfAttribute::DW_AT_accessibility:
+        case DwarfAttribute::DW_AT_virtuality:
+        case DwarfAttribute::DW_AT_inline:
+        case DwarfAttribute::DW_AT_priority:
+        case DwarfAttribute::DW_AT_calling_convention:
+        case DwarfAttribute::DW_AT_encoding:
+        case DwarfAttribute::DW_AT_identifier_case:
+        case DwarfAttribute::DW_AT_string_length_bit_size:
+        case DwarfAttribute::DW_AT_string_length_byte_size:
+        case DwarfAttribute::DW_AT_signature:
+        case DwarfAttribute::DW_AT_dwo_id:
+            return parseScalarMetadataAttribute(attr, form, offset);
+
+        case DwarfAttribute::DW_AT_addr_base:
+        case DwarfAttribute::DW_AT_rnglists_base:
+        case DwarfAttribute::DW_AT_loclists_base:
+        case DwarfAttribute::DW_AT_macro_info:
+        case DwarfAttribute::DW_AT_macros:
+            return parseOffsetScalarMetadataAttribute(attr, form, offset);
+
+        case DwarfAttribute::DW_AT_picture_string:
+        case DwarfAttribute::DW_AT_description:
+        case DwarfAttribute::DW_AT_producer:
+        case DwarfAttribute::DW_AT_comp_dir:
+        case DwarfAttribute::DW_AT_dwo_name:
+            return parseStringMetadataAttribute(attr, form, offset);
+
+        case DwarfAttribute::DW_AT_small:
+        case DwarfAttribute::DW_AT_threads_scaled:
+        case DwarfAttribute::DW_AT_mutable:
+        case DwarfAttribute::DW_AT_declaration:
+        case DwarfAttribute::DW_AT_external:
+        case DwarfAttribute::DW_AT_artificial:
+        case DwarfAttribute::DW_AT_variable_parameter:
+        case DwarfAttribute::DW_AT_object_pointer:
+        case DwarfAttribute::DW_AT_is_optional:
+        case DwarfAttribute::DW_AT_prototyped:
+        case DwarfAttribute::DW_AT_use_UTF8:
+        case DwarfAttribute::DW_AT_explicit:
+        case DwarfAttribute::DW_AT_elemental:
+        case DwarfAttribute::DW_AT_pure:
+        case DwarfAttribute::DW_AT_recursive:
+        case DwarfAttribute::DW_AT_main_subprogram:
+        case DwarfAttribute::DW_AT_const_expr:
+        case DwarfAttribute::DW_AT_enum_class:
+        case DwarfAttribute::DW_AT_reference:
+        case DwarfAttribute::DW_AT_rvalue_reference:
+        case DwarfAttribute::DW_AT_call_all_calls:
+        case DwarfAttribute::DW_AT_call_all_source_calls:
+        case DwarfAttribute::DW_AT_call_all_tail_calls:
+            return parseFlagMetadataAttribute(attr, form, offset);
+
+        case DwarfAttribute::DW_AT_call_value:
+        case DwarfAttribute::DW_AT_call_parameter:
+        case DwarfAttribute::DW_AT_discr_list:
+            return parseExpressionBlockMetadataAttribute(attr, form, offset);
+
+        case DwarfAttribute::DW_AT_const_value:
+        case DwarfAttribute::DW_AT_default_value:
+        case DwarfAttribute::DW_AT_data_location:
+        case DwarfAttribute::DW_AT_string_length:
+        case DwarfAttribute::DW_AT_lower_bound:
+        case DwarfAttribute::DW_AT_upper_bound:
+        case DwarfAttribute::DW_AT_count:
+        case DwarfAttribute::DW_AT_allocated:
+        case DwarfAttribute::DW_AT_associated:
+        case DwarfAttribute::DW_AT_rank:
+        case DwarfAttribute::DW_AT_byte_stride:
+        case DwarfAttribute::DW_AT_bit_stride:
+        case DwarfAttribute::DW_AT_start_scope:
+        case DwarfAttribute::DW_AT_data_bit_offset:
+            return parseConstValueAttribute(attr, form, offset);
 
         default:
             // Fall back to generic parsing
@@ -772,17 +870,25 @@ std::shared_ptr<AttributeValue> AttributeParser::parseLocationAttribute(DwarfAtt
     switch (form) {
         case DwarfForm::DW_FORM_exprloc:
             return parseLocationExpression(offset);
+        case DwarfForm::DW_FORM_loclistx:
+            return parseFormLoclistx(offset);
         case DwarfForm::DW_FORM_sec_offset:
             return parseLocationListPointer(offset);
         case DwarfForm::DW_FORM_block1:
         case DwarfForm::DW_FORM_block2:
         case DwarfForm::DW_FORM_block4:
         case DwarfForm::DW_FORM_block:
-            // Block forms contain expression data
-            return parseAttribute(form, offset);
+            return std::make_shared<LocationAttributeValue>(
+                LocationAttributeValue::LocationType::EXPRESSION,
+                std::static_pointer_cast<BlockAttributeValue>(parseBlockAttribute(form, offset))->getData());
         default:
-            // Fall back to generic parsing for unsupported forms
-            return parseAttribute(form, offset);
+            parseAttribute(form, offset);
+            if ((static_cast<uint16_t>(form) & 0xff00u) == 0x1f00u) {
+                return nullptr;
+            }
+            return std::make_shared<LocationAttributeValue>(
+                LocationAttributeValue::LocationType::INVALID,
+                std::vector<uint8_t>{});
     }
 }
 
@@ -794,8 +900,12 @@ std::shared_ptr<AttributeValue> AttributeParser::parseRangeAttribute(DwarfAttrib
         case DwarfForm::DW_FORM_rnglistx:
             return parseFormRnglistx(offset);
         default:
-            // Fall back to generic parsing for unsupported forms
-            return parseAttribute(form, offset);
+            parseAttribute(form, offset);
+            if ((static_cast<uint16_t>(form) & 0xff00u) == 0x1f00u) {
+                return nullptr;
+            }
+            return std::make_shared<RangeAttributeValue>(
+                std::vector<RangeAttributeValue::RangeEntry>{});
     }
 }
 
@@ -805,8 +915,15 @@ std::shared_ptr<AttributeValue> AttributeParser::parseLineAttribute(DwarfAttribu
         case DwarfForm::DW_FORM_sec_offset:
             return parseLineNumberProgramPointer(offset);
         default:
-            // Fall back to generic parsing for unsupported forms
-            return parseAttribute(form, offset);
+            parseAttribute(form, offset);
+            if ((static_cast<uint16_t>(form) & 0xff00u) == 0x1f00u) {
+                return nullptr;
+            }
+            return std::make_shared<LineAttributeValue>(
+                std::vector<LineAttributeValue::LineEntry>{},
+                std::vector<std::string>{},
+                std::vector<LineAttributeValue::FileEntry>{},
+                std::vector<LineAttributeValue::DirectoryEntry>{});
     }
 }
 
@@ -837,13 +954,136 @@ std::shared_ptr<AttributeValue> AttributeParser::parseTypeAttribute(DwarfAttribu
         case DwarfForm::DW_FORM_ref_sig8:
             return parseTypeSignature(offset);
         default:
-            // Fall back to generic parsing for unsupported forms
-            return parseAttribute(form, offset);
+            parseAttribute(form, offset);
+            if ((static_cast<uint16_t>(form) & 0xff00u) == 0x1f00u) {
+                return nullptr;
+            }
+            return std::make_shared<TypeAttributeValue>(0);
     }
 }
 
 std::shared_ptr<AttributeValue> AttributeParser::parseConstValueAttribute(DwarfAttribute attr, DwarfForm form, uint64_t& offset) const {
-    return parseConstantValue(attr, form, offset);
+    auto value = parseConstantValue(attr, form, offset);
+    if (value) {
+        return value;
+    }
+    auto raw = parseAttribute(form, offset);
+    if ((static_cast<uint16_t>(form) & 0xff00u) == 0x1f00u) {
+        return raw;
+    }
+    return nullptr;
+}
+
+std::shared_ptr<AttributeValue> AttributeParser::parseReferenceMetadataAttribute(DwarfAttribute attr,
+                                                                                 DwarfForm form,
+                                                                                 uint64_t& offset) const {
+    (void)attr;
+    auto value = parseReferenceAttribute(form, offset);
+    if (value) {
+        return value;
+    }
+    auto raw = parseAttribute(form, offset);
+    if ((static_cast<uint16_t>(form) & 0xff00u) == 0x1f00u) {
+        return raw;
+    }
+    return nullptr;
+}
+
+std::shared_ptr<AttributeValue> AttributeParser::parseAddressMetadataAttribute(DwarfAttribute attr,
+                                                                               DwarfForm form,
+                                                                               uint64_t& offset) const {
+    (void)attr;
+    auto value = parseAddressAttribute(form, offset);
+    if (value) {
+        return value;
+    }
+    auto raw = parseAttribute(form, offset);
+    if ((static_cast<uint16_t>(form) & 0xff00u) == 0x1f00u) {
+        return raw;
+    }
+    return nullptr;
+}
+
+std::shared_ptr<AttributeValue> AttributeParser::parseScalarMetadataAttribute(DwarfAttribute attr,
+                                                                              DwarfForm form,
+                                                                              uint64_t& offset) const {
+    (void)attr;
+    auto value = parseDataAttribute(form, offset);
+    if (value) {
+        return value;
+    }
+    auto raw = parseAttribute(form, offset);
+    if ((static_cast<uint16_t>(form) & 0xff00u) == 0x1f00u) {
+        return raw;
+    }
+    return nullptr;
+}
+
+std::shared_ptr<AttributeValue> AttributeParser::parseOffsetScalarMetadataAttribute(DwarfAttribute attr,
+                                                                                    DwarfForm form,
+                                                                                    uint64_t& offset) const {
+    (void)attr;
+    std::shared_ptr<AttributeValue> value;
+    if (form == DwarfForm::DW_FORM_sec_offset) {
+        value = parseFormSecOffset(offset);
+    } else {
+        value = parseDataAttribute(form, offset);
+    }
+    if (value) {
+        return value;
+    }
+    auto raw = parseAttribute(form, offset);
+    if ((static_cast<uint16_t>(form) & 0xff00u) == 0x1f00u) {
+        return raw;
+    }
+    return nullptr;
+}
+
+std::shared_ptr<AttributeValue> AttributeParser::parseStringMetadataAttribute(DwarfAttribute attr,
+                                                                              DwarfForm form,
+                                                                              uint64_t& offset) const {
+    (void)attr;
+    auto value = parseStringAttribute(form, offset);
+    if (value) {
+        return value;
+    }
+    auto raw = parseAttribute(form, offset);
+    if ((static_cast<uint16_t>(form) & 0xff00u) == 0x1f00u) {
+        return raw;
+    }
+    return nullptr;
+}
+
+std::shared_ptr<AttributeValue> AttributeParser::parseFlagMetadataAttribute(DwarfAttribute attr,
+                                                                            DwarfForm form,
+                                                                            uint64_t& offset) const {
+    (void)attr;
+    auto value = parseFlagAttribute(form, offset);
+    if (value) {
+        return value;
+    }
+    auto raw = parseAttribute(form, offset);
+    if ((static_cast<uint16_t>(form) & 0xff00u) == 0x1f00u) {
+        return raw;
+    }
+    return nullptr;
+}
+
+std::shared_ptr<AttributeValue> AttributeParser::parseExpressionBlockMetadataAttribute(DwarfAttribute attr,
+                                                                                       DwarfForm form,
+                                                                                       uint64_t& offset) const {
+    (void)attr;
+    if (auto expr = parseExpressionAttribute(form, offset)) {
+        return expr;
+    }
+    if (auto block = parseBlockAttribute(form, offset)) {
+        return block;
+    }
+    auto raw = parseAttribute(form, offset);
+    if ((static_cast<uint16_t>(form) & 0xff00u) == 0x1f00u) {
+        return raw;
+    }
+    return nullptr;
 }
 
 uint64_t AttributeParser::currentDebugInfoEnd() const {
@@ -1582,10 +1822,11 @@ std::shared_ptr<AttributeValue> AttributeParser::parseRangeListPointer(uint64_t&
 std::shared_ptr<AttributeValue> AttributeParser::parseLineNumberProgram(uint64_t& offset) const {
     std::vector<LineAttributeValue::LineEntry> lines;
     std::vector<std::string> directories;
+    std::vector<LineAttributeValue::DirectoryEntry> directory_entries;
     std::vector<LineAttributeValue::FileEntry> files;
 
     if (debug_line_.empty() || offset >= debug_line_.size()) {
-        return std::make_shared<LineAttributeValue>(lines, directories, files);
+        return std::make_shared<LineAttributeValue>(lines, directories, files, directory_entries);
     }
 
     uint64_t unit_start = offset;
@@ -1598,7 +1839,7 @@ std::shared_ptr<AttributeValue> AttributeParser::parseLineNumberProgram(uint64_t
     uint64_t unit_end = unit_start + length_field_size + unit_length;
     if (unit_end > debug_line_.size() || unit_end < offset) {
         // Malformed unit length; bail with an empty line table.
-        return std::make_shared<LineAttributeValue>(lines, directories, files);
+        return std::make_shared<LineAttributeValue>(lines, directories, files, directory_entries);
     }
 
     // Bounded reads within this line-table unit.
@@ -1748,7 +1989,7 @@ std::shared_ptr<AttributeValue> AttributeParser::parseLineNumberProgram(uint64_t
     uint64_t header_length = is_dwarf64 ? readU64(offset) : readU32(offset);
     uint64_t header_end = offset + header_length;
     if (header_end > unit_end) {
-        return std::make_shared<LineAttributeValue>(lines, directories, files);
+        return std::make_shared<LineAttributeValue>(lines, directories, files, directory_entries);
     }
 
     // Common header fields
@@ -1776,7 +2017,7 @@ std::shared_ptr<AttributeValue> AttributeParser::parseLineNumberProgram(uint64_t
             uint64_t dir_index = readULEB128(offset);
             uint64_t mtime = readULEB128(offset);
             uint64_t size = readULEB128(offset);
-            files.push_back({std::move(filename), dir_index, mtime, size});
+            files.push_back({std::move(filename), dir_index, mtime, size, {}, {}});
         }
     } else {
         // DWARF 5 directory table
@@ -1784,6 +2025,96 @@ std::shared_ptr<AttributeValue> AttributeParser::parseLineNumberProgram(uint64_t
         constexpr uint64_t DW_LNCT_directory_index = 2;
         constexpr uint64_t DW_LNCT_timestamp = 3;
         constexpr uint64_t DW_LNCT_size = 4;
+        constexpr uint64_t DW_LNCT_MD5 = 5;
+        auto parseLineField = [&](DwarfForm form) -> std::shared_ptr<AttributeValue> {
+            switch (form) {
+                case DwarfForm::DW_FORM_string:
+                    return std::make_shared<StringAttributeValue>(readCString(offset, header_end));
+                case DwarfForm::DW_FORM_line_strp: {
+                    uint64_t str_off = readOffset(offset);
+                    return std::make_shared<StringAttributeValue>(readCStringFromSection(debug_line_str_, str_off));
+                }
+                case DwarfForm::DW_FORM_strp: {
+                    uint64_t str_off = readOffset(offset);
+                    return std::make_shared<StringAttributeValue>(readCStringFromSection(debug_str_, str_off));
+                }
+                case DwarfForm::DW_FORM_udata:
+                    return std::make_shared<UnsignedAttributeValue>(readULEB128(offset));
+                case DwarfForm::DW_FORM_sdata:
+                    return std::make_shared<SignedAttributeValue>(readSLEB128(offset));
+                case DwarfForm::DW_FORM_data1:
+                    return std::make_shared<UnsignedAttributeValue>(readU8(offset));
+                case DwarfForm::DW_FORM_data2:
+                    return std::make_shared<UnsignedAttributeValue>(readU16(offset));
+                case DwarfForm::DW_FORM_data4:
+                    return std::make_shared<UnsignedAttributeValue>(readU32(offset));
+                case DwarfForm::DW_FORM_data8:
+                    return std::make_shared<UnsignedAttributeValue>(readU64(offset));
+                case DwarfForm::DW_FORM_sec_offset:
+                    return std::make_shared<UnsignedAttributeValue>(readOffset(offset));
+                case DwarfForm::DW_FORM_flag:
+                    return std::make_shared<FlagAttributeValue>(readU8(offset) != 0);
+                case DwarfForm::DW_FORM_flag_present:
+                    return std::make_shared<FlagAttributeValue>(true);
+                case DwarfForm::DW_FORM_data16: {
+                    if (offset + 16 > header_end) {
+                        offset = header_end;
+                        return nullptr;
+                    }
+                    std::vector<uint8_t> data(debug_line_.begin() + static_cast<std::ptrdiff_t>(offset),
+                                              debug_line_.begin() + static_cast<std::ptrdiff_t>(offset + 16));
+                    offset += 16;
+                    return std::make_shared<BlockAttributeValue>(data);
+                }
+                case DwarfForm::DW_FORM_block1:
+                case DwarfForm::DW_FORM_block2:
+                case DwarfForm::DW_FORM_block4:
+                case DwarfForm::DW_FORM_block: {
+                    uint64_t tmp = offset;
+                    if (!skipForm(form, tmp, header_end, address_size)) {
+                        offset = header_end;
+                        return nullptr;
+                    }
+                    uint64_t payload_off = offset;
+                    std::vector<uint8_t> data;
+                    if (form == DwarfForm::DW_FORM_block1) {
+                        uint64_t size = readU8(offset);
+                        payload_off = offset;
+                        data.assign(debug_line_.begin() + static_cast<std::ptrdiff_t>(payload_off),
+                                    debug_line_.begin() + static_cast<std::ptrdiff_t>(payload_off + size));
+                        offset += size;
+                    } else if (form == DwarfForm::DW_FORM_block2) {
+                        uint64_t size = readU16(offset);
+                        payload_off = offset;
+                        data.assign(debug_line_.begin() + static_cast<std::ptrdiff_t>(payload_off),
+                                    debug_line_.begin() + static_cast<std::ptrdiff_t>(payload_off + size));
+                        offset += size;
+                    } else if (form == DwarfForm::DW_FORM_block4) {
+                        uint64_t size = readU32(offset);
+                        payload_off = offset;
+                        data.assign(debug_line_.begin() + static_cast<std::ptrdiff_t>(payload_off),
+                                    debug_line_.begin() + static_cast<std::ptrdiff_t>(payload_off + size));
+                        offset += size;
+                    } else {
+                        uint64_t size = readULEB128(offset);
+                        payload_off = offset;
+                        data.assign(debug_line_.begin() + static_cast<std::ptrdiff_t>(payload_off),
+                                    debug_line_.begin() + static_cast<std::ptrdiff_t>(payload_off + size));
+                        offset += size;
+                    }
+                    return std::make_shared<BlockAttributeValue>(data);
+                }
+                case DwarfForm::DW_FORM_addr: {
+                    uint64_t value = (address_size == 8) ? readU64(offset) : readU32(offset);
+                    return std::make_shared<AddressAttributeValue>(value);
+                }
+                default:
+                    if (!skipForm(form, offset, header_end, address_size)) {
+                        offset = header_end;
+                    }
+                    return nullptr;
+            }
+        };
 
         uint8_t directory_entry_format_count = readU8(offset);
         std::vector<std::pair<uint64_t, DwarfForm>> dir_format;
@@ -1796,31 +2127,24 @@ std::shared_ptr<AttributeValue> AttributeParser::parseLineNumberProgram(uint64_t
 
         uint64_t directories_count = readULEB128(offset);
         for (uint64_t i = 0; i < directories_count; ++i) {
-            std::string dir_path;
+            LineAttributeValue::DirectoryEntry dir_entry;
             for (const auto& [content_type, form] : dir_format) {
-                if (content_type == DW_LNCT_path) {
-                    if (form == DwarfForm::DW_FORM_string) {
-                        dir_path = readCString(offset, header_end);
-                        continue;
-                    }
-                    if (form == DwarfForm::DW_FORM_line_strp) {
-                        uint64_t str_off = readOffset(offset);
-                        dir_path = readCStringFromSection(debug_line_str_, str_off);
-                        continue;
-                    }
-                    if (form == DwarfForm::DW_FORM_strp) {
-                        uint64_t str_off = readOffset(offset);
-                        dir_path = readCStringFromSection(debug_str_, str_off);
-                        continue;
-                    }
-                }
-
-                if (!skipForm(form, offset, header_end, address_size)) {
+                auto value = parseLineField(form);
+                if (!value && offset >= header_end) {
                     offset = header_end;
                     break;
                 }
+                if (!value) continue;
+                if (content_type == DW_LNCT_path) {
+                    if (auto path = std::dynamic_pointer_cast<StringAttributeValue>(value)) {
+                        dir_entry.path = path->getValue();
+                        continue;
+                    }
+                }
+                dir_entry.preserved_fields.push_back({content_type, value});
             }
-            directories.push_back(std::move(dir_path));
+            directories.push_back(dir_entry.path);
+            directory_entries.push_back(std::move(dir_entry));
         }
 
         // DWARF 5 file table
@@ -1835,60 +2159,41 @@ std::shared_ptr<AttributeValue> AttributeParser::parseLineNumberProgram(uint64_t
 
         uint64_t files_count = readULEB128(offset);
         for (uint64_t i = 0; i < files_count; ++i) {
-            LineAttributeValue::FileEntry entry{"", 0, 0, 0};
+            LineAttributeValue::FileEntry entry{"", 0, 0, 0, {}, {}};
             for (const auto& [content_type, form] : file_format) {
-                if (content_type == DW_LNCT_path) {
-                    if (form == DwarfForm::DW_FORM_string) {
-                        entry.filename = readCString(offset, header_end);
-                        continue;
-                    }
-                    if (form == DwarfForm::DW_FORM_line_strp) {
-                        uint64_t str_off = readOffset(offset);
-                        entry.filename = readCStringFromSection(debug_line_str_, str_off);
-                        continue;
-                    }
-                    if (form == DwarfForm::DW_FORM_strp) {
-                        uint64_t str_off = readOffset(offset);
-                        entry.filename = readCStringFromSection(debug_str_, str_off);
-                        continue;
-                    }
-                } else if (content_type == DW_LNCT_directory_index) {
-                    if (form == DwarfForm::DW_FORM_udata) {
-                        entry.dir_index = readULEB128(offset);
-                        continue;
-                    }
-                    // Some producers may use fixed-size integer forms.
-                    uint64_t tmp_off = offset;
-                    if (skipForm(form, tmp_off, header_end, address_size)) {
-                        uint64_t val = 0;
-                        uint64_t read_off = offset;
-                        switch (form) {
-                            case DwarfForm::DW_FORM_data1: val = readU8(read_off); break;
-                            case DwarfForm::DW_FORM_data2: val = readU16(read_off); break;
-                            case DwarfForm::DW_FORM_data4: val = readU32(read_off); break;
-                            case DwarfForm::DW_FORM_data8: val = readU64(read_off); break;
-                            default: break;
-                        }
-                        entry.dir_index = val;
-                        offset = tmp_off;
-                        continue;
-                    }
-                } else if (content_type == DW_LNCT_timestamp) {
-                    if (form == DwarfForm::DW_FORM_udata) {
-                        entry.mtime = readULEB128(offset);
-                        continue;
-                    }
-                } else if (content_type == DW_LNCT_size) {
-                    if (form == DwarfForm::DW_FORM_udata) {
-                        entry.size = readULEB128(offset);
-                        continue;
-                    }
-                }
-
-                if (!skipForm(form, offset, header_end, address_size)) {
+                auto value = parseLineField(form);
+                if (!value && offset >= header_end) {
                     offset = header_end;
                     break;
                 }
+                if (!value) continue;
+                if (content_type == DW_LNCT_path) {
+                    if (auto path = std::dynamic_pointer_cast<StringAttributeValue>(value)) {
+                        entry.filename = path->getValue();
+                        continue;
+                    }
+                } else if (content_type == DW_LNCT_directory_index) {
+                    if (auto u = std::dynamic_pointer_cast<UnsignedAttributeValue>(value)) {
+                        entry.dir_index = u->getValue();
+                        continue;
+                    }
+                } else if (content_type == DW_LNCT_timestamp) {
+                    if (auto u = std::dynamic_pointer_cast<UnsignedAttributeValue>(value)) {
+                        entry.mtime = u->getValue();
+                        continue;
+                    }
+                } else if (content_type == DW_LNCT_size) {
+                    if (auto u = std::dynamic_pointer_cast<UnsignedAttributeValue>(value)) {
+                        entry.size = u->getValue();
+                        continue;
+                    }
+                } else if (content_type == DW_LNCT_MD5) {
+                    if (auto b = std::dynamic_pointer_cast<BlockAttributeValue>(value)) {
+                        entry.md5 = b->getData();
+                        continue;
+                    }
+                }
+                entry.preserved_fields.push_back({content_type, value});
             }
             files.push_back(std::move(entry));
         }
@@ -1957,7 +2262,7 @@ std::shared_ptr<AttributeValue> AttributeParser::parseLineNumberProgram(uint64_t
                     uint64_t dir_index = DwarfUtils::readULEB128(debug_line_.data(), offset, ext_end);
                     uint64_t mtime = DwarfUtils::readULEB128(debug_line_.data(), offset, ext_end);
                     uint64_t size = DwarfUtils::readULEB128(debug_line_.data(), offset, ext_end);
-                    files.push_back({filename, dir_index, mtime, size});
+                    files.push_back({filename, dir_index, mtime, size, {}, {}});
                     break;
                 }
 
@@ -2076,7 +2381,7 @@ std::shared_ptr<AttributeValue> AttributeParser::parseLineNumberProgram(uint64_t
         }
     }
 
-    return std::make_shared<LineAttributeValue>(lines, directories, files);
+    return std::make_shared<LineAttributeValue>(lines, directories, files, directory_entries);
 }
 
 std::shared_ptr<AttributeValue> AttributeParser::parseLineNumberProgramPointer(uint64_t& offset) const {
@@ -2092,7 +2397,8 @@ std::shared_ptr<AttributeValue> AttributeParser::parseLineNumberProgramPointer(u
     std::vector<LineAttributeValue::LineEntry> empty_lines;
     std::vector<std::string> empty_dirs;
     std::vector<LineAttributeValue::FileEntry> empty_files;
-    return std::make_shared<LineAttributeValue>(empty_lines, empty_dirs, empty_files);
+    std::vector<LineAttributeValue::DirectoryEntry> empty_dir_entries;
+    return std::make_shared<LineAttributeValue>(empty_lines, empty_dirs, empty_files, empty_dir_entries);
 }
 
 std::shared_ptr<AttributeValue> AttributeParser::parseTypeReference(uint64_t& offset) const {
@@ -2103,7 +2409,7 @@ std::shared_ptr<AttributeValue> AttributeParser::parseTypeReference(uint64_t& of
 
 std::shared_ptr<AttributeValue> AttributeParser::parseTypeSignature(uint64_t& offset) const {
     uint64_t signature = readU64(offset);
-    return std::make_shared<TypeAttributeValue>(signature, "<signature>");
+    return std::make_shared<TypeAttributeValue>(signature, "<signature>", true);
 }
 
 std::shared_ptr<AttributeValue> AttributeParser::parseConstantValue(DwarfAttribute attr, DwarfForm form, uint64_t& offset) const {
@@ -2117,6 +2423,9 @@ std::shared_ptr<AttributeValue> AttributeParser::parseConstantValue(DwarfAttribu
             return parseDataAttribute(form, offset);
         case DwarfForm::DW_FORM_sdata:
             return parseDataAttribute(form, offset);
+        case DwarfForm::DW_FORM_flag:
+        case DwarfForm::DW_FORM_flag_present:
+            return parseFlagAttribute(form, offset);
         case DwarfForm::DW_FORM_string:
         case DwarfForm::DW_FORM_strp:
         case DwarfForm::DW_FORM_strp_sup:
@@ -2136,6 +2445,8 @@ std::shared_ptr<AttributeValue> AttributeParser::parseConstantValue(DwarfAttribu
             return parseBlockAttribute(form, offset);
         case DwarfForm::DW_FORM_exprloc:
             return parseExpressionAttribute(form, offset);
+        case DwarfForm::DW_FORM_implicit_const:
+            return parseFormImplicitConst(offset);
         default:
             return nullptr;
     }
@@ -2257,8 +2568,9 @@ std::string RangeAttributeValue::toString() const {
 
 LineAttributeValue::LineAttributeValue(const std::vector<LineEntry>& lines,
                                        const std::vector<std::string>& directories,
-                                       const std::vector<FileEntry>& files)
-    : lines_(lines), directories_(directories), files_(files) {
+                                       const std::vector<FileEntry>& files,
+                                       const std::vector<DirectoryEntry>& directory_entries)
+    : lines_(lines), directories_(directories), directory_entries_(directory_entries), files_(files) {
 }
 
 std::string LineAttributeValue::toString() const {
@@ -2267,8 +2579,10 @@ std::string LineAttributeValue::toString() const {
     return ss.str();
 }
 
-TypeAttributeValue::TypeAttributeValue(uint64_t offset, const std::string& name)
-    : offset_(offset), name_(name) {
+TypeAttributeValue::TypeAttributeValue(uint64_t offset,
+                                       const std::string& name,
+                                       bool is_signature_reference)
+    : offset_(offset), name_(name), is_signature_reference_(is_signature_reference) {
 }
 
 std::string TypeAttributeValue::toString() const {
@@ -2277,7 +2591,8 @@ std::string TypeAttributeValue::toString() const {
     if (!name_.empty()) {
         ss << name_ << ", ";
     }
-    ss << "offset: 0x" << std::hex << offset_ << std::dec << ")";
+    ss << (is_signature_reference_ ? "signature: 0x" : "offset: 0x")
+       << std::hex << offset_ << std::dec << ")";
     return ss.str();
 }
 

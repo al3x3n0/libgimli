@@ -1,4 +1,5 @@
 #include <cassert>
+#include "dwarf_types.hpp"
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
@@ -436,6 +437,71 @@ std::string makeSingleVariableLocationELF(const std::string& stem,
     fs::path dir = fs::temp_directory_path() / fs::path(stem);
     fs::create_directories(dir);
     std::string path = (dir / "single_var.elf").string();
+    writeELFWithSections(path, {
+        {".debug_info", debug_info},
+        {".debug_abbrev", debug_abbrev},
+        {".debug_str", debug_str},
+    });
+    return path;
+}
+
+std::string makeSemanticPayloadELF(const std::string& stem) {
+    std::vector<uint8_t> debug_str;
+    const uint32_t off_name = 0;
+    for (char c : std::string("payload")) debug_str.push_back(static_cast<uint8_t>(c));
+    debug_str.push_back(0);
+
+    std::vector<uint8_t> debug_abbrev;
+    appendULEB128(debug_abbrev, 1);
+    appendULEB128(debug_abbrev, 0x11); // DW_TAG_compile_unit
+    debug_abbrev.push_back(0x01);      // children
+    debug_abbrev.push_back(0x00);
+    debug_abbrev.push_back(0x00);
+
+    appendULEB128(debug_abbrev, 2);
+    appendULEB128(debug_abbrev, 0x34); // DW_TAG_variable
+    debug_abbrev.push_back(0x00);      // no children
+    appendULEB128(debug_abbrev, 0x03); // DW_AT_name
+    appendULEB128(debug_abbrev, 0x0e); // DW_FORM_strp
+    appendULEB128(debug_abbrev, 0x7e); // DW_AT_call_value
+    appendULEB128(debug_abbrev, 0x18); // DW_FORM_exprloc
+    appendULEB128(debug_abbrev, 0x80); // DW_AT_call_parameter
+    appendULEB128(debug_abbrev, 0x0a); // DW_FORM_block1
+    appendULEB128(debug_abbrev, 0x3d); // DW_AT_discr_list
+    appendULEB128(debug_abbrev, 0x18); // DW_FORM_exprloc
+    debug_abbrev.push_back(0x00);
+    debug_abbrev.push_back(0x00);
+    debug_abbrev.push_back(0x00);
+
+    std::vector<uint8_t> debug_info;
+    appendU32LE(debug_info, 0); // unit_length placeholder
+    appendU16LE(debug_info, 4); // version
+    appendU32LE(debug_info, 0); // abbrev offset
+    debug_info.push_back(0x08); // addr size
+
+    debug_info.push_back(0x01); // CU
+    debug_info.push_back(0x02); // variable
+    appendU32LE(debug_info, off_name);
+    appendULEB128(debug_info, 2); // call_value exprloc length
+    debug_info.push_back(static_cast<uint8_t>(dwarf::DwarfOp::DW_OP_plus_uconst));
+    debug_info.push_back(0x04);
+    debug_info.push_back(2); // call_parameter block1 length
+    debug_info.push_back(static_cast<uint8_t>(dwarf::DwarfOp::DW_OP_constu));
+    debug_info.push_back(0x05);
+    appendULEB128(debug_info, 2); // discr_list exprloc length
+    debug_info.push_back(static_cast<uint8_t>(dwarf::DwarfOp::DW_OP_lit1));
+    debug_info.push_back(static_cast<uint8_t>(dwarf::DwarfOp::DW_OP_lit2));
+    debug_info.push_back(0x00); // end children
+
+    const uint32_t unit_len = static_cast<uint32_t>(debug_info.size() - 4);
+    debug_info[0] = static_cast<uint8_t>(unit_len & 0xff);
+    debug_info[1] = static_cast<uint8_t>((unit_len >> 8) & 0xff);
+    debug_info[2] = static_cast<uint8_t>((unit_len >> 16) & 0xff);
+    debug_info[3] = static_cast<uint8_t>((unit_len >> 24) & 0xff);
+
+    fs::path dir = fs::temp_directory_path() / fs::path(stem);
+    fs::create_directories(dir);
+    std::string path = (dir / "semantic_payload.elf").string();
     writeELFWithSections(path, {
         {".debug_info", debug_info},
         {".debug_abbrev", debug_abbrev},
@@ -3554,6 +3620,32 @@ int main() {
             "/tmp/dwarf_cli_compare_cfi_bad_mix2.txt", out_bad_mix2);
         assert(code_bad_mix2 == 1);
         assert(out_bad_mix2.find("--all-fdes cannot be combined") != std::string::npos);
+    }
+
+    {
+        const std::string semantic_elf = makeSemanticPayloadELF("dwarf_cli_semantic_payload");
+
+        std::string out_text;
+        int code_text = runAndCapture(
+            dwarf_dump + " --debug-info " + semantic_elf,
+            "/tmp/dwarf_cli_semantic_payload.txt", out_text);
+        assert(code_text == 0);
+        assert(out_text.find("DW_AT_call_value\texpr[2]: 23 04  ; semantic=DW_OP_plus_uconst") !=
+               std::string::npos);
+        assert(out_text.find("DW_AT_call_parameter\tblock[2]: 10 05  ; semantic=DW_OP_constu") !=
+               std::string::npos);
+        assert(out_text.find("DW_AT_discr_list\texpr[2]: 31 32  ; semantic=DW_OP_lit1 DW_OP_lit2") !=
+               std::string::npos);
+
+        std::string out_verbose;
+        int code_verbose = runAndCapture(
+            dwarf_dump + " --debug-info --verbose " + semantic_elf,
+            "/tmp/dwarf_cli_semantic_payload_verbose.txt", out_verbose);
+        assert(code_verbose == 0);
+        assert(out_verbose.find("tokens=[DW_OP_plus_uconst] ; bytes=0x2304") != std::string::npos);
+        assert(out_verbose.find("tokens=[DW_OP_constu] ; bytes=0x1005") != std::string::npos);
+        assert(out_verbose.find("tokens=[DW_OP_lit1, DW_OP_lit2] ; bytes=0x3132") != std::string::npos);
+        assert(out_verbose.find("DW_AT_name\tpayload ; semantic=") == std::string::npos);
     }
 
     {

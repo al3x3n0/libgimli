@@ -26,6 +26,28 @@
 
 using namespace dwarf;
 
+static std::string formatCompactHexBytes(const std::vector<uint8_t>& bytes) {
+    std::ostringstream oss;
+    oss << "0x";
+    for (uint8_t byte : bytes) {
+        oss << std::hex << std::setfill('0') << std::setw(2) << static_cast<unsigned>(byte);
+    }
+    return oss.str();
+}
+
+static std::optional<DwarfUtils::DecodedPayloadSemantics> decodeSemanticAttributeForDump(
+    DwarfAttribute attr, const std::shared_ptr<AttributeValue>& value) {
+    switch (attr) {
+        case DwarfAttribute::DW_AT_call_value:
+        case DwarfAttribute::DW_AT_call_parameter:
+            return DwarfUtils::decodeCallSitePayloadAttribute(attr, value);
+        case DwarfAttribute::DW_AT_discr_list:
+            return DwarfUtils::decodeDiscriminantPayloadAttribute(attr, value);
+        default:
+            return std::nullopt;
+    }
+}
+
 // Helper to extract low_pc from DIE
 static uint64_t getDIELowPC(const std::shared_ptr<DIE>& die) {
     if (!die) return 0;
@@ -314,60 +336,20 @@ std::string hex(uint64_t val, int width = 0) {
 
 // Get tag name
 std::string getTagName(DwarfTag tag) {
-    switch (tag) {
-        case DwarfTag::DW_TAG_compile_unit: return "DW_TAG_compile_unit";
-        case DwarfTag::DW_TAG_subprogram: return "DW_TAG_subprogram";
-        case DwarfTag::DW_TAG_variable: return "DW_TAG_variable";
-        case DwarfTag::DW_TAG_formal_parameter: return "DW_TAG_formal_parameter";
-        case DwarfTag::DW_TAG_base_type: return "DW_TAG_base_type";
-        case DwarfTag::DW_TAG_pointer_type: return "DW_TAG_pointer_type";
-        case DwarfTag::DW_TAG_structure_type: return "DW_TAG_structure_type";
-        case DwarfTag::DW_TAG_class_type: return "DW_TAG_class_type";
-        case DwarfTag::DW_TAG_member: return "DW_TAG_member";
-        case DwarfTag::DW_TAG_array_type: return "DW_TAG_array_type";
-        case DwarfTag::DW_TAG_typedef: return "DW_TAG_typedef";
-        case DwarfTag::DW_TAG_const_type: return "DW_TAG_const_type";
-        case DwarfTag::DW_TAG_volatile_type: return "DW_TAG_volatile_type";
-        case DwarfTag::DW_TAG_enumeration_type: return "DW_TAG_enumeration_type";
-        case DwarfTag::DW_TAG_enumerator: return "DW_TAG_enumerator";
-        case DwarfTag::DW_TAG_subroutine_type: return "DW_TAG_subroutine_type";
-        case DwarfTag::DW_TAG_lexical_block: return "DW_TAG_lexical_block";
-        case DwarfTag::DW_TAG_inlined_subroutine: return "DW_TAG_inlined_subroutine";
-        case DwarfTag::DW_TAG_union_type: return "DW_TAG_union_type";
-        case DwarfTag::DW_TAG_unspecified_parameters: return "DW_TAG_unspecified_parameters";
-        default: return "DW_TAG_unknown(" + std::to_string(static_cast<int>(tag)) + ")";
+    std::string name = DwarfUtils::tagToString(tag);
+    if (name.rfind("DW_TAG_unknown_", 0) == 0) {
+        return "DW_TAG_unknown(" + std::to_string(static_cast<int>(tag)) + ")";
     }
+    return name;
 }
 
 // Get attribute name
 std::string getAttrName(DwarfAttribute attr) {
-    switch (attr) {
-        case DwarfAttribute::DW_AT_name: return "DW_AT_name";
-        case DwarfAttribute::DW_AT_comp_dir: return "DW_AT_comp_dir";
-        case DwarfAttribute::DW_AT_producer: return "DW_AT_producer";
-        case DwarfAttribute::DW_AT_language: return "DW_AT_language";
-        case DwarfAttribute::DW_AT_low_pc: return "DW_AT_low_pc";
-        case DwarfAttribute::DW_AT_high_pc: return "DW_AT_high_pc";
-        case DwarfAttribute::DW_AT_stmt_list: return "DW_AT_stmt_list";
-        case DwarfAttribute::DW_AT_type: return "DW_AT_type";
-        case DwarfAttribute::DW_AT_byte_size: return "DW_AT_byte_size";
-        case DwarfAttribute::DW_AT_encoding: return "DW_AT_encoding";
-        case DwarfAttribute::DW_AT_location: return "DW_AT_location";
-        case DwarfAttribute::DW_AT_decl_file: return "DW_AT_decl_file";
-        case DwarfAttribute::DW_AT_decl_line: return "DW_AT_decl_line";
-        case DwarfAttribute::DW_AT_decl_column: return "DW_AT_decl_column";
-        case DwarfAttribute::DW_AT_external: return "DW_AT_external";
-        case DwarfAttribute::DW_AT_frame_base: return "DW_AT_frame_base";
-        case DwarfAttribute::DW_AT_linkage_name: return "DW_AT_linkage_name";
-        case DwarfAttribute::DW_AT_abstract_origin: return "DW_AT_abstract_origin";
-        case DwarfAttribute::DW_AT_specification: return "DW_AT_specification";
-        case DwarfAttribute::DW_AT_inline: return "DW_AT_inline";
-        case DwarfAttribute::DW_AT_ranges: return "DW_AT_ranges";
-        case DwarfAttribute::DW_AT_call_file: return "DW_AT_call_file";
-        case DwarfAttribute::DW_AT_call_line: return "DW_AT_call_line";
-        case DwarfAttribute::DW_AT_call_column: return "DW_AT_call_column";
-        default: return "DW_AT_unknown(" + std::to_string(static_cast<int>(attr)) + ")";
+    std::string name = DwarfUtils::attributeToString(attr);
+    if (name.rfind("DW_AT_unknown_", 0) == 0) {
+        return "DW_AT_unknown(" + std::to_string(static_cast<int>(attr)) + ")";
     }
+    return name;
 }
 
 // Dump a single DIE
@@ -393,6 +375,18 @@ void dumpDIE(const std::shared_ptr<DIE>& die, int indent, const Options& opts) {
 
         if (value) {
             std::cout << value->toString();
+            if (auto decoded = decodeSemanticAttributeForDump(attr, value)) {
+                std::cout << " ; semantic=" << decoded->assembly;
+                if (opts.verbose) {
+                    std::cout << " ; tokens=[";
+                    for (size_t i = 0; i < decoded->tokens.size(); ++i) {
+                        if (i) std::cout << ", ";
+                        std::cout << decoded->tokens[i];
+                    }
+                    std::cout << "]"
+                              << " ; bytes=" << formatCompactHexBytes(decoded->bytes);
+                }
+            }
         } else {
             std::cout << "(null)";
         }
@@ -605,7 +599,7 @@ void printSummary(const DwarfParser& parser) {
     std::cout << "  Source files: " << parser.getAllSourceFiles().size() << "\n";
     std::cout << "  Has accelerated lookup: " << (parser.hasAcceleratedLookup() ? "yes" : "no") << "\n";
     std::cout << "  Has CFI: " << (parser.hasCFI() ? "yes" : "no") << "\n";
-    std::cout << "  Has macro info: " << (parser.hasMacroInfo() ? "yes" : "no") << "\n";
+    std::cout << "  Has macro info: " << ((parser.hasMacroInfo() || parser.hasLegacyMacroInfo()) ? "yes" : "no") << "\n";
     std::cout << "  Has split DWARF: " << (parser.hasSplitDwarf() ? "yes" : "no") << "\n";
     std::cout << "  Has loaded DWP: " << (parser.hasLoadedDWP() ? "yes" : "no") << "\n";
     if (parser.hasLoadedDWP()) {

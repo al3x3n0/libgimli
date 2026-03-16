@@ -17,6 +17,10 @@ This matrix documents current coverage for DWARF v5 forms/opcodes and split-DWAR
 | GNU alt forms (`DW_FORM_GNU_strp_alt`, `DW_FORM_GNU_ref_alt`) | Supported | Parsed as supplementary string/reference forms with CU-format-sized offsets. |
 | `DW_FORM_data16` | Supported | Parsed as 16-byte block. |
 | `DW_FORM_implicit_const` | Supported | Value is read from abbrev SLEB128 and propagated as signed attribute value. |
+| Standard typed attribute/form routing | Supported | `location`, `ranges`, `stmt_list`, type-reference, reference-metadata (`containing_type`, `friend`, `common_reference`, `call_origin`, `base_types`, `namelist_item`, `trampoline`, `extension`), address metadata (`entry_pc`, `call_return_pc`), scalar/string/flag metadata used by `TypeSystem` and `TypePrinter` (including scale/count, visibility/access, textual metadata, boolean declaration/property flags, and standard split/section base attributes such as `dwo_id`, `signature`, `addr_base`, `rnglists_base`, `loclists_base`, `str_offsets_base`, `macro_info`, and `macros`), call-site/discriminant payload attributes (`call_value`, `call_parameter`, `discr_list`), and standard constant/bound-style metadata (`const_value`, `default_value`, `data_location`, `string_length`, `lower_bound`, `upper_bound`, `count`, `allocated`, `associated`, `rank`, `byte_stride`, `bit_stride`, `start_scope`, `data_bit_offset`, `string_length_bit_size`, `string_length_byte_size`) decode through explicit typed paths; invalid standard form pairings degrade to deterministic empty typed values instead of vendor-form recovery. |
+| Semantic helpers for preserved payload attrs | Supported | Utility helpers provide structured decoding for parsed `DW_AT_call_value`, `DW_AT_call_parameter`, and `DW_AT_discr_list` payloads, including raw bytes, DWARF-expression tokens, assembly rendering, and `dwarf_dump` surfacing without introducing new core attribute types. |
+| Standard relationship semantic attrs | Supported | `DW_AT_trampoline` and `DW_AT_extension` now decode through the same explicit reference-metadata path as the repo’s other standard DIE relationship attributes and surface as ordinary references. |
+| DWARF 5 line table content preservation | Supported | Standard directory/file entry fields are preserved, including extra directory metadata and file MD5 payloads. |
 
 ## Expression opcodes
 
@@ -39,6 +43,14 @@ This matrix documents current coverage for DWARF v5 forms/opcodes and split-DWAR
 | `.dwp` CU/TU index parsing | Supported | Section id tables and slot mapping are parsed and bounded; tests cover synthetic package fixtures and real `.dwo` payloads consumed through a packaged `.dwp` path. |
 | DWO address table use in expression eval | Supported | `DW_OP_addrx`/`DW_OP_constx` can resolve against `.debug_addr.dwo`. |
 | Unsupported/unknown index section ids | Partial | Unknown sections are skipped safely; no specialized decoding beyond known ids. |
+
+## Legacy Standard Sections
+
+| Section family | Status | Notes |
+|---|---|---|
+| `.debug_macinfo` | Supported | `DW_AT_macro_info` resolves through the legacy macro parser; `DW_AT_macros` continues to use `.debug_macro`. |
+| `.debug_aranges` | Supported | Parsed into CU-associated address ranges and exposed through `DwarfParser`. |
+| `.debug_pubnames`, `.debug_pubtypes` | Supported | Parsed into legacy public name/type records and exposed through `DwarfParser`. |
 
 ## Runtime Support Fields (`dwarf_dump --show-support`)
 

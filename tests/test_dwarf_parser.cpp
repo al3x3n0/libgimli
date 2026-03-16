@@ -14,9 +14,11 @@
 #include "debug_sup_parser.hpp"
 #include "debug_names_parser.hpp"
 #include "debug_macro_parser.hpp"
+#include "legacy_dwarf_parser.hpp"
 #include "call_stack.hpp"
 #include "cfi_symbolic.hpp"
 #include "type_printer.hpp"
+#include "dwarf_support_matrix.hpp"
 #include <fstream>
 #include <iostream>
 #include <cassert>
@@ -46,16 +48,34 @@ void testDwarfUtils() {
     assert(DwarfUtils::tagToString(DwarfTag::DW_TAG_file_type) == "DW_TAG_file_type");
     assert(DwarfUtils::tagToString(DwarfTag::DW_TAG_interface_type) == "DW_TAG_interface_type");
     assert(DwarfUtils::tagToString(DwarfTag::DW_TAG_ptr_to_member_type) == "DW_TAG_ptr_to_member_type");
+    assert(DwarfUtils::tagToString(DwarfTag::DW_TAG_enumerator) == "DW_TAG_enumerator");
+    assert(DwarfUtils::tagToString(DwarfTag::DW_TAG_namespace) == "DW_TAG_namespace");
+    assert(DwarfUtils::tagToString(DwarfTag::DW_TAG_module) == "DW_TAG_module");
     assert(DwarfUtils::stringToTag("DW_TAG_string_type") == DwarfTag::DW_TAG_string_type);
     assert(DwarfUtils::stringToTag("DW_TAG_set_type") == DwarfTag::DW_TAG_set_type);
     assert(DwarfUtils::stringToTag("DW_TAG_file_type") == DwarfTag::DW_TAG_file_type);
     assert(DwarfUtils::stringToTag("DW_TAG_interface_type") == DwarfTag::DW_TAG_interface_type);
     assert(DwarfUtils::stringToTag("DW_TAG_ptr_to_member_type") == DwarfTag::DW_TAG_ptr_to_member_type);
+    assert(DwarfUtils::stringToTag("DW_TAG_enumerator") == DwarfTag::DW_TAG_enumerator);
+    assert(DwarfUtils::stringToTag("DW_TAG_namespace") == DwarfTag::DW_TAG_namespace);
+    assert(DwarfUtils::stringToTag("DW_TAG_module") == DwarfTag::DW_TAG_module);
 
     // Test attribute conversion
     assert(DwarfUtils::attributeToString(DwarfAttribute::DW_AT_name) == "DW_AT_name");
     assert(DwarfUtils::attributeToString(DwarfAttribute::DW_AT_type) == "DW_AT_type");
     assert(DwarfUtils::stringToAttribute("DW_AT_name") == DwarfAttribute::DW_AT_name);
+    assert(DwarfUtils::attributeToString(DwarfAttribute::DW_AT_linkage_name) == "DW_AT_linkage_name");
+    assert(DwarfUtils::attributeToString(DwarfAttribute::DW_AT_abstract_origin) == "DW_AT_abstract_origin");
+    assert(DwarfUtils::attributeToString(DwarfAttribute::DW_AT_frame_base) == "DW_AT_frame_base");
+    assert(DwarfUtils::attributeToString(DwarfAttribute::DW_AT_const_value) == "DW_AT_const_value");
+    assert(DwarfUtils::attributeToString(DwarfAttribute::DW_AT_call_line) == "DW_AT_call_line");
+    assert(DwarfUtils::attributeToString(DwarfAttribute::DW_AT_macros) == "DW_AT_macros");
+    assert(DwarfUtils::stringToAttribute("DW_AT_linkage_name") == DwarfAttribute::DW_AT_linkage_name);
+    assert(DwarfUtils::stringToAttribute("DW_AT_abstract_origin") == DwarfAttribute::DW_AT_abstract_origin);
+    assert(DwarfUtils::stringToAttribute("DW_AT_frame_base") == DwarfAttribute::DW_AT_frame_base);
+    assert(DwarfUtils::stringToAttribute("DW_AT_const_value") == DwarfAttribute::DW_AT_const_value);
+    assert(DwarfUtils::stringToAttribute("DW_AT_call_line") == DwarfAttribute::DW_AT_call_line);
+    assert(DwarfUtils::stringToAttribute("DW_AT_macros") == DwarfAttribute::DW_AT_macros);
 
     // Test form conversion
     assert(DwarfUtils::formToString(DwarfForm::DW_FORM_strp) == "DW_FORM_strp");
@@ -502,7 +522,149 @@ void testDwarfUtils() {
     assert(bounding.start == 0x1000);
     assert(bounding.end == 0x6000);
 
+    {
+        auto expr_value = std::make_shared<ExpressionAttributeValue>(
+            std::vector<uint8_t>{static_cast<uint8_t>(DwarfOp::DW_OP_plus_uconst), 0x04});
+        auto payload = DwarfUtils::decodePreservedPayloadAttribute(DwarfAttribute::DW_AT_call_value, expr_value);
+        assert(payload.has_value());
+        assert(payload->kind == DwarfUtils::PreservedAttributePayload::Kind::EXPRESSION);
+        assert(payload->bytes.size() == 2);
+        assert(!payload->tokens.empty());
+        assert(payload->tokens[0] == "DW_OP_plus_uconst");
+    }
+    {
+        auto block_value = std::make_shared<BlockAttributeValue>(
+            std::vector<uint8_t>{static_cast<uint8_t>(DwarfOp::DW_OP_constu), 0x05});
+        auto payload = DwarfUtils::decodePreservedPayloadAttribute(DwarfAttribute::DW_AT_discr_list, block_value);
+        assert(payload.has_value());
+        assert(payload->kind == DwarfUtils::PreservedAttributePayload::Kind::BLOCK);
+        assert(payload->bytes.size() == 2);
+        assert(!payload->tokens.empty());
+        assert(payload->tokens[0] == "DW_OP_constu");
+    }
+    {
+        auto plain_value = std::make_shared<UnsignedAttributeValue>(7);
+        auto payload = DwarfUtils::decodePreservedPayloadAttribute(DwarfAttribute::DW_AT_call_parameter, plain_value);
+        assert(!payload.has_value());
+        auto wrong_attr = DwarfUtils::decodePreservedPayloadAttribute(DwarfAttribute::DW_AT_name, plain_value);
+        assert(!wrong_attr.has_value());
+    }
+    {
+        auto expr_value = std::make_shared<ExpressionAttributeValue>(
+            std::vector<uint8_t>{static_cast<uint8_t>(DwarfOp::DW_OP_plus_uconst), 0x04});
+        auto decoded = DwarfUtils::decodeCallSitePayloadAttribute(DwarfAttribute::DW_AT_call_value, expr_value);
+        assert(decoded.has_value());
+        assert(decoded->attribute == DwarfAttribute::DW_AT_call_value);
+        assert(decoded->payload_kind == DwarfUtils::PreservedAttributePayload::Kind::EXPRESSION);
+        assert(decoded->bytes.size() == 2);
+        assert(decoded->assembly == "DW_OP_plus_uconst");
+        assert(decoded->tokens.size() == 1);
+        assert(decoded->tokens[0] == "DW_OP_plus_uconst");
+    }
+    {
+        auto block_value = std::make_shared<BlockAttributeValue>(
+            std::vector<uint8_t>{static_cast<uint8_t>(DwarfOp::DW_OP_constu), 0x05});
+        auto decoded = DwarfUtils::decodeCallSitePayloadAttribute(
+            DwarfAttribute::DW_AT_call_parameter, block_value);
+        assert(decoded.has_value());
+        assert(decoded->attribute == DwarfAttribute::DW_AT_call_parameter);
+        assert(decoded->payload_kind == DwarfUtils::PreservedAttributePayload::Kind::BLOCK);
+        assert(decoded->bytes.size() == 2);
+        assert(decoded->assembly == "DW_OP_constu");
+        assert(decoded->tokens.size() == 1);
+        assert(decoded->tokens[0] == "DW_OP_constu");
+    }
+    {
+        auto block_value = std::make_shared<BlockAttributeValue>(
+            std::vector<uint8_t>{static_cast<uint8_t>(DwarfOp::DW_OP_constu), 0x09});
+        auto decoded = DwarfUtils::decodeDiscriminantPayloadAttribute(
+            DwarfAttribute::DW_AT_discr_list, block_value);
+        assert(decoded.has_value());
+        assert(decoded->attribute == DwarfAttribute::DW_AT_discr_list);
+        assert(decoded->payload_kind == DwarfUtils::PreservedAttributePayload::Kind::BLOCK);
+        assert(decoded->assembly == "DW_OP_constu");
+        assert(decoded->tokens.size() == 1);
+        assert(decoded->tokens[0] == "DW_OP_constu");
+    }
+    {
+        auto plain_value = std::make_shared<UnsignedAttributeValue>(7);
+        auto wrong_call = DwarfUtils::decodeCallSitePayloadAttribute(
+            DwarfAttribute::DW_AT_name, plain_value);
+        auto wrong_discr = DwarfUtils::decodeDiscriminantPayloadAttribute(
+            DwarfAttribute::DW_AT_call_value, plain_value);
+        auto wrong_type = DwarfUtils::decodeCallSitePayloadAttribute(
+            DwarfAttribute::DW_AT_call_parameter, plain_value);
+        assert(!wrong_call.has_value());
+        assert(!wrong_discr.has_value());
+        assert(!wrong_type.has_value());
+    }
+
     std::cout << "DwarfUtils tests passed!" << std::endl;
+}
+
+void testSupportMatrixSemanticRows() {
+    std::cout << "Testing support matrix semantic rows..." << std::endl;
+
+    const auto& rows = getSupportMatrixRows();
+    bool saw_payload_row = false;
+    bool saw_relationship_row = false;
+    for (const auto& row : rows) {
+        if (row.area == "semantic" &&
+            row.feature == "preserved call-site/discriminant payload decoding" &&
+            row.status == "supported") {
+            saw_payload_row = true;
+            assert(row.notes.find("structured") != std::string::npos);
+        }
+        if (row.area == "semantic" &&
+            row.feature == "DW_AT_trampoline/DW_AT_extension" &&
+            row.status == "supported") {
+            saw_relationship_row = true;
+            assert(row.notes.find("reference") != std::string::npos);
+        }
+    }
+    assert(saw_payload_row);
+    assert(saw_relationship_row);
+
+    std::cout << "Support matrix semantic row tests passed!" << std::endl;
+}
+
+void testDIEIsTypeCoversModeledStandardTypes() {
+    std::cout << "Testing DIE::isType() covers modeled standard type tags..." << std::endl;
+
+    const std::vector<DwarfTag> type_tags = {
+        DwarfTag::DW_TAG_base_type,
+        DwarfTag::DW_TAG_unspecified_type,
+        DwarfTag::DW_TAG_string_type,
+        DwarfTag::DW_TAG_set_type,
+        DwarfTag::DW_TAG_file_type,
+        DwarfTag::DW_TAG_pointer_type,
+        DwarfTag::DW_TAG_ptr_to_member_type,
+        DwarfTag::DW_TAG_array_type,
+        DwarfTag::DW_TAG_structure_type,
+        DwarfTag::DW_TAG_union_type,
+        DwarfTag::DW_TAG_class_type,
+        DwarfTag::DW_TAG_interface_type,
+        DwarfTag::DW_TAG_enumeration_type,
+        DwarfTag::DW_TAG_typedef,
+        DwarfTag::DW_TAG_const_type,
+        DwarfTag::DW_TAG_volatile_type,
+        DwarfTag::DW_TAG_restrict_type,
+        DwarfTag::DW_TAG_reference_type,
+        DwarfTag::DW_TAG_rvalue_reference_type,
+        DwarfTag::DW_TAG_atomic_type,
+        DwarfTag::DW_TAG_subrange_type,
+        DwarfTag::DW_TAG_subroutine_type
+    };
+
+    for (size_t i = 0; i < type_tags.size(); ++i) {
+        DIE die(type_tags[i], static_cast<uint64_t>(i), 0);
+        assert(die.isType());
+    }
+
+    DIE not_type(DwarfTag::DW_TAG_subprogram, 0, 0);
+    assert(!not_type.isType());
+
+    std::cout << "DIE::isType() coverage tests passed!" << std::endl;
 }
 
 static std::vector<uint8_t> loadTestDataBinary(const std::string& filename) {
@@ -9697,6 +9859,208 @@ void testDebugMacroParser() {
     std::cout << ".debug_macro parser tests passed!" << std::endl;
 }
 
+void testDebugMacinfoParser() {
+    std::cout << "Testing .debug_macinfo parser..." << std::endl;
+
+    std::vector<uint8_t> debug_macinfo;
+    debug_macinfo.push_back(0x01); // define
+    appendULEB(debug_macinfo, 7);
+    appendCString(debug_macinfo, "FOO 1");
+    debug_macinfo.push_back(0x02); // undef
+    appendULEB(debug_macinfo, 9);
+    appendCString(debug_macinfo, "FOO");
+    debug_macinfo.push_back(0x03); // start_file
+    appendULEB(debug_macinfo, 11);
+    appendULEB(debug_macinfo, 2);
+    debug_macinfo.push_back(0x04); // end_file
+    debug_macinfo.push_back(0xff); // vendor_ext
+    appendULEB(debug_macinfo, 42);
+    appendCString(debug_macinfo, "vendor");
+    debug_macinfo.push_back(0x00); // end
+
+    DebugMacinfoParser parser(debug_macinfo);
+    auto defs = parser.getDefinitions(0);
+    assert(defs.size() == 1);
+    assert(defs[0].line == 7);
+    assert(defs[0].name == "FOO");
+    assert(defs[0].value == "1");
+
+    auto matches = parser.lookupMacro("FOO", 0);
+    assert(matches.size() == 1);
+    assert(matches[0].line == 7);
+
+    std::cout << ".debug_macinfo parser tests passed!" << std::endl;
+}
+
+void testLegacyLookupParsers() {
+    std::cout << "Testing legacy lookup section parsers..." << std::endl;
+
+    std::vector<uint8_t> debug_aranges;
+    appendU32(debug_aranges, 0); // unit_length placeholder
+    appendU16(debug_aranges, 2);
+    appendU32(debug_aranges, 0); // cu offset
+    debug_aranges.push_back(8);  // addr size
+    debug_aranges.push_back(0);  // seg size
+    while (debug_aranges.size() % 16 != 0) debug_aranges.push_back(0);
+    appendU64(debug_aranges, 0x4000);
+    appendU64(debug_aranges, 0x30);
+    appendU64(debug_aranges, 0);
+    appendU64(debug_aranges, 0);
+    uint32_t aranges_len = static_cast<uint32_t>(debug_aranges.size() - 4);
+    debug_aranges[0] = static_cast<uint8_t>(aranges_len & 0xff);
+    debug_aranges[1] = static_cast<uint8_t>((aranges_len >> 8) & 0xff);
+    debug_aranges[2] = static_cast<uint8_t>((aranges_len >> 16) & 0xff);
+    debug_aranges[3] = static_cast<uint8_t>((aranges_len >> 24) & 0xff);
+
+    DebugArangesParser aranges_parser(debug_aranges);
+    auto aranges = aranges_parser.parse();
+    assert(aranges.size() == 1);
+    assert(aranges[0].cu_offset == 0);
+    assert(aranges[0].address == 0x4000);
+    assert(aranges[0].length == 0x30);
+
+    std::vector<uint8_t> debug_pubnames;
+    appendU32(debug_pubnames, 0); // unit_length placeholder
+    appendU16(debug_pubnames, 2);
+    appendU32(debug_pubnames, 0);  // cu offset
+    appendU32(debug_pubnames, 0x20); // cu length
+    appendU32(debug_pubnames, 0x0b); // die offset relative to cu
+    appendCString(debug_pubnames, "func");
+    appendU32(debug_pubnames, 0);
+    uint32_t pubnames_len = static_cast<uint32_t>(debug_pubnames.size() - 4);
+    debug_pubnames[0] = static_cast<uint8_t>(pubnames_len & 0xff);
+    debug_pubnames[1] = static_cast<uint8_t>((pubnames_len >> 8) & 0xff);
+    debug_pubnames[2] = static_cast<uint8_t>((pubnames_len >> 16) & 0xff);
+    debug_pubnames[3] = static_cast<uint8_t>((pubnames_len >> 24) & 0xff);
+
+    DebugPubTableParser pub_parser(debug_pubnames);
+    auto pubs = pub_parser.parse();
+    assert(pubs.size() == 1);
+    assert(pubs[0].cu_offset == 0);
+    assert(pubs[0].die_offset == 0x0b);
+    assert(pubs[0].name == "func");
+
+    std::cout << "Legacy lookup parser tests passed!" << std::endl;
+}
+
+void testDwarfParserLegacySections() {
+    std::cout << "Testing DwarfParser legacy section integration..." << std::endl;
+
+    std::vector<uint8_t> debug_abbrev;
+    appendULEB(debug_abbrev, 1);
+    appendULEB(debug_abbrev, static_cast<uint64_t>(DwarfTag::DW_TAG_compile_unit));
+    debug_abbrev.push_back(1);
+    appendULEB(debug_abbrev, static_cast<uint64_t>(DwarfAttribute::DW_AT_name));
+    appendULEB(debug_abbrev, static_cast<uint64_t>(DwarfForm::DW_FORM_strp));
+    appendULEB(debug_abbrev, static_cast<uint64_t>(DwarfAttribute::DW_AT_macro_info));
+    appendULEB(debug_abbrev, static_cast<uint64_t>(DwarfForm::DW_FORM_sec_offset));
+    debug_abbrev.push_back(0);
+    debug_abbrev.push_back(0);
+
+    appendULEB(debug_abbrev, 2);
+    appendULEB(debug_abbrev, static_cast<uint64_t>(DwarfTag::DW_TAG_subprogram));
+    debug_abbrev.push_back(0);
+    appendULEB(debug_abbrev, static_cast<uint64_t>(DwarfAttribute::DW_AT_name));
+    appendULEB(debug_abbrev, static_cast<uint64_t>(DwarfForm::DW_FORM_strp));
+    debug_abbrev.push_back(0);
+    debug_abbrev.push_back(0);
+    debug_abbrev.push_back(0);
+
+    std::vector<uint8_t> debug_str;
+    uint32_t cu_name_off = static_cast<uint32_t>(debug_str.size());
+    appendCString(debug_str, "legacy.c");
+    uint32_t fn_name_off = static_cast<uint32_t>(debug_str.size());
+    appendCString(debug_str, "func");
+
+    std::vector<uint8_t> debug_info;
+    appendU32(debug_info, 0); // unit length placeholder
+    appendU16(debug_info, 4);
+    appendU32(debug_info, 0);
+    debug_info.push_back(8);
+    size_t cu_start = 0;
+    appendULEB(debug_info, 1);
+    appendU32(debug_info, cu_name_off);
+    appendU32(debug_info, 0); // macro_info offset
+    size_t subprogram_die_off = debug_info.size();
+    appendULEB(debug_info, 2);
+    appendU32(debug_info, fn_name_off);
+    debug_info.push_back(0);
+    uint32_t unit_length = static_cast<uint32_t>(debug_info.size() - 4);
+    debug_info[0] = static_cast<uint8_t>(unit_length & 0xff);
+    debug_info[1] = static_cast<uint8_t>((unit_length >> 8) & 0xff);
+    debug_info[2] = static_cast<uint8_t>((unit_length >> 16) & 0xff);
+    debug_info[3] = static_cast<uint8_t>((unit_length >> 24) & 0xff);
+
+    std::vector<uint8_t> debug_macinfo;
+    debug_macinfo.push_back(0x01);
+    appendULEB(debug_macinfo, 5);
+    appendCString(debug_macinfo, "FOO 1");
+    debug_macinfo.push_back(0x00);
+
+    std::vector<uint8_t> debug_aranges;
+    appendU32(debug_aranges, 0);
+    appendU16(debug_aranges, 2);
+    appendU32(debug_aranges, 0);
+    debug_aranges.push_back(8);
+    debug_aranges.push_back(0);
+    while (debug_aranges.size() % 16 != 0) debug_aranges.push_back(0);
+    appendU64(debug_aranges, 0x5000);
+    appendU64(debug_aranges, 0x20);
+    appendU64(debug_aranges, 0);
+    appendU64(debug_aranges, 0);
+    uint32_t aranges_len = static_cast<uint32_t>(debug_aranges.size() - 4);
+    debug_aranges[0] = static_cast<uint8_t>(aranges_len & 0xff);
+    debug_aranges[1] = static_cast<uint8_t>((aranges_len >> 8) & 0xff);
+    debug_aranges[2] = static_cast<uint8_t>((aranges_len >> 16) & 0xff);
+    debug_aranges[3] = static_cast<uint8_t>((aranges_len >> 24) & 0xff);
+
+    auto makePubSection = [&](const std::string& name) {
+        std::vector<uint8_t> sec;
+        appendU32(sec, 0);
+        appendU16(sec, 2);
+        appendU32(sec, 0);
+        appendU32(sec, unit_length);
+        appendU32(sec, static_cast<uint32_t>(subprogram_die_off - cu_start));
+        appendCString(sec, name.c_str());
+        appendU32(sec, 0);
+        uint32_t len = static_cast<uint32_t>(sec.size() - 4);
+        sec[0] = static_cast<uint8_t>(len & 0xff);
+        sec[1] = static_cast<uint8_t>((len >> 8) & 0xff);
+        sec[2] = static_cast<uint8_t>((len >> 16) & 0xff);
+        sec[3] = static_cast<uint8_t>((len >> 24) & 0xff);
+        return sec;
+    };
+    std::vector<uint8_t> debug_pubnames = makePubSection("func");
+    std::vector<uint8_t> debug_pubtypes = makePubSection("func_type");
+
+    const std::string elf_path = (std::filesystem::temp_directory_path() / "dwarf_legacy_sections.elf").string();
+    writeELFWithSections(elf_path, {
+        {".debug_info", debug_info},
+        {".debug_abbrev", debug_abbrev},
+        {".debug_str", debug_str},
+        {".debug_macinfo", debug_macinfo},
+        {".debug_aranges", debug_aranges},
+        {".debug_pubnames", debug_pubnames},
+        {".debug_pubtypes", debug_pubtypes},
+    });
+
+    DwarfParser parser(elf_path);
+    assert(parser.load());
+    assert(parser.hasLegacyMacroInfo());
+    auto defs = parser.getMacroDefinitionsForCU(parser.getCompilationUnits()[0]);
+    assert(defs.size() == 1);
+    assert(defs[0].name == "FOO");
+    assert(defs[0].value == "1");
+    assert(parser.getAranges().size() == 1);
+    assert(parser.getAranges()[0].address == 0x5000);
+    assert(parser.getPublicNames().size() == 1);
+    assert(parser.getPublicNames()[0].name == "func");
+    assert(parser.getPublicTypes().size() == 1);
+    assert(parser.getPublicTypes()[0].name == "func_type");
+
+    std::cout << "DwarfParser legacy section integration tests passed!" << std::endl;
+}
+
 void testDwarfParserMacroLookupFallsBackAcrossCUs() {
     std::cout << "Testing DwarfParser macro lookup fallback across CUs..." << std::endl;
 
@@ -10480,6 +10844,1116 @@ void testDebugLineV5ViaStmtList() {
     assert(rows[0].line == 1);
 
     std::cout << ".debug_line (DWARF5) tests passed!" << std::endl;
+}
+
+void testDebugLineV5PreservesFileMd5() {
+    std::cout << "Testing .debug_line (DWARF5) preserves DW_LNCT_MD5..." << std::endl;
+
+    std::vector<uint8_t> debug_line_str;
+    appendCString(debug_line_str, "src");
+    uint32_t file_off = static_cast<uint32_t>(debug_line_str.size());
+    appendCString(debug_line_str, "main.c");
+
+    std::vector<uint8_t> debug_line;
+    appendU32LE(debug_line, 0); // unit_length placeholder
+    appendU16LE(debug_line, 5); // version
+    debug_line.push_back(8);    // address_size
+    debug_line.push_back(0);    // segment_selector_size
+
+    size_t header_len_pos = debug_line.size();
+    appendU32LE(debug_line, 0); // header_length placeholder
+
+    debug_line.push_back(1);    // minimum_instruction_length
+    debug_line.push_back(1);    // max_operations_per_instruction
+    debug_line.push_back(1);    // default_is_stmt
+    debug_line.push_back(static_cast<uint8_t>(-5)); // line_base
+    debug_line.push_back(14);   // line_range
+    debug_line.push_back(13);   // opcode_base
+    const uint8_t std_lens[12] = {0, 1, 1, 1, 1, 0, 0, 0, 1, 0, 0, 1};
+    debug_line.insert(debug_line.end(), std_lens, std_lens + 12);
+
+    debug_line.push_back(1);
+    appendULEB(debug_line, 1); // DW_LNCT_path
+    appendULEB(debug_line, static_cast<uint64_t>(DwarfForm::DW_FORM_line_strp));
+    appendULEB(debug_line, 1); // directories_count
+    appendU32LE(debug_line, 0);
+
+    debug_line.push_back(3);
+    appendULEB(debug_line, 1); // DW_LNCT_path
+    appendULEB(debug_line, static_cast<uint64_t>(DwarfForm::DW_FORM_line_strp));
+    appendULEB(debug_line, 2); // DW_LNCT_directory_index
+    appendULEB(debug_line, static_cast<uint64_t>(DwarfForm::DW_FORM_udata));
+    appendULEB(debug_line, 5); // DW_LNCT_MD5
+    appendULEB(debug_line, static_cast<uint64_t>(DwarfForm::DW_FORM_data16));
+    appendULEB(debug_line, 1); // files_count
+    appendU32LE(debug_line, file_off);
+    appendULEB(debug_line, 1);
+    std::vector<uint8_t> md5 = {
+        0x00, 0x11, 0x22, 0x33,
+        0x44, 0x55, 0x66, 0x77,
+        0x88, 0x99, 0xaa, 0xbb,
+        0xcc, 0xdd, 0xee, 0xff
+    };
+    debug_line.insert(debug_line.end(), md5.begin(), md5.end());
+
+    uint32_t header_length = static_cast<uint32_t>(debug_line.size() - (header_len_pos + 4));
+    debug_line[header_len_pos + 0] = static_cast<uint8_t>(header_length & 0xff);
+    debug_line[header_len_pos + 1] = static_cast<uint8_t>((header_length >> 8) & 0xff);
+    debug_line[header_len_pos + 2] = static_cast<uint8_t>((header_length >> 16) & 0xff);
+    debug_line[header_len_pos + 3] = static_cast<uint8_t>((header_length >> 24) & 0xff);
+
+    debug_line.push_back(0);
+    appendULEB(debug_line, 1 + 8);
+    debug_line.push_back(static_cast<uint8_t>(DwarfLineExtOp::DW_LNE_set_address));
+    appendU64LE(debug_line, 0x2100);
+    debug_line.push_back(static_cast<uint8_t>(DwarfLineOp::DW_LNS_copy));
+    debug_line.push_back(0);
+    appendULEB(debug_line, 1);
+    debug_line.push_back(static_cast<uint8_t>(DwarfLineExtOp::DW_LNE_end_sequence));
+
+    uint32_t unit_length = static_cast<uint32_t>(debug_line.size() - 4);
+    debug_line[0] = static_cast<uint8_t>(unit_length & 0xff);
+    debug_line[1] = static_cast<uint8_t>((unit_length >> 8) & 0xff);
+    debug_line[2] = static_cast<uint8_t>((unit_length >> 16) & 0xff);
+    debug_line[3] = static_cast<uint8_t>((unit_length >> 24) & 0xff);
+
+    std::vector<uint8_t> debug_info = {0, 0, 0, 0};
+    std::vector<uint8_t> empty;
+    AttributeParser ap(debug_info, empty, empty, debug_line, {}, {}, {}, {}, debug_line_str);
+    ap.setAddressSize(8);
+    ap.setIsDwarf64(false);
+    ap.setDwarfVersion(DwarfVersion::DWARF5);
+
+    uint64_t off = 0;
+    auto attr = ap.parseAttribute(DwarfAttribute::DW_AT_stmt_list, DwarfForm::DW_FORM_sec_offset, off);
+    auto line_attr = std::dynamic_pointer_cast<LineAttributeValue>(attr);
+    assert(line_attr);
+    assert(line_attr->getFiles().size() == 1);
+    assert(line_attr->getFiles()[0].filename == "main.c");
+    assert(line_attr->getFiles()[0].md5 == md5);
+
+    std::cout << ".debug_line (DWARF5) MD5 tests passed!" << std::endl;
+}
+
+void testDebugLineV5PreservesDirectoryMetadata() {
+    std::cout << "Testing .debug_line (DWARF5) preserves extra directory metadata..." << std::endl;
+
+    std::vector<uint8_t> debug_line_str;
+    appendCString(debug_line_str, "src");
+    uint32_t file_off = static_cast<uint32_t>(debug_line_str.size());
+    appendCString(debug_line_str, "main.c");
+
+    std::vector<uint8_t> debug_line;
+    appendU32LE(debug_line, 0); // unit_length placeholder
+    appendU16LE(debug_line, 5); // version
+    debug_line.push_back(8);    // address_size
+    debug_line.push_back(0);    // segment_selector_size
+
+    size_t header_len_pos = debug_line.size();
+    appendU32LE(debug_line, 0); // header_length placeholder
+
+    debug_line.push_back(1);
+    debug_line.push_back(1);
+    debug_line.push_back(1);
+    debug_line.push_back(static_cast<uint8_t>(-5));
+    debug_line.push_back(14);
+    debug_line.push_back(13);
+    const uint8_t std_lens[12] = {0, 1, 1, 1, 1, 0, 0, 0, 1, 0, 0, 1};
+    debug_line.insert(debug_line.end(), std_lens, std_lens + 12);
+
+    debug_line.push_back(3);
+    appendULEB(debug_line, 1); // DW_LNCT_path
+    appendULEB(debug_line, static_cast<uint64_t>(DwarfForm::DW_FORM_line_strp));
+    appendULEB(debug_line, 3); // DW_LNCT_timestamp
+    appendULEB(debug_line, static_cast<uint64_t>(DwarfForm::DW_FORM_udata));
+    appendULEB(debug_line, 5); // DW_LNCT_MD5
+    appendULEB(debug_line, static_cast<uint64_t>(DwarfForm::DW_FORM_data16));
+    appendULEB(debug_line, 1); // directories_count
+    appendU32LE(debug_line, 0);
+    appendULEB(debug_line, 123456);
+    std::vector<uint8_t> dir_md5 = {
+        0xde, 0xad, 0xbe, 0xef,
+        0x00, 0x11, 0x22, 0x33,
+        0x44, 0x55, 0x66, 0x77,
+        0x88, 0x99, 0xaa, 0xbb
+    };
+    debug_line.insert(debug_line.end(), dir_md5.begin(), dir_md5.end());
+
+    debug_line.push_back(2);
+    appendULEB(debug_line, 1); // DW_LNCT_path
+    appendULEB(debug_line, static_cast<uint64_t>(DwarfForm::DW_FORM_line_strp));
+    appendULEB(debug_line, 2); // DW_LNCT_directory_index
+    appendULEB(debug_line, static_cast<uint64_t>(DwarfForm::DW_FORM_udata));
+    appendULEB(debug_line, 1); // files_count
+    appendU32LE(debug_line, file_off);
+    appendULEB(debug_line, 1);
+
+    uint32_t header_length = static_cast<uint32_t>(debug_line.size() - (header_len_pos + 4));
+    debug_line[header_len_pos + 0] = static_cast<uint8_t>(header_length & 0xff);
+    debug_line[header_len_pos + 1] = static_cast<uint8_t>((header_length >> 8) & 0xff);
+    debug_line[header_len_pos + 2] = static_cast<uint8_t>((header_length >> 16) & 0xff);
+    debug_line[header_len_pos + 3] = static_cast<uint8_t>((header_length >> 24) & 0xff);
+
+    debug_line.push_back(0);
+    appendULEB(debug_line, 1 + 8);
+    debug_line.push_back(static_cast<uint8_t>(DwarfLineExtOp::DW_LNE_set_address));
+    appendU64LE(debug_line, 0x2200);
+    debug_line.push_back(static_cast<uint8_t>(DwarfLineOp::DW_LNS_copy));
+    debug_line.push_back(0);
+    appendULEB(debug_line, 1);
+    debug_line.push_back(static_cast<uint8_t>(DwarfLineExtOp::DW_LNE_end_sequence));
+
+    uint32_t unit_length = static_cast<uint32_t>(debug_line.size() - 4);
+    debug_line[0] = static_cast<uint8_t>(unit_length & 0xff);
+    debug_line[1] = static_cast<uint8_t>((unit_length >> 8) & 0xff);
+    debug_line[2] = static_cast<uint8_t>((unit_length >> 16) & 0xff);
+    debug_line[3] = static_cast<uint8_t>((unit_length >> 24) & 0xff);
+
+    std::vector<uint8_t> debug_info = {0, 0, 0, 0};
+    std::vector<uint8_t> empty;
+    AttributeParser ap(debug_info, empty, empty, debug_line, {}, {}, {}, {}, debug_line_str);
+    ap.setAddressSize(8);
+    ap.setIsDwarf64(false);
+    ap.setDwarfVersion(DwarfVersion::DWARF5);
+
+    uint64_t off = 0;
+    auto attr = ap.parseAttribute(DwarfAttribute::DW_AT_stmt_list, DwarfForm::DW_FORM_sec_offset, off);
+    auto line_attr = std::dynamic_pointer_cast<LineAttributeValue>(attr);
+    assert(line_attr);
+    assert(line_attr->getDirectories().size() == 1);
+    assert(line_attr->getDirectories()[0] == "src");
+    assert(line_attr->getDirectoryEntries().size() == 1);
+    const auto& preserved = line_attr->getDirectoryEntries()[0].preserved_fields;
+    assert(preserved.size() == 2);
+    assert(preserved[0].content_type == 3);
+    auto ts = std::dynamic_pointer_cast<UnsignedAttributeValue>(preserved[0].value);
+    assert(ts);
+    assert(ts->getValue() == 123456);
+    assert(preserved[1].content_type == 5);
+    auto md5 = std::dynamic_pointer_cast<BlockAttributeValue>(preserved[1].value);
+    assert(md5);
+    assert(md5->getData() == dir_md5);
+
+    std::cout << ".debug_line (DWARF5) directory metadata tests passed!" << std::endl;
+}
+
+void testInvalidStandardTypedFormsDoNotCountAsVendorSkips() {
+    std::cout << "Testing invalid standard typed forms stay deterministic and do not count as vendor skips..." << std::endl;
+
+    std::vector<uint8_t> debug_info;
+    appendU32(debug_info, 0x11223344); // invalid for DW_AT_location
+    appendCString(debug_info, "not-a-type"); // invalid for DW_AT_type
+
+    std::vector<uint8_t> empty;
+    AttributeParser ap(debug_info, empty, empty);
+    ap.setDwarfVersion(DwarfVersion::DWARF5);
+    ap.setIsDwarf64(false);
+    ap.setAddressSize(8);
+
+    uint64_t off = 0;
+    auto loc_attr = ap.parseAttribute(DwarfAttribute::DW_AT_location, DwarfForm::DW_FORM_data4, off);
+    auto loc_val = std::dynamic_pointer_cast<LocationAttributeValue>(loc_attr);
+    assert(loc_val);
+    assert(loc_val->getLocationType() == LocationAttributeValue::LocationType::INVALID);
+    assert(off == 4);
+    assert(ap.getUnsupportedVendorFormSkipCount() == 0);
+
+    auto type_attr = ap.parseAttribute(DwarfAttribute::DW_AT_type, DwarfForm::DW_FORM_string, off);
+    auto type_val = std::dynamic_pointer_cast<TypeAttributeValue>(type_attr);
+    assert(type_val);
+    assert(type_val->getOffset() == 0);
+    assert(off == debug_info.size());
+    assert(ap.getUnsupportedVendorFormSkipCount() == 0);
+
+    std::cout << "Invalid standard typed form tests passed!" << std::endl;
+}
+
+void testStandardConstantAndBoundAttributeRouting() {
+    std::cout << "Testing standard constant/bound attribute routing..." << std::endl;
+
+    std::vector<uint8_t> debug_str;
+    appendCString(debug_str, "hello");
+    appendCString(debug_str, "world");
+
+    std::vector<uint8_t> debug_line_str;
+    appendCString(debug_line_str, "lineconst");
+
+    std::vector<uint8_t> debug_info;
+    debug_info.push_back(0x7f);                 // DW_AT_const_value data1
+    appendULEB(debug_info, 0);                  // DW_AT_default_value strx -> "hello"
+    debug_info.push_back(1);                    // DW_AT_data_location block1 length
+    debug_info.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_lit4)); // block1 payload for DW_AT_data_location
+    appendSLEB(debug_info, -2);                 // DW_AT_lower_bound sdata
+    appendULEB(debug_info, 9);                  // DW_AT_upper_bound udata
+    appendULEB(debug_info, 2);                  // DW_AT_count exprloc length
+    debug_info.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_plus_uconst)); // DW_AT_count exprloc payload
+    debug_info.push_back(0x03);
+    debug_info.push_back(1);                    // DW_AT_allocated flag
+    appendU32(debug_info, 0);                   // DW_AT_associated line_strp -> "lineconst"
+
+    std::vector<uint8_t> debug_str_offsets;
+    appendU32(debug_str_offsets, 0);
+    appendU32(debug_str_offsets, 6);
+
+    std::vector<uint8_t> empty;
+    AttributeParser ap(debug_info, empty, debug_str, empty, empty, empty,
+                       debug_str_offsets, empty, debug_line_str);
+    ap.setDwarfVersion(DwarfVersion::DWARF5);
+    ap.setIsDwarf64(false);
+    ap.setAddressSize(8);
+    ap.setCUContext(/*rnglists_base=*/0, /*loclists_base=*/0, /*addr_base=*/0, /*str_offsets_base=*/0, /*base_address=*/0);
+
+    uint64_t off = 0;
+    auto const_value = ap.parseAttribute(DwarfAttribute::DW_AT_const_value, DwarfForm::DW_FORM_data1, off);
+    auto const_u = std::dynamic_pointer_cast<UnsignedAttributeValue>(const_value);
+    assert(const_u);
+    assert(const_u->getValue() == 0x7f);
+
+    auto default_value = ap.parseAttribute(DwarfAttribute::DW_AT_default_value, DwarfForm::DW_FORM_strx, off);
+    auto default_s = std::dynamic_pointer_cast<StringAttributeValue>(default_value);
+    assert(default_s);
+    assert(default_s->getValue() == "hello");
+
+    ap.setImplicitConstValue(12);
+    auto string_length = ap.parseAttribute(DwarfAttribute::DW_AT_string_length, DwarfForm::DW_FORM_implicit_const, off);
+    auto length_s = std::dynamic_pointer_cast<SignedAttributeValue>(string_length);
+    assert(length_s);
+    assert(length_s->getValue() == 12);
+
+    auto data_location = ap.parseAttribute(DwarfAttribute::DW_AT_data_location, DwarfForm::DW_FORM_block1, off);
+    auto data_block = std::dynamic_pointer_cast<BlockAttributeValue>(data_location);
+    assert(data_block);
+    assert(data_block->getData().size() == 1);
+    assert(data_block->getData()[0] == static_cast<uint8_t>(DwarfOp::DW_OP_lit4));
+
+    auto lower_bound = ap.parseAttribute(DwarfAttribute::DW_AT_lower_bound, DwarfForm::DW_FORM_sdata, off);
+    auto lower_s = std::dynamic_pointer_cast<SignedAttributeValue>(lower_bound);
+    assert(lower_s);
+    assert(lower_s->getValue() == -2);
+
+    auto upper_bound = ap.parseAttribute(DwarfAttribute::DW_AT_upper_bound, DwarfForm::DW_FORM_udata, off);
+    auto upper_u = std::dynamic_pointer_cast<UnsignedAttributeValue>(upper_bound);
+    assert(upper_u);
+    assert(upper_u->getValue() == 9);
+
+    auto count = ap.parseAttribute(DwarfAttribute::DW_AT_count, DwarfForm::DW_FORM_exprloc, off);
+    auto count_expr = std::dynamic_pointer_cast<ExpressionAttributeValue>(count);
+    assert(count_expr);
+    assert(count_expr->getExpression().size() == 2);
+    assert(count_expr->getExpression()[0] == static_cast<uint8_t>(DwarfOp::DW_OP_plus_uconst));
+
+    auto allocated = ap.parseAttribute(DwarfAttribute::DW_AT_allocated, DwarfForm::DW_FORM_flag, off);
+    auto allocated_flag = std::dynamic_pointer_cast<FlagAttributeValue>(allocated);
+    assert(allocated_flag);
+    assert(allocated_flag->getValue());
+
+    auto associated = ap.parseAttribute(DwarfAttribute::DW_AT_associated, DwarfForm::DW_FORM_line_strp, off);
+    auto associated_s = std::dynamic_pointer_cast<StringAttributeValue>(associated);
+    assert(associated_s);
+    assert(associated_s->getValue() == "lineconst");
+
+    std::cout << "Standard constant/bound attribute routing tests passed!" << std::endl;
+}
+
+void testInvalidStandardConstantFormsStayDeterministic() {
+    std::cout << "Testing invalid standard constant-form routing stays deterministic..." << std::endl;
+
+    std::vector<uint8_t> debug_info;
+    appendU32(debug_info, 0x12345678);
+    appendU32(debug_info, 0xabcdef01);
+
+    std::vector<uint8_t> empty;
+    AttributeParser ap(debug_info, empty, empty);
+    ap.setDwarfVersion(DwarfVersion::DWARF5);
+    ap.setIsDwarf64(false);
+    ap.setAddressSize(8);
+
+    uint64_t off = 0;
+    auto bad_const = ap.parseAttribute(DwarfAttribute::DW_AT_const_value, DwarfForm::DW_FORM_ref4, off);
+    assert(!bad_const);
+    assert(off == 4);
+    assert(ap.getUnsupportedVendorFormSkipCount() == 0);
+
+    auto bad_data_location = ap.parseAttribute(DwarfAttribute::DW_AT_data_location, DwarfForm::DW_FORM_ref4, off);
+    assert(!bad_data_location);
+    assert(off == 8);
+    assert(ap.getUnsupportedVendorFormSkipCount() == 0);
+
+    std::cout << "Invalid standard constant-form routing tests passed!" << std::endl;
+}
+
+void testStandardMetadataReferenceAndAddressRouting() {
+    std::cout << "Testing standard metadata, reference, and address attribute routing..." << std::endl;
+
+    std::vector<uint8_t> debug_info;
+    appendULEB(debug_info, 3);                  // DW_AT_rank udata
+    appendULEB(debug_info, 2);                  // DW_AT_byte_stride exprloc length
+    debug_info.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_plus_uconst));
+    debug_info.push_back(0x10);
+    debug_info.push_back(1);                    // DW_AT_bit_stride block1 length
+    debug_info.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_lit5));
+    appendU32(debug_info, 0x20);               // DW_AT_start_scope data4
+    appendSLEB(debug_info, -1);                // DW_AT_data_bit_offset sdata
+    appendU32(debug_info, 0x12345678);         // DW_AT_containing_type ref4
+    appendULEB(debug_info, 0x55);              // DW_AT_friend ref_udata
+    appendU32(debug_info, 0x89abcdef);         // DW_AT_common_reference ref_addr
+    appendU32(debug_info, 0x10203040);         // DW_AT_call_origin ref4
+    appendU64(debug_info, 0x1122334455667788ULL); // DW_AT_entry_pc addr
+
+    std::vector<uint8_t> empty;
+    AttributeParser ap(debug_info, empty, empty);
+    ap.setDwarfVersion(DwarfVersion::DWARF5);
+    ap.setIsDwarf64(false);
+    ap.setAddressSize(8);
+
+    uint64_t off = 0;
+    auto rank = ap.parseAttribute(DwarfAttribute::DW_AT_rank, DwarfForm::DW_FORM_udata, off);
+    auto rank_u = std::dynamic_pointer_cast<UnsignedAttributeValue>(rank);
+    assert(rank_u);
+    assert(rank_u->getValue() == 3);
+
+    auto byte_stride = ap.parseAttribute(DwarfAttribute::DW_AT_byte_stride, DwarfForm::DW_FORM_exprloc, off);
+    auto byte_stride_expr = std::dynamic_pointer_cast<ExpressionAttributeValue>(byte_stride);
+    assert(byte_stride_expr);
+    assert(byte_stride_expr->getExpression().size() == 2);
+    assert(byte_stride_expr->getExpression()[0] == static_cast<uint8_t>(DwarfOp::DW_OP_plus_uconst));
+
+    auto bit_stride = ap.parseAttribute(DwarfAttribute::DW_AT_bit_stride, DwarfForm::DW_FORM_block1, off);
+    auto bit_stride_block = std::dynamic_pointer_cast<BlockAttributeValue>(bit_stride);
+    assert(bit_stride_block);
+    assert(bit_stride_block->getData().size() == 1);
+    assert(bit_stride_block->getData()[0] == static_cast<uint8_t>(DwarfOp::DW_OP_lit5));
+
+    auto start_scope = ap.parseAttribute(DwarfAttribute::DW_AT_start_scope, DwarfForm::DW_FORM_data4, off);
+    auto start_scope_u = std::dynamic_pointer_cast<UnsignedAttributeValue>(start_scope);
+    assert(start_scope_u);
+    assert(start_scope_u->getValue() == 0x20);
+
+    auto data_bit_offset = ap.parseAttribute(DwarfAttribute::DW_AT_data_bit_offset, DwarfForm::DW_FORM_sdata, off);
+    auto data_bit_offset_s = std::dynamic_pointer_cast<SignedAttributeValue>(data_bit_offset);
+    assert(data_bit_offset_s);
+    assert(data_bit_offset_s->getValue() == -1);
+
+    auto containing_type = ap.parseAttribute(DwarfAttribute::DW_AT_containing_type, DwarfForm::DW_FORM_ref4, off);
+    auto containing_ref = std::dynamic_pointer_cast<ReferenceAttributeValue>(containing_type);
+    assert(containing_ref);
+    assert(containing_ref->getOffset() == 0x12345678);
+
+    auto friend_attr = ap.parseAttribute(DwarfAttribute::DW_AT_friend, DwarfForm::DW_FORM_ref_udata, off);
+    auto friend_ref = std::dynamic_pointer_cast<ReferenceAttributeValue>(friend_attr);
+    assert(friend_ref);
+    assert(friend_ref->getOffset() == 0x55);
+
+    auto common_ref = ap.parseAttribute(DwarfAttribute::DW_AT_common_reference, DwarfForm::DW_FORM_ref_addr, off);
+    auto common_ref_val = std::dynamic_pointer_cast<ReferenceAttributeValue>(common_ref);
+    assert(common_ref_val);
+    assert(common_ref_val->getOffset() == 0x89abcdef);
+
+    auto call_origin = ap.parseAttribute(DwarfAttribute::DW_AT_call_origin, DwarfForm::DW_FORM_ref4, off);
+    auto call_origin_ref = std::dynamic_pointer_cast<ReferenceAttributeValue>(call_origin);
+    assert(call_origin_ref);
+    assert(call_origin_ref->getOffset() == 0x10203040);
+
+    auto entry_pc = ap.parseAttribute(DwarfAttribute::DW_AT_entry_pc, DwarfForm::DW_FORM_addr, off);
+    auto entry_pc_addr = std::dynamic_pointer_cast<AddressAttributeValue>(entry_pc);
+    assert(entry_pc_addr);
+    assert(entry_pc_addr->getAddress() == 0x1122334455667788ULL);
+
+    std::cout << "Standard metadata/reference/address attribute routing tests passed!" << std::endl;
+}
+
+void testInvalidStandardMetadataReferenceAndAddressFormsStayDeterministic() {
+    std::cout << "Testing invalid standard metadata/reference/address forms stay deterministic..." << std::endl;
+
+    std::vector<uint8_t> debug_info;
+    appendU32(debug_info, 0x11111111); // invalid for DW_AT_rank
+    appendU32(debug_info, 0x22222222); // invalid for DW_AT_containing_type
+    appendCString(debug_info, "bad-entry-pc"); // invalid for DW_AT_entry_pc
+
+    std::vector<uint8_t> empty;
+    AttributeParser ap(debug_info, empty, empty);
+    ap.setDwarfVersion(DwarfVersion::DWARF5);
+    ap.setIsDwarf64(false);
+    ap.setAddressSize(8);
+
+    uint64_t off = 0;
+    auto bad_rank = ap.parseAttribute(DwarfAttribute::DW_AT_rank, DwarfForm::DW_FORM_ref4, off);
+    assert(!bad_rank);
+    assert(off == 4);
+    assert(ap.getUnsupportedVendorFormSkipCount() == 0);
+
+    auto bad_ref = ap.parseAttribute(DwarfAttribute::DW_AT_containing_type, DwarfForm::DW_FORM_data4, off);
+    assert(!bad_ref);
+    assert(off == 8);
+    assert(ap.getUnsupportedVendorFormSkipCount() == 0);
+
+    auto bad_entry_pc = ap.parseAttribute(DwarfAttribute::DW_AT_entry_pc, DwarfForm::DW_FORM_string, off);
+    assert(!bad_entry_pc);
+    assert(off == debug_info.size());
+    assert(ap.getUnsupportedVendorFormSkipCount() == 0);
+
+    std::cout << "Invalid standard metadata/reference/address form tests passed!" << std::endl;
+}
+
+void testStandardScalarStringAndFlagMetadataRouting() {
+    std::cout << "Testing standard scalar/string/flag metadata routing..." << std::endl;
+
+    std::vector<uint8_t> debug_str;
+    appendCString(debug_str, "9V99");
+    appendCString(debug_str, "producer");
+
+    std::vector<uint8_t> debug_info;
+    debug_info.push_back(2);                    // DW_AT_binary_scale data1
+    appendULEB(debug_info, 3);                  // DW_AT_decimal_scale udata
+    appendU16(debug_info, 10);                  // DW_AT_digit_count data2
+    appendU32(debug_info, 0);                   // DW_AT_picture_string strp -> "9V99"
+    appendULEB(debug_info, 1);                  // DW_AT_producer strx -> "producer"
+    debug_info.push_back(7);                    // DW_AT_visibility data1
+    debug_info.push_back(1);                    // DW_AT_small flag
+    debug_info.push_back(1);                    // DW_AT_threads_scaled flag
+    debug_info.push_back(1);                    // DW_AT_mutable flag
+
+    std::vector<uint8_t> debug_str_offsets;
+    appendU32(debug_str_offsets, 0);
+    appendU32(debug_str_offsets, 5);
+
+    std::vector<uint8_t> empty;
+    AttributeParser ap(debug_info, empty, debug_str, empty, empty, empty, debug_str_offsets);
+    ap.setDwarfVersion(DwarfVersion::DWARF5);
+    ap.setIsDwarf64(false);
+    ap.setAddressSize(8);
+    ap.setCUContext(/*rnglists_base=*/0, /*loclists_base=*/0, /*addr_base=*/0, /*str_offsets_base=*/0, /*base_address=*/0);
+
+    uint64_t off = 0;
+    auto binary_scale = ap.parseAttribute(DwarfAttribute::DW_AT_binary_scale, DwarfForm::DW_FORM_data1, off);
+    auto binary_scale_u = std::dynamic_pointer_cast<UnsignedAttributeValue>(binary_scale);
+    assert(binary_scale_u);
+    assert(binary_scale_u->getValue() == 2);
+
+    auto decimal_scale = ap.parseAttribute(DwarfAttribute::DW_AT_decimal_scale, DwarfForm::DW_FORM_udata, off);
+    auto decimal_scale_u = std::dynamic_pointer_cast<UnsignedAttributeValue>(decimal_scale);
+    assert(decimal_scale_u);
+    assert(decimal_scale_u->getValue() == 3);
+
+    auto digit_count = ap.parseAttribute(DwarfAttribute::DW_AT_digit_count, DwarfForm::DW_FORM_data2, off);
+    auto digit_count_u = std::dynamic_pointer_cast<UnsignedAttributeValue>(digit_count);
+    assert(digit_count_u);
+    assert(digit_count_u->getValue() == 10);
+
+    auto picture_string = ap.parseAttribute(DwarfAttribute::DW_AT_picture_string, DwarfForm::DW_FORM_strp, off);
+    auto picture_string_s = std::dynamic_pointer_cast<StringAttributeValue>(picture_string);
+    assert(picture_string_s);
+    assert(picture_string_s->getValue() == "9V99");
+
+    auto producer = ap.parseAttribute(DwarfAttribute::DW_AT_producer, DwarfForm::DW_FORM_strx, off);
+    auto producer_s = std::dynamic_pointer_cast<StringAttributeValue>(producer);
+    assert(producer_s);
+    assert(producer_s->getValue() == "producer");
+
+    auto visibility = ap.parseAttribute(DwarfAttribute::DW_AT_visibility, DwarfForm::DW_FORM_data1, off);
+    auto visibility_u = std::dynamic_pointer_cast<UnsignedAttributeValue>(visibility);
+    assert(visibility_u);
+    assert(visibility_u->getValue() == 7);
+
+    auto small = ap.parseAttribute(DwarfAttribute::DW_AT_small, DwarfForm::DW_FORM_flag, off);
+    auto small_flag = std::dynamic_pointer_cast<FlagAttributeValue>(small);
+    assert(small_flag);
+    assert(small_flag->getValue());
+
+    auto threads_scaled = ap.parseAttribute(DwarfAttribute::DW_AT_threads_scaled, DwarfForm::DW_FORM_flag, off);
+    auto threads_scaled_flag = std::dynamic_pointer_cast<FlagAttributeValue>(threads_scaled);
+    assert(threads_scaled_flag);
+    assert(threads_scaled_flag->getValue());
+
+    auto mutable_attr = ap.parseAttribute(DwarfAttribute::DW_AT_mutable, DwarfForm::DW_FORM_flag, off);
+    auto mutable_flag = std::dynamic_pointer_cast<FlagAttributeValue>(mutable_attr);
+    assert(mutable_flag);
+    assert(mutable_flag->getValue());
+
+    auto declaration = ap.parseAttribute(DwarfAttribute::DW_AT_declaration, DwarfForm::DW_FORM_flag_present, off);
+    auto declaration_flag = std::dynamic_pointer_cast<FlagAttributeValue>(declaration);
+    assert(declaration_flag);
+    assert(declaration_flag->getValue());
+
+    assert(off == debug_info.size());
+
+    std::cout << "Standard scalar/string/flag metadata routing tests passed!" << std::endl;
+}
+
+void testInvalidStandardScalarStringAndFlagMetadataFormsStayDeterministic() {
+    std::cout << "Testing invalid standard scalar/string/flag metadata forms stay deterministic..." << std::endl;
+
+    std::vector<uint8_t> debug_info;
+    appendU32(debug_info, 0x11111111); // invalid for scalar metadata
+    appendU32(debug_info, 0x22222222); // invalid for string metadata
+    appendCString(debug_info, "bad-flag"); // invalid for flag metadata
+
+    std::vector<uint8_t> empty;
+    AttributeParser ap(debug_info, empty, empty);
+    ap.setDwarfVersion(DwarfVersion::DWARF5);
+    ap.setIsDwarf64(false);
+    ap.setAddressSize(8);
+
+    uint64_t off = 0;
+    auto bad_scalar = ap.parseAttribute(DwarfAttribute::DW_AT_binary_scale, DwarfForm::DW_FORM_ref4, off);
+    assert(!bad_scalar);
+    assert(off == 4);
+    assert(ap.getUnsupportedVendorFormSkipCount() == 0);
+
+    auto bad_string = ap.parseAttribute(DwarfAttribute::DW_AT_picture_string, DwarfForm::DW_FORM_data4, off);
+    assert(!bad_string);
+    assert(off == 8);
+    assert(ap.getUnsupportedVendorFormSkipCount() == 0);
+
+    auto bad_flag = ap.parseAttribute(DwarfAttribute::DW_AT_mutable, DwarfForm::DW_FORM_string, off);
+    assert(!bad_flag);
+    assert(off == debug_info.size());
+    assert(ap.getUnsupportedVendorFormSkipCount() == 0);
+
+    std::cout << "Invalid standard scalar/string/flag metadata form tests passed!" << std::endl;
+}
+
+void testParsedMetadataIntegratesWithTypeSystemAndTypePrinter() {
+    std::cout << "Testing parsed metadata integrates with TypeSystem and TypePrinter..." << std::endl;
+
+    std::vector<uint8_t> debug_str;
+    appendCString(debug_str, "9V99");
+
+    std::vector<uint8_t> debug_info;
+    debug_info.push_back(2);                    // DW_AT_binary_scale data1
+    appendULEB(debug_info, 3);                  // DW_AT_decimal_scale udata
+    debug_info.push_back(1);                    // DW_AT_decimal_sign data1
+    appendU16(debug_info, 10);                  // DW_AT_digit_count data2
+    appendU32(debug_info, 0);                   // DW_AT_picture_string strp -> "9V99"
+    debug_info.push_back(1);                    // DW_AT_small flag
+    debug_info.push_back(1);                    // DW_AT_threads_scaled flag
+    debug_info.push_back(1);                    // DW_AT_external flag
+    debug_info.push_back(3);                    // DW_AT_accessibility data1
+
+    std::vector<uint8_t> empty;
+    AttributeParser ap(debug_info, empty, debug_str);
+    ap.setDwarfVersion(DwarfVersion::DWARF5);
+    ap.setIsDwarf64(false);
+    ap.setAddressSize(8);
+
+    uint64_t off = 0;
+    auto binary_scale = ap.parseAttribute(DwarfAttribute::DW_AT_binary_scale, DwarfForm::DW_FORM_data1, off);
+    auto decimal_scale = ap.parseAttribute(DwarfAttribute::DW_AT_decimal_scale, DwarfForm::DW_FORM_udata, off);
+    auto decimal_sign = ap.parseAttribute(DwarfAttribute::DW_AT_decimal_sign, DwarfForm::DW_FORM_data1, off);
+    auto digit_count = ap.parseAttribute(DwarfAttribute::DW_AT_digit_count, DwarfForm::DW_FORM_data2, off);
+    auto picture_string = ap.parseAttribute(DwarfAttribute::DW_AT_picture_string, DwarfForm::DW_FORM_strp, off);
+    auto small = ap.parseAttribute(DwarfAttribute::DW_AT_small, DwarfForm::DW_FORM_flag, off);
+    auto threads_scaled = ap.parseAttribute(DwarfAttribute::DW_AT_threads_scaled, DwarfForm::DW_FORM_flag, off);
+    auto external = ap.parseAttribute(DwarfAttribute::DW_AT_external, DwarfForm::DW_FORM_flag, off);
+    auto mutable_attr = ap.parseAttribute(DwarfAttribute::DW_AT_mutable, DwarfForm::DW_FORM_flag_present, off);
+    auto accessibility = ap.parseAttribute(DwarfAttribute::DW_AT_accessibility, DwarfForm::DW_FORM_data1, off);
+    assert(off == debug_info.size());
+
+    std::map<uint64_t, std::shared_ptr<DIE>> dies;
+    auto add_die = [&](DwarfTag tag, uint64_t offset) {
+        auto die = std::make_shared<DIE>(tag, offset, 0);
+        dies[offset] = die;
+        return die;
+    };
+    auto lookup = [&](uint64_t offset) -> std::shared_ptr<DIE> {
+        auto it = dies.find(offset);
+        return (it != dies.end()) ? it->second : nullptr;
+    };
+
+    auto scaled_int_die = add_die(DwarfTag::DW_TAG_base_type, 0x200);
+    scaled_int_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("scaled_int"));
+    scaled_int_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(4));
+    scaled_int_die->addAttribute(DwarfAttribute::DW_AT_encoding, std::make_shared<UnsignedAttributeValue>(static_cast<uint64_t>(DW_ATE::DW_ATE_signed)));
+    scaled_int_die->addAttribute(DwarfAttribute::DW_AT_binary_scale, binary_scale);
+    scaled_int_die->addAttribute(DwarfAttribute::DW_AT_decimal_scale, decimal_scale);
+    scaled_int_die->addAttribute(DwarfAttribute::DW_AT_decimal_sign, decimal_sign);
+    scaled_int_die->addAttribute(DwarfAttribute::DW_AT_digit_count, digit_count);
+    scaled_int_die->addAttribute(DwarfAttribute::DW_AT_picture_string, picture_string);
+    scaled_int_die->addAttribute(DwarfAttribute::DW_AT_small, small);
+    scaled_int_die->addAttribute(DwarfAttribute::DW_AT_threads_scaled, threads_scaled);
+
+    auto struct_die = add_die(DwarfTag::DW_TAG_structure_type, 0x210);
+    struct_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("Widget"));
+    struct_die->addAttribute(DwarfAttribute::DW_AT_byte_size, std::make_shared<UnsignedAttributeValue>(8));
+    auto member_die = add_die(DwarfTag::DW_TAG_member, 0x211);
+    member_die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>("payload"));
+    member_die->addAttribute(DwarfAttribute::DW_AT_type, std::make_shared<TypeAttributeValue>(0x200));
+    member_die->addAttribute(DwarfAttribute::DW_AT_external, external);
+    member_die->addAttribute(DwarfAttribute::DW_AT_mutable, mutable_attr);
+    member_die->addAttribute(DwarfAttribute::DW_AT_accessibility, accessibility);
+    struct_die->addChild(member_die);
+
+    TypeSystem resolving_system(8, lookup);
+    auto resolved_scaled_int = std::dynamic_pointer_cast<PrimitiveType>(resolving_system.resolveType(scaled_int_die));
+    assert(resolved_scaled_int);
+    assert(resolved_scaled_int->getBinaryScale() == 2);
+    assert(resolved_scaled_int->getDecimalScale() == 3);
+    assert(resolved_scaled_int->getDecimalSign() == 1);
+    assert(resolved_scaled_int->getDigitCount() == 10);
+    assert(resolved_scaled_int->getPictureString() == "9V99");
+    assert(resolved_scaled_int->isSmall());
+    assert(resolved_scaled_int->isThreadsScaled());
+
+    TypePrinterConfig cfg;
+    cfg.show_offsets = true;
+    TypePrinter printer(lookup, cfg);
+    assert(printer.formatType(scaled_int_die) ==
+           "scaled_int [binary_scale=2] [decimal_scale=3] [decimal_sign=1] [digit_count=10] [picture_string=9V99] [small] [threads_scaled]");
+    auto structure = printer.formatStructure(struct_die);
+    assert(structure.find("private static mutable scaled_int") != std::string::npos);
+    assert(structure.find("payload") != std::string::npos);
+
+    std::cout << "Parsed metadata integration tests passed!" << std::endl;
+}
+
+void testStandardCallSiteAndDiscriminantAttributeRouting() {
+    std::cout << "Testing standard call-site and discriminant attribute routing..." << std::endl;
+
+    std::vector<uint8_t> debug_info;
+    appendU64(debug_info, 0x1122334455667788ULL); // DW_AT_call_return_pc addr
+    debug_info.push_back(1);                      // DW_AT_reference flag
+    appendU16(debug_info, 16);                   // DW_AT_string_length_bit_size data2
+    appendULEB(debug_info, 2);                   // DW_AT_string_length_byte_size udata
+    appendULEB(debug_info, 2);                   // DW_AT_call_value exprloc length
+    debug_info.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_plus_uconst));
+    debug_info.push_back(0x04);
+    debug_info.push_back(1);                     // DW_AT_call_parameter block1 length
+    debug_info.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_lit3));
+    appendULEB(debug_info, 2);                   // DW_AT_discr_list exprloc length
+    debug_info.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_constu));
+    debug_info.push_back(0x05);
+
+    std::vector<uint8_t> empty;
+    AttributeParser ap(debug_info, empty, empty);
+    ap.setDwarfVersion(DwarfVersion::DWARF5);
+    ap.setIsDwarf64(false);
+    ap.setAddressSize(8);
+
+    uint64_t off = 0;
+    auto call_return_pc = ap.parseAttribute(DwarfAttribute::DW_AT_call_return_pc, DwarfForm::DW_FORM_addr, off);
+    auto call_return_pc_addr = std::dynamic_pointer_cast<AddressAttributeValue>(call_return_pc);
+    assert(call_return_pc_addr);
+    assert(call_return_pc_addr->getAddress() == 0x1122334455667788ULL);
+
+    auto reference = ap.parseAttribute(DwarfAttribute::DW_AT_reference, DwarfForm::DW_FORM_flag, off);
+    auto reference_flag = std::dynamic_pointer_cast<FlagAttributeValue>(reference);
+    assert(reference_flag);
+    assert(reference_flag->getValue());
+
+    auto rvalue_reference = ap.parseAttribute(DwarfAttribute::DW_AT_rvalue_reference, DwarfForm::DW_FORM_flag_present, off);
+    auto rvalue_reference_flag = std::dynamic_pointer_cast<FlagAttributeValue>(rvalue_reference);
+    assert(rvalue_reference_flag);
+    assert(rvalue_reference_flag->getValue());
+
+    auto bit_size = ap.parseAttribute(DwarfAttribute::DW_AT_string_length_bit_size, DwarfForm::DW_FORM_data2, off);
+    auto bit_size_u = std::dynamic_pointer_cast<UnsignedAttributeValue>(bit_size);
+    assert(bit_size_u);
+    assert(bit_size_u->getValue() == 16);
+
+    auto byte_size = ap.parseAttribute(DwarfAttribute::DW_AT_string_length_byte_size, DwarfForm::DW_FORM_udata, off);
+    auto byte_size_u = std::dynamic_pointer_cast<UnsignedAttributeValue>(byte_size);
+    assert(byte_size_u);
+    assert(byte_size_u->getValue() == 2);
+
+    auto call_value = ap.parseAttribute(DwarfAttribute::DW_AT_call_value, DwarfForm::DW_FORM_exprloc, off);
+    auto call_value_expr = std::dynamic_pointer_cast<ExpressionAttributeValue>(call_value);
+    assert(call_value_expr);
+    assert(call_value_expr->getExpression().size() == 2);
+    assert(call_value_expr->getExpression()[0] == static_cast<uint8_t>(DwarfOp::DW_OP_plus_uconst));
+
+    auto call_parameter = ap.parseAttribute(DwarfAttribute::DW_AT_call_parameter, DwarfForm::DW_FORM_block1, off);
+    auto call_parameter_block = std::dynamic_pointer_cast<BlockAttributeValue>(call_parameter);
+    assert(call_parameter_block);
+    assert(call_parameter_block->getData().size() == 1);
+    assert(call_parameter_block->getData()[0] == static_cast<uint8_t>(DwarfOp::DW_OP_lit3));
+
+    auto discr_list = ap.parseAttribute(DwarfAttribute::DW_AT_discr_list, DwarfForm::DW_FORM_exprloc, off);
+    auto discr_list_expr = std::dynamic_pointer_cast<ExpressionAttributeValue>(discr_list);
+    assert(discr_list_expr);
+    assert(discr_list_expr->getExpression().size() == 2);
+    assert(discr_list_expr->getExpression()[0] == static_cast<uint8_t>(DwarfOp::DW_OP_constu));
+
+    assert(off == debug_info.size());
+
+    std::cout << "Standard call-site/discriminant attribute routing tests passed!" << std::endl;
+}
+
+void testInvalidStandardCallSiteAndDiscriminantFormsStayDeterministic() {
+    std::cout << "Testing invalid standard call-site/discriminant forms stay deterministic..." << std::endl;
+
+    std::vector<uint8_t> debug_info;
+    appendCString(debug_info, "bad-call-return-pc");
+    appendU32(debug_info, 0x11111111);
+    appendCString(debug_info, "bad-discr");
+
+    std::vector<uint8_t> empty;
+    AttributeParser ap(debug_info, empty, empty);
+    ap.setDwarfVersion(DwarfVersion::DWARF5);
+    ap.setIsDwarf64(false);
+    ap.setAddressSize(8);
+
+    uint64_t off = 0;
+    auto bad_call_return_pc = ap.parseAttribute(DwarfAttribute::DW_AT_call_return_pc, DwarfForm::DW_FORM_string, off);
+    assert(!bad_call_return_pc);
+    assert(off == std::string("bad-call-return-pc").size() + 1);
+    assert(ap.getUnsupportedVendorFormSkipCount() == 0);
+
+    auto bad_reference = ap.parseAttribute(DwarfAttribute::DW_AT_reference, DwarfForm::DW_FORM_data4, off);
+    assert(!bad_reference);
+    assert(off == std::string("bad-call-return-pc").size() + 1 + 4);
+    assert(ap.getUnsupportedVendorFormSkipCount() == 0);
+
+    auto bad_discr = ap.parseAttribute(DwarfAttribute::DW_AT_discr_list, DwarfForm::DW_FORM_string, off);
+    assert(!bad_discr);
+    assert(off == debug_info.size());
+    assert(ap.getUnsupportedVendorFormSkipCount() == 0);
+
+    std::cout << "Invalid standard call-site/discriminant form tests passed!" << std::endl;
+}
+
+void testParsedCallSiteAndDiscriminantAttributesRemainUsable() {
+    std::cout << "Testing parsed call-site/discriminant attributes remain usable on DIEs..." << std::endl;
+
+    std::vector<uint8_t> debug_info;
+    appendU64(debug_info, 0x0123456789abcdefULL);
+    appendULEB(debug_info, 2);
+    debug_info.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_plus_uconst));
+    debug_info.push_back(0x09);
+    debug_info.push_back(1);
+    debug_info.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_lit1));
+
+    std::vector<uint8_t> empty;
+    AttributeParser ap(debug_info, empty, empty);
+    ap.setDwarfVersion(DwarfVersion::DWARF5);
+    ap.setIsDwarf64(false);
+    ap.setAddressSize(8);
+
+    uint64_t off = 0;
+    auto call_return_pc = ap.parseAttribute(DwarfAttribute::DW_AT_call_return_pc, DwarfForm::DW_FORM_addr, off);
+    auto call_value = ap.parseAttribute(DwarfAttribute::DW_AT_call_value, DwarfForm::DW_FORM_exprloc, off);
+    auto discr_list = ap.parseAttribute(DwarfAttribute::DW_AT_discr_list, DwarfForm::DW_FORM_block1, off);
+    assert(off == debug_info.size());
+
+    auto die = std::make_shared<DIE>(DwarfTag::DW_TAG_subprogram, 0x300, 0);
+    die->addAttribute(DwarfAttribute::DW_AT_call_return_pc, call_return_pc);
+    die->addAttribute(DwarfAttribute::DW_AT_call_value, call_value);
+    die->addAttribute(DwarfAttribute::DW_AT_discr_list, discr_list);
+
+    auto stored_call_return_pc = std::dynamic_pointer_cast<AddressAttributeValue>(
+        die->getAttribute(DwarfAttribute::DW_AT_call_return_pc));
+    auto stored_call_value = std::dynamic_pointer_cast<ExpressionAttributeValue>(
+        die->getAttribute(DwarfAttribute::DW_AT_call_value));
+    auto stored_discr_list = std::dynamic_pointer_cast<BlockAttributeValue>(
+        die->getAttribute(DwarfAttribute::DW_AT_discr_list));
+    assert(stored_call_return_pc);
+    assert(stored_call_return_pc->getAddress() == 0x0123456789abcdefULL);
+    assert(stored_call_value);
+    assert(stored_call_value->getExpression().size() == 2);
+    assert(stored_discr_list);
+    assert(stored_discr_list->getData().size() == 1);
+    assert(stored_discr_list->getData()[0] == static_cast<uint8_t>(DwarfOp::DW_OP_lit1));
+
+    std::cout << "Parsed call-site/discriminant attribute storage tests passed!" << std::endl;
+}
+
+void testStandardReferenceAndOffsetAttributeRouting() {
+    std::cout << "Testing standard reference and offset attribute routing..." << std::endl;
+
+    std::vector<uint8_t> debug_info;
+    appendU64(debug_info, 0x0123456789abcdefULL); // DW_AT_signature data8
+    appendU64(debug_info, 0xaabbccddeeff0011ULL); // DW_AT_dwo_id data8
+    appendU32(debug_info, 0x10);                  // DW_AT_addr_base sec_offset
+    appendU32(debug_info, 0x20);                  // DW_AT_rnglists_base sec_offset
+    appendU32(debug_info, 0x30);                  // DW_AT_loclists_base sec_offset
+    appendU32(debug_info, 0x40);                  // DW_AT_str_offsets_base sec_offset
+    appendU32(debug_info, 0x50);                  // DW_AT_macro_info sec_offset
+    appendU32(debug_info, 0x60);                  // DW_AT_macros sec_offset
+    appendU32(debug_info, 0x11223344);            // DW_AT_base_types ref4
+    appendULEB(debug_info, 0x77);                 // DW_AT_namelist_item ref_udata
+    debug_info.push_back(0x7a);                   // DW_AT_trampoline ref1
+    appendU32(debug_info, 0x99aabbcc);            // DW_AT_extension ref_sup4
+
+    std::vector<uint8_t> empty;
+    AttributeParser ap(debug_info, empty, empty);
+    ap.setDwarfVersion(DwarfVersion::DWARF5);
+    ap.setIsDwarf64(false);
+    ap.setAddressSize(8);
+
+    uint64_t off = 0;
+    auto signature = ap.parseAttribute(DwarfAttribute::DW_AT_signature, DwarfForm::DW_FORM_data8, off);
+    auto signature_u = std::dynamic_pointer_cast<UnsignedAttributeValue>(signature);
+    assert(signature_u);
+    assert(signature_u->getValue() == 0x0123456789abcdefULL);
+
+    auto dwo_id = ap.parseAttribute(DwarfAttribute::DW_AT_dwo_id, DwarfForm::DW_FORM_data8, off);
+    auto dwo_id_u = std::dynamic_pointer_cast<UnsignedAttributeValue>(dwo_id);
+    assert(dwo_id_u);
+    assert(dwo_id_u->getValue() == 0xaabbccddeeff0011ULL);
+
+    auto addr_base = ap.parseAttribute(DwarfAttribute::DW_AT_addr_base, DwarfForm::DW_FORM_sec_offset, off);
+    auto addr_base_u = std::dynamic_pointer_cast<UnsignedAttributeValue>(addr_base);
+    assert(addr_base_u);
+    assert(addr_base_u->getValue() == 0x10);
+
+    auto rnglists_base = ap.parseAttribute(DwarfAttribute::DW_AT_rnglists_base, DwarfForm::DW_FORM_sec_offset, off);
+    auto rnglists_base_u = std::dynamic_pointer_cast<UnsignedAttributeValue>(rnglists_base);
+    assert(rnglists_base_u);
+    assert(rnglists_base_u->getValue() == 0x20);
+
+    auto loclists_base = ap.parseAttribute(DwarfAttribute::DW_AT_loclists_base, DwarfForm::DW_FORM_sec_offset, off);
+    auto loclists_base_u = std::dynamic_pointer_cast<UnsignedAttributeValue>(loclists_base);
+    assert(loclists_base_u);
+    assert(loclists_base_u->getValue() == 0x30);
+
+    auto str_offsets_base = ap.parseAttribute(DwarfAttribute::DW_AT_str_offsets_base, DwarfForm::DW_FORM_sec_offset, off);
+    auto str_offsets_base_u = std::dynamic_pointer_cast<UnsignedAttributeValue>(str_offsets_base);
+    assert(str_offsets_base_u);
+    assert(str_offsets_base_u->getValue() == 0x40);
+
+    auto macro_info = ap.parseAttribute(DwarfAttribute::DW_AT_macro_info, DwarfForm::DW_FORM_sec_offset, off);
+    auto macro_info_u = std::dynamic_pointer_cast<UnsignedAttributeValue>(macro_info);
+    assert(macro_info_u);
+    assert(macro_info_u->getValue() == 0x50);
+
+    auto macros = ap.parseAttribute(DwarfAttribute::DW_AT_macros, DwarfForm::DW_FORM_sec_offset, off);
+    auto macros_u = std::dynamic_pointer_cast<UnsignedAttributeValue>(macros);
+    assert(macros_u);
+    assert(macros_u->getValue() == 0x60);
+
+    auto base_types = ap.parseAttribute(DwarfAttribute::DW_AT_base_types, DwarfForm::DW_FORM_ref4, off);
+    auto base_types_ref = std::dynamic_pointer_cast<ReferenceAttributeValue>(base_types);
+    assert(base_types_ref);
+    assert(base_types_ref->getOffset() == 0x11223344);
+
+    auto namelist_item = ap.parseAttribute(DwarfAttribute::DW_AT_namelist_item, DwarfForm::DW_FORM_ref_udata, off);
+    auto namelist_item_ref = std::dynamic_pointer_cast<ReferenceAttributeValue>(namelist_item);
+    assert(namelist_item_ref);
+    assert(namelist_item_ref->getOffset() == 0x77);
+
+    auto trampoline = ap.parseAttribute(DwarfAttribute::DW_AT_trampoline, DwarfForm::DW_FORM_ref1, off);
+    auto trampoline_ref = std::dynamic_pointer_cast<ReferenceAttributeValue>(trampoline);
+    assert(trampoline_ref);
+    assert(trampoline_ref->getOffset() == 0x7a);
+
+    auto extension = ap.parseAttribute(DwarfAttribute::DW_AT_extension, DwarfForm::DW_FORM_ref_sup4, off);
+    auto extension_ref = std::dynamic_pointer_cast<ReferenceAttributeValue>(extension);
+    assert(extension_ref);
+    assert(extension_ref->getOffset() == 0x99aabbccULL);
+
+    assert(off == debug_info.size());
+
+    std::cout << "Standard reference/offset attribute routing tests passed!" << std::endl;
+}
+
+void testInvalidStandardReferenceAndOffsetFormsStayDeterministic() {
+    std::cout << "Testing invalid standard reference/offset forms stay deterministic..." << std::endl;
+
+    std::vector<uint8_t> debug_info;
+    appendCString(debug_info, "bad-signature");
+    appendU32(debug_info, 0x11223344);
+    appendCString(debug_info, "bad-trampoline");
+    appendU32(debug_info, 0x55667788);
+
+    std::vector<uint8_t> empty;
+    AttributeParser ap(debug_info, empty, empty);
+    ap.setDwarfVersion(DwarfVersion::DWARF5);
+    ap.setIsDwarf64(false);
+    ap.setAddressSize(8);
+
+    uint64_t off = 0;
+    auto bad_signature = ap.parseAttribute(DwarfAttribute::DW_AT_signature, DwarfForm::DW_FORM_string, off);
+    assert(!bad_signature);
+    assert(off == std::string("bad-signature").size() + 1);
+    assert(ap.getUnsupportedVendorFormSkipCount() == 0);
+
+    auto bad_base_types = ap.parseAttribute(DwarfAttribute::DW_AT_base_types, DwarfForm::DW_FORM_data4, off);
+    assert(!bad_base_types);
+    assert(off == std::string("bad-signature").size() + 1 + 4);
+    assert(ap.getUnsupportedVendorFormSkipCount() == 0);
+
+    auto bad_trampoline = ap.parseAttribute(DwarfAttribute::DW_AT_trampoline, DwarfForm::DW_FORM_string, off);
+    assert(!bad_trampoline);
+    assert(off == std::string("bad-signature").size() + 1 + 4 + std::string("bad-trampoline").size() + 1);
+    assert(ap.getUnsupportedVendorFormSkipCount() == 0);
+
+    auto bad_extension = ap.parseAttribute(DwarfAttribute::DW_AT_extension, DwarfForm::DW_FORM_data4, off);
+    assert(!bad_extension);
+    assert(off == debug_info.size());
+    assert(ap.getUnsupportedVendorFormSkipCount() == 0);
+
+    std::cout << "Invalid standard reference/offset form tests passed!" << std::endl;
+}
+
+void testParsedReferenceAndOffsetAttributesRemainUsable() {
+    std::cout << "Testing parsed reference and offset attributes remain usable..." << std::endl;
+
+    std::vector<uint8_t> debug_info;
+    appendU32(debug_info, 0x44);       // DW_AT_macro_info sec_offset
+    appendU32(debug_info, 0x88);       // DW_AT_macros sec_offset
+    appendU32(debug_info, 0x1234);     // DW_AT_addr_base sec_offset
+    appendU32(debug_info, 0x55667788); // DW_AT_base_types ref4
+    appendULEB(debug_info, 0x33);      // DW_AT_trampoline ref_udata
+    appendU32(debug_info, 0xabcdef01); // DW_AT_extension ref4
+
+    std::vector<uint8_t> empty;
+    AttributeParser ap(debug_info, empty, empty);
+    ap.setDwarfVersion(DwarfVersion::DWARF5);
+    ap.setIsDwarf64(false);
+    ap.setAddressSize(8);
+
+    uint64_t off = 0;
+    auto macro_info = ap.parseAttribute(DwarfAttribute::DW_AT_macro_info, DwarfForm::DW_FORM_sec_offset, off);
+    auto macros = ap.parseAttribute(DwarfAttribute::DW_AT_macros, DwarfForm::DW_FORM_sec_offset, off);
+    auto addr_base = ap.parseAttribute(DwarfAttribute::DW_AT_addr_base, DwarfForm::DW_FORM_sec_offset, off);
+    auto base_types = ap.parseAttribute(DwarfAttribute::DW_AT_base_types, DwarfForm::DW_FORM_ref4, off);
+    auto trampoline = ap.parseAttribute(DwarfAttribute::DW_AT_trampoline, DwarfForm::DW_FORM_ref_udata, off);
+    auto extension = ap.parseAttribute(DwarfAttribute::DW_AT_extension, DwarfForm::DW_FORM_ref4, off);
+    assert(off == debug_info.size());
+
+    auto die = std::make_shared<DIE>(DwarfTag::DW_TAG_compile_unit, 0x400, 0);
+    die->addAttribute(DwarfAttribute::DW_AT_macro_info, macro_info);
+    die->addAttribute(DwarfAttribute::DW_AT_macros, macros);
+    die->addAttribute(DwarfAttribute::DW_AT_addr_base, addr_base);
+    die->addAttribute(DwarfAttribute::DW_AT_base_types, base_types);
+    die->addAttribute(DwarfAttribute::DW_AT_trampoline, trampoline);
+    die->addAttribute(DwarfAttribute::DW_AT_extension, extension);
+
+    auto stored_macro_info = std::dynamic_pointer_cast<UnsignedAttributeValue>(
+        die->getAttribute(DwarfAttribute::DW_AT_macro_info));
+    auto stored_macros = std::dynamic_pointer_cast<UnsignedAttributeValue>(
+        die->getAttribute(DwarfAttribute::DW_AT_macros));
+    auto stored_addr_base = std::dynamic_pointer_cast<UnsignedAttributeValue>(
+        die->getAttribute(DwarfAttribute::DW_AT_addr_base));
+    auto stored_base_types = std::dynamic_pointer_cast<ReferenceAttributeValue>(
+        die->getAttribute(DwarfAttribute::DW_AT_base_types));
+    auto stored_trampoline = std::dynamic_pointer_cast<ReferenceAttributeValue>(
+        die->getAttribute(DwarfAttribute::DW_AT_trampoline));
+    auto stored_extension = std::dynamic_pointer_cast<ReferenceAttributeValue>(
+        die->getAttribute(DwarfAttribute::DW_AT_extension));
+    assert(stored_macro_info);
+    assert(stored_macro_info->getValue() == 0x44);
+    assert(stored_macros);
+    assert(stored_macros->getValue() == 0x88);
+    assert(stored_addr_base);
+    assert(stored_addr_base->getValue() == 0x1234);
+    assert(stored_base_types);
+    assert(stored_base_types->getOffset() == 0x55667788);
+    assert(stored_trampoline);
+    assert(stored_trampoline->getOffset() == 0x33);
+    assert(stored_extension);
+    assert(stored_extension->getOffset() == 0xabcdef01);
+
+    std::cout << "Parsed reference/offset attribute storage tests passed!" << std::endl;
+}
+
+void testTypeSignatureReferencesResolveToTypeDIE() {
+    std::cout << "Testing DW_FORM_ref_sig8 resolves to type DIE..." << std::endl;
+
+    std::vector<uint8_t> debug_str;
+    uint32_t type_name_off = static_cast<uint32_t>(debug_str.size());
+    appendCString(debug_str, "MyType");
+    uint32_t var_name_off = static_cast<uint32_t>(debug_str.size());
+    appendCString(debug_str, "var");
+
+    std::vector<uint8_t> debug_abbrev;
+    appendULEB(debug_abbrev, 1);
+    appendULEB(debug_abbrev, static_cast<uint64_t>(DwarfTag::DW_TAG_type_unit));
+    debug_abbrev.push_back(0x01);
+    debug_abbrev.push_back(0x00); debug_abbrev.push_back(0x00);
+
+    appendULEB(debug_abbrev, 2);
+    appendULEB(debug_abbrev, static_cast<uint64_t>(DwarfTag::DW_TAG_base_type));
+    debug_abbrev.push_back(0x00);
+    appendULEB(debug_abbrev, static_cast<uint64_t>(DwarfAttribute::DW_AT_name));
+    appendULEB(debug_abbrev, static_cast<uint64_t>(DwarfForm::DW_FORM_strp));
+    debug_abbrev.push_back(0x00); debug_abbrev.push_back(0x00);
+
+    appendULEB(debug_abbrev, 3);
+    appendULEB(debug_abbrev, static_cast<uint64_t>(DwarfTag::DW_TAG_compile_unit));
+    debug_abbrev.push_back(0x01);
+    debug_abbrev.push_back(0x00); debug_abbrev.push_back(0x00);
+
+    appendULEB(debug_abbrev, 4);
+    appendULEB(debug_abbrev, static_cast<uint64_t>(DwarfTag::DW_TAG_variable));
+    debug_abbrev.push_back(0x00);
+    appendULEB(debug_abbrev, static_cast<uint64_t>(DwarfAttribute::DW_AT_type));
+    appendULEB(debug_abbrev, static_cast<uint64_t>(DwarfForm::DW_FORM_ref_sig8));
+    appendULEB(debug_abbrev, static_cast<uint64_t>(DwarfAttribute::DW_AT_name));
+    appendULEB(debug_abbrev, static_cast<uint64_t>(DwarfForm::DW_FORM_strp));
+    debug_abbrev.push_back(0x00); debug_abbrev.push_back(0x00);
+    debug_abbrev.push_back(0x00);
+
+    std::vector<uint8_t> debug_info;
+
+    const uint64_t type_signature = 0x1122334455667788ULL;
+    size_t type_unit_start = debug_info.size();
+    appendU32(debug_info, 0);
+    appendU16LE(debug_info, 5);
+    debug_info.push_back(static_cast<uint8_t>(DwarfUnitType::DW_UT_type));
+    debug_info.push_back(0x08);
+    appendU32(debug_info, 0);
+    appendU64(debug_info, type_signature);
+    size_t type_offset_pos = debug_info.size();
+    appendU32(debug_info, 0); // type_offset placeholder
+    debug_info.push_back(0x01);
+    uint32_t type_die_offset = static_cast<uint32_t>(debug_info.size() - type_unit_start);
+    debug_info.push_back(0x02);
+    appendU32(debug_info, type_name_off);
+    debug_info.push_back(0x00);
+    {
+        uint32_t unit_length = static_cast<uint32_t>(debug_info.size() - type_unit_start - 4);
+        debug_info[type_unit_start + 0] = static_cast<uint8_t>(unit_length & 0xff);
+        debug_info[type_unit_start + 1] = static_cast<uint8_t>((unit_length >> 8) & 0xff);
+        debug_info[type_unit_start + 2] = static_cast<uint8_t>((unit_length >> 16) & 0xff);
+        debug_info[type_unit_start + 3] = static_cast<uint8_t>((unit_length >> 24) & 0xff);
+    }
+    debug_info[type_offset_pos + 0] = static_cast<uint8_t>(type_die_offset & 0xff);
+    debug_info[type_offset_pos + 1] = static_cast<uint8_t>((type_die_offset >> 8) & 0xff);
+    debug_info[type_offset_pos + 2] = static_cast<uint8_t>((type_die_offset >> 16) & 0xff);
+    debug_info[type_offset_pos + 3] = static_cast<uint8_t>((type_die_offset >> 24) & 0xff);
+
+    size_t cu_start = debug_info.size();
+    appendU32(debug_info, 0);
+    appendU16LE(debug_info, 4);
+    appendU32(debug_info, 0);
+    debug_info.push_back(0x08);
+    debug_info.push_back(0x03);
+    debug_info.push_back(0x04);
+    appendU64(debug_info, type_signature);
+    appendU32(debug_info, var_name_off);
+    debug_info.push_back(0x00);
+    {
+        uint32_t unit_length = static_cast<uint32_t>(debug_info.size() - cu_start - 4);
+        debug_info[cu_start + 0] = static_cast<uint8_t>(unit_length & 0xff);
+        debug_info[cu_start + 1] = static_cast<uint8_t>((unit_length >> 8) & 0xff);
+        debug_info[cu_start + 2] = static_cast<uint8_t>((unit_length >> 16) & 0xff);
+        debug_info[cu_start + 3] = static_cast<uint8_t>((unit_length >> 24) & 0xff);
+    }
+
+    std::string dir = makeTempDir("dwarf_ref_sig8_");
+    std::string elf_path = (std::filesystem::path(dir) / "ref_sig8.elf").string();
+    writeELFWithSections(elf_path, {
+        {".debug_info", debug_info},
+        {".debug_abbrev", debug_abbrev},
+        {".debug_str", debug_str},
+    });
+
+    DwarfParser parser(elf_path);
+    assert(parser.load());
+
+    auto vars = parser.getVariables();
+    assert(vars.size() == 1);
+    auto type_attr = std::dynamic_pointer_cast<TypeAttributeValue>(
+        vars[0]->getAttribute(DwarfAttribute::DW_AT_type));
+    assert(type_attr);
+    assert(!type_attr->isSignatureReference());
+
+    auto type_die = parser.findDIEByOffset(type_attr->getOffset());
+    assert(type_die);
+    assert(type_die->getTag() == DwarfTag::DW_TAG_base_type);
+    assert(type_die->getName() == "MyType");
+
+    std::cout << "DW_FORM_ref_sig8 resolution tests passed!" << std::endl;
 }
 
 void testStrxBasePointsToContributionHeader() {
@@ -17162,6 +18636,8 @@ int main() {
     
     try {
 	    testDwarfUtils();
+    testSupportMatrixSemanticRows();
+	    testDIEIsTypeCoversModeledStandardTypes();
 	    testExpressionEvaluator();
 	    testExpressionEvaluatorUnsupportedOp();
 	    testExpressionEvaluatorImplicitPiece();
@@ -17255,6 +18731,9 @@ int main() {
     testDebugNamesParserDwarf64DieOffsetAsAddr();
     testDebugNamesParserMalformedInputs();
 	    testDebugMacroParser();
+        testDebugMacinfoParser();
+        testLegacyLookupParsers();
+        testDwarfParserLegacySections();
 	    testDwarfParserMacroLookupFallsBackAcrossCUs();
         testDwarf5SkeletonUnitHeaderSkipsDWOId();
         testDwarf5SplitCompileUnitHeaderSkipsDWOId();
@@ -17262,8 +18741,25 @@ int main() {
         testDwarf5PartialUnitSetsCUContextForAddrx();
         testDwarf5SplitTypeUnitSetsCUContextForAddrx();
 	    testDwarfParserGetFunctionAtUsesRanges();
-	    testDebugLineV4ViaStmtList();
+    testDebugLineV4ViaStmtList();
     testDebugLineV5ViaStmtList();
+    testDebugLineV5PreservesFileMd5();
+    testDebugLineV5PreservesDirectoryMetadata();
+    testInvalidStandardTypedFormsDoNotCountAsVendorSkips();
+    testStandardConstantAndBoundAttributeRouting();
+    testInvalidStandardConstantFormsStayDeterministic();
+    testStandardMetadataReferenceAndAddressRouting();
+    testInvalidStandardMetadataReferenceAndAddressFormsStayDeterministic();
+    testStandardScalarStringAndFlagMetadataRouting();
+    testInvalidStandardScalarStringAndFlagMetadataFormsStayDeterministic();
+    testParsedMetadataIntegratesWithTypeSystemAndTypePrinter();
+    testStandardCallSiteAndDiscriminantAttributeRouting();
+    testInvalidStandardCallSiteAndDiscriminantFormsStayDeterministic();
+    testParsedCallSiteAndDiscriminantAttributesRemainUsable();
+    testStandardReferenceAndOffsetAttributeRouting();
+    testInvalidStandardReferenceAndOffsetFormsStayDeterministic();
+    testParsedReferenceAndOffsetAttributesRemainUsable();
+    testTypeSignatureReferencesResolveToTypeDIE();
     testStrxBasePointsToContributionHeader();
     testStrxContributionBoundsWhenBasePointsToTableStart();
     testAddrxBasePointsToContributionHeader();

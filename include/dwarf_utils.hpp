@@ -1,6 +1,8 @@
 #pragma once
 
 #include "dwarf_types.hpp"
+#include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 #include <map>
@@ -10,6 +12,25 @@ namespace dwarf {
 // Utility functions for DWARF parsing
 class DwarfUtils {
 public:
+    struct PreservedAttributePayload {
+        enum class Kind {
+            EXPRESSION,
+            BLOCK
+        };
+
+        Kind kind = Kind::EXPRESSION;
+        std::vector<uint8_t> bytes;
+        std::vector<std::string> tokens;
+    };
+
+    struct DecodedPayloadSemantics {
+        DwarfAttribute attribute = DwarfAttribute::DW_AT_name;
+        PreservedAttributePayload::Kind payload_kind = PreservedAttributePayload::Kind::EXPRESSION;
+        std::vector<uint8_t> bytes;
+        std::vector<std::string> tokens;
+        std::string assembly;
+    };
+
     struct SizeContext {
         uint8_t address_size = 4;
         uint8_t offset_size = 4;
@@ -86,6 +107,18 @@ public:
     static std::vector<std::string> expressionToTokens(const std::vector<uint8_t>& expression);
     static std::vector<std::string> expressionToTokens(const std::vector<uint8_t>& expression,
                                                        const SizeContext& ctx);
+    static std::optional<PreservedAttributePayload> decodePreservedPayloadAttribute(
+        DwarfAttribute attr, const std::shared_ptr<AttributeValue>& value);
+    static std::optional<PreservedAttributePayload> decodePreservedPayloadAttribute(
+        DwarfAttribute attr, const std::shared_ptr<AttributeValue>& value, const SizeContext& ctx);
+    static std::optional<DecodedPayloadSemantics> decodeCallSitePayloadAttribute(
+        DwarfAttribute attr, const std::shared_ptr<AttributeValue>& value);
+    static std::optional<DecodedPayloadSemantics> decodeCallSitePayloadAttribute(
+        DwarfAttribute attr, const std::shared_ptr<AttributeValue>& value, const SizeContext& ctx);
+    static std::optional<DecodedPayloadSemantics> decodeDiscriminantPayloadAttribute(
+        DwarfAttribute attr, const std::shared_ptr<AttributeValue>& value);
+    static std::optional<DecodedPayloadSemantics> decodeDiscriminantPayloadAttribute(
+        DwarfAttribute attr, const std::shared_ptr<AttributeValue>& value, const SizeContext& ctx);
     
     // File utilities
     static bool fileExists(const std::string& filename);
@@ -182,6 +215,10 @@ namespace constants {
     constexpr const char* DEBUG_NAMES_SECTION = ".debug_names";
     constexpr const char* DEBUG_RNGLISTS_SECTION = ".debug_rnglists";
     constexpr const char* DEBUG_LOCLISTS_SECTION = ".debug_loclists";
+    constexpr const char* DEBUG_ARANGES_SECTION = ".debug_aranges";
+    constexpr const char* DEBUG_PUBNAMES_SECTION = ".debug_pubnames";
+    constexpr const char* DEBUG_PUBTYPES_SECTION = ".debug_pubtypes";
+    constexpr const char* DEBUG_MACINFO_SECTION = ".debug_macinfo";
     constexpr const char* DEBUG_SUP_SECTION = ".debug_sup";
     constexpr const char* DEBUG_STR_SUP_SECTION = ".debug_str_sup";
     constexpr const char* DEBUG_FRAME_SECTION = ".debug_frame";

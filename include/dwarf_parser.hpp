@@ -4,6 +4,7 @@
 #include "die_parser.hpp"
 #include "debug_names_parser.hpp"
 #include "debug_macro_parser.hpp"
+#include "legacy_dwarf_parser.hpp"
 #include "cfi_parser.hpp"
 #include "source_location.hpp"
 #include "variable_location.hpp"
@@ -93,6 +94,11 @@ public:
     std::vector<MacroDefinition> getMacroDefinitionsForCU(const std::shared_ptr<DIE>& cu) const;
     std::vector<MacroDefinition> lookupMacroForCU(const std::shared_ptr<DIE>& cu, const std::string& name) const;
     bool hasMacroInfo() const { return macro_parser_ != nullptr; }
+    bool hasLegacyMacroInfo() const { return macinfo_parser_ != nullptr; }
+
+    const std::vector<LegacyArangeEntry>& getAranges() const { return aranges_; }
+    const std::vector<LegacyPublicNameEntry>& getPublicNames() const { return pubnames_; }
+    const std::vector<LegacyPublicNameEntry>& getPublicTypes() const { return pubtypes_; }
 
     // CFI (Call Frame Information) / Stack Unwinding
     UnwindInfo getUnwindInfo(uint64_t pc) const;
@@ -180,6 +186,10 @@ private:
     std::vector<uint8_t> debug_str_sup_;
     std::vector<uint8_t> debug_names_;
     std::vector<uint8_t> debug_macro_;
+    std::vector<uint8_t> debug_aranges_;
+    std::vector<uint8_t> debug_pubnames_;
+    std::vector<uint8_t> debug_pubtypes_;
+    std::vector<uint8_t> debug_macinfo_;
 
     // Supplementary file sections (DWARF5 .debug_sup)
     std::vector<uint8_t> sup_debug_info_;
@@ -199,6 +209,10 @@ private:
     // DWARF 5 parsers
     std::unique_ptr<DebugNamesParser> names_parser_;
     std::unique_ptr<DebugMacroParser> macro_parser_;
+    std::unique_ptr<DebugMacinfoParser> macinfo_parser_;
+    std::vector<LegacyArangeEntry> aranges_;
+    std::vector<LegacyPublicNameEntry> pubnames_;
+    std::vector<LegacyPublicNameEntry> pubtypes_;
 
     // CFI parser
     std::unique_ptr<CFIParser> cfi_parser_;
@@ -225,6 +239,7 @@ private:
     std::vector<std::shared_ptr<DIE>> compilation_units_;
     std::vector<std::shared_ptr<DIE>> supplementary_units_;
     std::map<uint64_t, std::shared_ptr<DIE>> die_cache_;
+    std::unordered_map<uint64_t, uint64_t> type_signature_die_offset_cache_;
     
     // DWARF version info
     DwarfVersion version_;
@@ -239,6 +254,9 @@ private:
     bool parseCompilationUnits();
     void integrateSupplementary();
     void integrateSplitDwarf();
+    void resolveTypeSignatureReferences();
+    void indexTypeUnitSignature(std::shared_ptr<DIE> die);
+    void resolveTypeSignatureReferences(std::shared_ptr<DIE> die);
     uint64_t getOrAssignDWOBias(uint64_t dwo_id);
     const std::vector<uint64_t>* getDebugAddrTable(uint64_t addr_base, uint8_t address_size) const;
     const std::vector<uint64_t>* getDebugAddrTableForSection(const std::vector<uint8_t>& debug_addr_section,
