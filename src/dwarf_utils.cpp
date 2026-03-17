@@ -456,6 +456,30 @@ DwarfOp DwarfUtils::stringToOperation(const std::string& str) {
     return static_cast<DwarfOp>(0);
 }
 
+const std::vector<DwarfOp>& DwarfUtils::knownGnuExtensionOperations() {
+    static const std::vector<DwarfOp> kKnownGnuOps = {
+        DwarfOp::DW_OP_GNU_push_tls_address,
+        DwarfOp::DW_OP_GNU_uninit,
+        DwarfOp::DW_OP_GNU_encoded_addr,
+        DwarfOp::DW_OP_GNU_implicit_pointer,
+        DwarfOp::DW_OP_GNU_entry_value,
+        DwarfOp::DW_OP_GNU_const_type,
+        DwarfOp::DW_OP_GNU_regval_type,
+        DwarfOp::DW_OP_GNU_deref_type,
+        DwarfOp::DW_OP_GNU_convert,
+        DwarfOp::DW_OP_GNU_reinterpret,
+        DwarfOp::DW_OP_GNU_parameter_ref,
+        DwarfOp::DW_OP_GNU_addr_index,
+        DwarfOp::DW_OP_GNU_const_index,
+    };
+    return kKnownGnuOps;
+}
+
+bool DwarfUtils::isKnownGnuExtensionOperation(DwarfOp op) {
+    const auto& known = knownGnuExtensionOperations();
+    return std::find(known.begin(), known.end(), op) != known.end();
+}
+
 // Endianness handling
 uint16_t DwarfUtils::swapBytes(uint16_t value) {
     return static_cast<uint16_t>((value >> 8) | (value << 8));

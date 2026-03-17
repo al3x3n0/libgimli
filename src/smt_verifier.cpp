@@ -52,11 +52,10 @@ public:
     explicit Encoder(z3::context& ctx, bool little_endian)
         : ctx_(ctx),
           little_endian_(little_endian),
-          memory_(ctx_.constant("mem", ctx_.array_sort(ctx_.bv_sort(64), ctx_.bv_sort(8)))),
-          ok_(true) {}
+          memory_(ctx_.constant("mem", ctx_.array_sort(ctx_.bv_sort(64), ctx_.bv_sort(8)))) {}
 
     z3::expr encodeValue(const SymExprPtr& expr) {
-        if (!expr) return fail("null symbolic expression");
+        if (!expr) return mkVar("opaque_null_expr");
         auto it = cache_.find(expr.get());
         if (it != cache_.end()) return it->second;
         z3::expr encoded = encodeRaw(expr);
@@ -64,26 +63,13 @@ public:
         return encoded;
     }
 
-    bool ok() const { return ok_; }
-    const std::string& error() const { return error_; }
-
 private:
     z3::context& ctx_;
     bool little_endian_;
     z3::expr memory_;
-    bool ok_;
-    std::string error_;
     std::unordered_map<const SymExpr*, z3::expr> cache_;
     std::unordered_map<std::string, z3::expr> variables_;
     std::unordered_map<std::string, size_t> symbol_counts_;
-
-    z3::expr fail(const std::string& why) {
-        if (ok_) {
-            ok_ = false;
-            error_ = why;
-        }
-        return ctx_.bv_val(0, 64);
-    }
 
     z3::expr bvZero() { return ctx_.bv_val(0, 64); }
     z3::expr bvOne() { return ctx_.bv_val(1, 64); }
@@ -99,6 +85,11 @@ private:
         return v;
     }
 
+    z3::expr mkOpaqueShapeVar(const std::string& prefix, const SymExprPtr& expr) {
+        if (!expr) return mkVar(prefix + "_null_expr");
+        return mkVar(prefix + "_" + expr->toString());
+    }
+
     z3::expr nonZero(const z3::expr& v) { return v != bvZero(); }
 
     z3::expr toBool01(const z3::expr& pred) { return z3::ite(pred, bvOne(), bvZero()); }
@@ -109,7 +100,11 @@ private:
     }
 
     z3::expr loadN(const z3::expr& addr, uint64_t size_bytes) {
-        if (size_bytes == 0 || size_bytes > 8) return fail("unsupported load size");
+        if (size_bytes == 0 || size_bytes > 8) {
+            std::ostringstream ss;
+            ss << "opaque_invalid_load_bytes_" << size_bytes;
+            return mkVar(ss.str());
+        }
 
         std::vector<z3::expr> bytes;
         bytes.reserve(static_cast<size_t>(size_bytes));
@@ -147,15 +142,15 @@ private:
                 return mkVar("unknown_" + expr->name);
 
             case SymExpr::Kind::NEG: {
-                if (expr->args.size() != 1) return fail("NEG arity mismatch");
+                if (expr->args.size() != 1) return mkOpaqueShapeVar("opaque_neg_arity", expr);
                 return -encodeValue(expr->args[0]);
             }
             case SymExpr::Kind::NOT: {
-                if (expr->args.size() != 1) return fail("NOT arity mismatch");
+                if (expr->args.size() != 1) return mkOpaqueShapeVar("opaque_not_arity", expr);
                 return ~encodeValue(expr->args[0]);
             }
             case SymExpr::Kind::ABS: {
-                if (expr->args.size() != 1) return fail("ABS arity mismatch");
+                if (expr->args.size() != 1) return mkOpaqueShapeVar("opaque_abs_arity", expr);
                 z3::expr v = encodeValue(expr->args[0]);
                 return z3::ite(z3::slt(v, bvZero()), -v, v);
             }
@@ -177,7 +172,7 @@ private:
             case SymExpr::Kind::LE:
             case SymExpr::Kind::GT:
             case SymExpr::Kind::GE: {
-                if (expr->args.size() != 2) return fail("binary arity mismatch");
+                if (expr->args.size() != 2) return mkOpaqueShapeVar("opaque_binary_arity", expr);
                 z3::expr a = encodeValue(expr->args[0]);
                 z3::expr b = encodeValue(expr->args[1]);
                 switch (expr->kind) {
@@ -200,11 +195,11 @@ private:
                     case SymExpr::Kind::GE: return toBool01(z3::sge(a, b));
                     default: break;
                 }
-                return fail("internal binary dispatch error");
+                return mkOpaqueShapeVar("opaque_binary_dispatch", expr);
             }
 
             case SymExpr::Kind::ITE: {
-                if (expr->args.size() != 3) return fail("ITE arity mismatch");
+                if (expr->args.size() != 3) return mkOpaqueShapeVar("opaque_ite_arity", expr);
                 z3::expr cond = encodeValue(expr->args[0]);
                 z3::expr t = encodeValue(expr->args[1]);
                 z3::expr f = encodeValue(expr->args[2]);
@@ -212,7 +207,7 @@ private:
             }
 
             case SymExpr::Kind::LOAD: {
-                if (expr->args.size() != 1) return fail("LOAD arity mismatch");
+                if (expr->args.size() != 1) return mkOpaqueShapeVar("opaque_load_arity", expr);
                 if (expr->aux_bytes > 8) {
                     return mkVar("wide_load_" + expr->toString());
                 }
@@ -220,7 +215,7 @@ private:
             }
 
             case SymExpr::Kind::MASK: {
-                if (expr->args.size() != 1) return fail("MASK arity mismatch");
+                if (expr->args.size() != 1) return mkOpaqueShapeVar("opaque_mask_arity", expr);
                 z3::expr v = encodeValue(expr->args[0]);
                 if (expr->aux_bytes == 0 || expr->aux_bytes >= 8) return v;
                 unsigned bits = static_cast<unsigned>(expr->aux_bytes * 8);
@@ -229,7 +224,7 @@ private:
             }
 
             case SymExpr::Kind::SEXT: {
-                if (expr->args.size() != 1) return fail("SEXT arity mismatch");
+                if (expr->args.size() != 1) return mkOpaqueShapeVar("opaque_sext_arity", expr);
                 z3::expr v = encodeValue(expr->args[0]);
                 if (expr->aux_bytes == 0 || expr->aux_bytes >= 8) return v;
                 unsigned bits = static_cast<unsigned>(expr->aux_bytes * 8);
@@ -237,7 +232,7 @@ private:
                 return z3::sext(lo, 64 - bits);
             }
         }
-        return fail("unsupported symbolic node");
+        return mkOpaqueShapeVar("opaque_invalid_kind", expr);
     }
 };
 
@@ -302,6 +297,109 @@ bool needsUnsupportedStructuralPrecheck(const SymExprPtr& expr) {
         if (needsUnsupportedStructuralPrecheck(arg)) return true;
     }
     return false;
+}
+
+enum class SymbolicShapeClass {
+    ENCODABLE,
+    INVALID_STRUCTURE,
+    INVALID_LOAD_SIZE,
+    INVALID_KIND
+};
+
+SymbolicShapeClass classifySymbolicShape(const SymExprPtr& expr) {
+    if (!expr) return SymbolicShapeClass::INVALID_STRUCTURE;
+    switch (expr->kind) {
+        case SymExpr::Kind::CONST_U64:
+        case SymExpr::Kind::BYTES:
+        case SymExpr::Kind::VAR:
+        case SymExpr::Kind::UNKNOWN:
+            break;
+        case SymExpr::Kind::NEG:
+        case SymExpr::Kind::NOT:
+        case SymExpr::Kind::ABS:
+        case SymExpr::Kind::MASK:
+        case SymExpr::Kind::SEXT:
+            if (expr->args.size() != 1) return SymbolicShapeClass::INVALID_STRUCTURE;
+            break;
+        case SymExpr::Kind::LOAD:
+            if (expr->args.size() != 1) return SymbolicShapeClass::INVALID_STRUCTURE;
+            if (expr->aux_bytes == 0) return SymbolicShapeClass::INVALID_LOAD_SIZE;
+            break;
+        case SymExpr::Kind::ADD:
+        case SymExpr::Kind::SUB:
+        case SymExpr::Kind::MUL:
+        case SymExpr::Kind::DIV:
+        case SymExpr::Kind::MOD:
+        case SymExpr::Kind::AND:
+        case SymExpr::Kind::OR:
+        case SymExpr::Kind::XOR:
+        case SymExpr::Kind::SHL:
+        case SymExpr::Kind::SHR:
+        case SymExpr::Kind::SHRA:
+        case SymExpr::Kind::EQ:
+        case SymExpr::Kind::NE:
+        case SymExpr::Kind::LT:
+        case SymExpr::Kind::LE:
+        case SymExpr::Kind::GT:
+        case SymExpr::Kind::GE:
+            if (expr->args.size() != 2) return SymbolicShapeClass::INVALID_STRUCTURE;
+            break;
+        case SymExpr::Kind::ITE:
+            if (expr->args.size() != 3) return SymbolicShapeClass::INVALID_STRUCTURE;
+            break;
+        default:
+            return SymbolicShapeClass::INVALID_KIND;
+    }
+    for (const auto& arg : expr->args) {
+        SymbolicShapeClass child = classifySymbolicShape(arg);
+        if (child != SymbolicShapeClass::ENCODABLE) return child;
+    }
+    return SymbolicShapeClass::ENCODABLE;
+}
+
+std::optional<std::pair<std::string, std::string>> classifyDeterministicPrecheckResult(
+    const SymExprPtr& lhs, const SymExprPtr& rhs, bool composite_piece) {
+    SymbolicShapeClass lhs_class = classifySymbolicShape(lhs);
+    SymbolicShapeClass rhs_class = classifySymbolicShape(rhs);
+    SymbolicShapeClass merged = lhs_class != SymbolicShapeClass::ENCODABLE ? lhs_class : rhs_class;
+    if (merged == SymbolicShapeClass::ENCODABLE) return std::nullopt;
+
+    const bool same = structurallyEqualExpr(lhs, rhs);
+    switch (merged) {
+        case SymbolicShapeClass::INVALID_STRUCTURE:
+            return std::make_pair(
+                same ? (composite_piece ? "composite malformed symbolic piece matched structurally"
+                                        : "malformed symbolic expressions matched structurally")
+                     : (composite_piece ? "composite malformed symbolic piece mismatch"
+                                        : "malformed symbolic expressions differ"),
+                same ? (composite_piece ? "precheck_piece_invalid_symbolic_equal"
+                                        : "precheck_invalid_symbolic_equal")
+                     : (composite_piece ? "precheck_piece_invalid_symbolic_mismatch"
+                                        : "precheck_invalid_symbolic_mismatch"));
+        case SymbolicShapeClass::INVALID_LOAD_SIZE:
+            return std::make_pair(
+                same ? (composite_piece ? "composite zero-byte load piece matched structurally"
+                                        : "zero-byte load expressions matched structurally")
+                     : (composite_piece ? "composite zero-byte load piece mismatch"
+                                        : "zero-byte load expressions differ"),
+                same ? (composite_piece ? "precheck_piece_invalid_load_equal"
+                                        : "precheck_invalid_load_equal")
+                     : (composite_piece ? "precheck_piece_invalid_load_mismatch"
+                                        : "precheck_invalid_load_mismatch"));
+        case SymbolicShapeClass::INVALID_KIND:
+            return std::make_pair(
+                same ? (composite_piece ? "composite invalid-kind symbolic piece matched structurally"
+                                        : "invalid-kind symbolic expressions matched structurally")
+                     : (composite_piece ? "composite invalid-kind symbolic piece mismatch"
+                                        : "invalid-kind symbolic expressions differ"),
+                same ? (composite_piece ? "precheck_piece_invalid_symbol_kind_equal"
+                                        : "precheck_invalid_symbol_kind_equal")
+                     : (composite_piece ? "precheck_piece_invalid_symbol_kind_mismatch"
+                                        : "precheck_invalid_symbol_kind_mismatch"));
+        case SymbolicShapeClass::ENCODABLE:
+            break;
+    }
+    return std::nullopt;
 }
 
 std::string formatModelWitness(const z3::model& model) {
@@ -438,6 +536,15 @@ SMTVerificationResult SMTExpressionVerifier::verify(const SymbolicExpressionResu
                 return out;
             }
 
+            if (auto classification = classifyDeterministicPrecheckResult(l.location, r.location, true)) {
+                const bool same = classification->second.find("_equal") != std::string::npos;
+                out.verdict = same ? ExpressionVerificationResult::Verdict::EQUIVALENT
+                                   : ExpressionVerificationResult::Verdict::DIFFERENT;
+                out.reason = classification->first + " at index " + std::to_string(i);
+                out.solver_result = classification->second;
+                return out;
+            }
+
             if (needsUnsupportedStructuralPrecheck(l.location) &&
                 needsUnsupportedStructuralPrecheck(r.location) &&
                 structurallyEqualExpr(l.location, r.location)) {
@@ -462,13 +569,6 @@ SMTVerificationResult SMTExpressionVerifier::verify(const SymbolicExpressionResu
             z3::expr rv = encoder.encodeValue(r.location);
             has_symbolic_piece = true;
             any_diff = any_diff || (lv != rv);
-        }
-
-        if (!encoder.ok()) {
-            out.verdict = ExpressionVerificationResult::Verdict::UNKNOWN;
-            out.reason = "SMT encoding unsupported: " + encoder.error();
-            out.solver_result = "encoding_error";
-            return out;
         }
 
         if (!has_symbolic_piece) {
@@ -504,6 +604,16 @@ SMTVerificationResult SMTExpressionVerifier::verify(const SymbolicExpressionResu
         }
     }
 
+    if (auto classification =
+            classifyDeterministicPrecheckResult(lhs.expression, rhs.expression, false)) {
+        const bool same = classification->second.find("_equal") != std::string::npos;
+        out.verdict = same ? ExpressionVerificationResult::Verdict::EQUIVALENT
+                           : ExpressionVerificationResult::Verdict::DIFFERENT;
+        out.reason = classification->first;
+        out.solver_result = classification->second;
+        return out;
+    }
+
     if (needsUnsupportedStructuralPrecheck(lhs.expression) &&
         needsUnsupportedStructuralPrecheck(rhs.expression) &&
         structurallyEqualExpr(lhs.expression, rhs.expression)) {
@@ -515,12 +625,6 @@ SMTVerificationResult SMTExpressionVerifier::verify(const SymbolicExpressionResu
 
     z3::expr l = encoder.encodeValue(lhs.expression);
     z3::expr r = encoder.encodeValue(rhs.expression);
-    if (!encoder.ok()) {
-        out.verdict = ExpressionVerificationResult::Verdict::UNKNOWN;
-        out.reason = "SMT encoding unsupported: " + encoder.error();
-        out.solver_result = "encoding_error";
-        return out;
-    }
     return checkPredicateUnsat(ctx, l != r, timeout_ms);
 }
 

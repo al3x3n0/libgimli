@@ -125,6 +125,7 @@ struct DWPIndex {
     uint32_t unit_count;
     uint32_t slot_count;
     std::map<uint64_t, UnitEntry> units;  // signature -> entry
+    std::vector<uint32_t> unknown_section_ids;
 };
 
 // DWARF package file loader
@@ -156,6 +157,11 @@ public:
     bool isTUIndexValid() const { return tu_index_valid_; }
     size_t getCUIndexedUnitCount() const { return cu_index_.units.size(); }
     size_t getTUIndexedUnitCount() const { return tu_index_.units.size(); }
+    const std::vector<uint32_t>& getUnknownCUSectionIds() const { return cu_index_.unknown_section_ids; }
+    const std::vector<uint32_t>& getUnknownTUSectionIds() const { return tu_index_.unknown_section_ids; }
+    bool hasUnknownSectionIds() const {
+        return !cu_index_.unknown_section_ids.empty() || !tu_index_.unknown_section_ids.empty();
+    }
 
 private:
     bool is_loaded_ = false;

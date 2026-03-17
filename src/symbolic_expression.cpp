@@ -300,13 +300,16 @@ SymExprPtr SymExpr::makeSExt(SymExprPtr v, uint64_t size_bytes) {
 }
 
 std::string SymExpr::toString() const {
+    auto child = [](const SymExprPtr& expr) -> std::string {
+        return expr ? expr->toString() : "null_expr";
+    };
     auto bin = [&](const char* op) -> std::string {
         if (args.size() != 2) {
             std::ostringstream ss;
             ss << "malformed_bin(" << op << ",argc=" << args.size() << ")";
             return ss.str();
         }
-        return "(" + args[0]->toString() + " " + op + " " + args[1]->toString() + ")";
+        return "(" + child(args[0]) + " " + op + " " + child(args[1]) + ")";
     };
     auto un = [&](const char* op) -> std::string {
         if (args.size() != 1) {
@@ -314,7 +317,7 @@ std::string SymExpr::toString() const {
             ss << "malformed_un(" << op << ",argc=" << args.size() << ")";
             return ss.str();
         }
-        return std::string(op) + "(" + args[0]->toString() + ")";
+        return std::string(op) + "(" + child(args[0]) + ")";
     };
 
     switch (kind) {
@@ -357,31 +360,49 @@ std::string SymExpr::toString() const {
         case Kind::GT: return bin(">");
         case Kind::GE: return bin(">=");
         case Kind::ITE: {
-            assert(args.size() == 3);
-            return "ite(" + args[0]->toString() + "," + args[1]->toString() + "," + args[2]->toString() + ")";
+            if (args.size() != 3) {
+                std::ostringstream ss;
+                ss << "malformed_ite(argc=" << args.size() << ")";
+                return ss.str();
+            }
+            return "ite(" + child(args[0]) + "," + child(args[1]) + "," + child(args[2]) + ")";
         }
         case Kind::LOAD: {
-            assert(args.size() == 1);
+            if (args.size() != 1) {
+                std::ostringstream ss;
+                ss << "malformed_load(argc=" << args.size() << ",bytes=" << std::dec << aux_bytes << ")";
+                return ss.str();
+            }
             std::ostringstream ss;
-            ss << "load(" << args[0]->toString() << "," << std::dec << aux_bytes << ")";
+            ss << "load(" << child(args[0]) << "," << std::dec << aux_bytes << ")";
             return ss.str();
         }
         case Kind::MASK: {
-            assert(args.size() == 1);
+            if (args.size() != 1) {
+                std::ostringstream ss;
+                ss << "malformed_mask(argc=" << args.size() << ",bytes=" << std::dec << aux_bytes << ")";
+                return ss.str();
+            }
             std::ostringstream ss;
-            ss << "mask" << std::dec << aux_bytes << "(" << args[0]->toString() << ")";
+            ss << "mask" << std::dec << aux_bytes << "(" << child(args[0]) << ")";
             return ss.str();
         }
         case Kind::SEXT: {
-            assert(args.size() == 1);
+            if (args.size() != 1) {
+                std::ostringstream ss;
+                ss << "malformed_sext(argc=" << args.size() << ",bytes=" << std::dec << aux_bytes << ")";
+                return ss.str();
+            }
             std::ostringstream ss;
-            ss << "sext" << std::dec << aux_bytes << "(" << args[0]->toString() << ")";
+            ss << "sext" << std::dec << aux_bytes << "(" << child(args[0]) << ")";
             return ss.str();
         }
         case Kind::UNKNOWN:
             return "unknown(" + name + ")";
     }
-    return "unknown(?)";
+    std::ostringstream ss;
+    ss << "malformed_kind(" << static_cast<int>(kind) << ")";
+    return ss.str();
 }
 
 SymExprPtr SymbolicExpressionEvaluator::pop() {

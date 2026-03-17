@@ -35,6 +35,15 @@ static std::string formatCompactHexBytes(const std::vector<uint8_t>& bytes) {
     return oss.str();
 }
 
+static std::string formatCompactU32HexList(const std::vector<uint32_t>& values) {
+    std::ostringstream oss;
+    for (size_t i = 0; i < values.size(); ++i) {
+        if (i != 0) oss << ";";
+        oss << "0x" << std::hex << values[i] << std::dec;
+    }
+    return oss.str();
+}
+
 static std::optional<DwarfUtils::DecodedPayloadSemantics> decodeSemanticAttributeForDump(
     DwarfAttribute attr, const std::shared_ptr<AttributeValue>& value) {
     switch (attr) {
@@ -618,7 +627,8 @@ void printSummary(const DwarfParser& parser) {
 
 void printSupportMatrix(const DwarfParser* parser = nullptr,
                         const std::string& format = "text",
-                        int schema_version = 1) {
+                        int schema_version = 1,
+                        bool verbose = false) {
     struct RuntimeField {
         std::string key;
         std::string text_value;
@@ -676,6 +686,14 @@ void printSupportMatrix(const DwarfParser* parser = nullptr,
         pushBool("has_dwp_tu_index", parser->hasDWPTUIndexSection());
         pushBool("dwp_tu_index_valid", parser->isDWPTUIndexValid());
         pushInt("dwp_tu_index_units", parser->getDWPTUIndexedUnitCount());
+        if (verbose && !parser->getUnknownDWPCUSectionIds().empty()) {
+            pushString("unknown_dwp_cu_section_ids",
+                       formatCompactU32HexList(parser->getUnknownDWPCUSectionIds()));
+        }
+        if (verbose && !parser->getUnknownDWPTUSectionIds().empty()) {
+            pushString("unknown_dwp_tu_section_ids",
+                       formatCompactU32HexList(parser->getUnknownDWPTUSectionIds()));
+        }
         pushInt("dwp_hits", s.dwp_hits);
         pushInt("dwo_hits", s.dwo_hits);
         pushInt("dwo_fallback_hits", s.dwo_fallback_hits);
@@ -760,6 +778,24 @@ void printSupportMatrix(const DwarfParser* parser = nullptr,
                 out << "\"" << esc(runtime_fields[i].key) << "\":" << runtime_fields[i].json_value;
             }
             if (parser && schema_version >= 2) {
+                if (!parser->getUnknownDWPCUSectionIds().empty()) {
+                    out << ",\"unknown_dwp_cu_section_ids\":[";
+                    const auto& ids = parser->getUnknownDWPCUSectionIds();
+                    for (size_t i = 0; i < ids.size(); ++i) {
+                        if (i > 0) out << ",";
+                        out << ids[i];
+                    }
+                    out << "]";
+                }
+                if (!parser->getUnknownDWPTUSectionIds().empty()) {
+                    out << ",\"unknown_dwp_tu_section_ids\":[";
+                    const auto& ids = parser->getUnknownDWPTUSectionIds();
+                    for (size_t i = 0; i < ids.size(); ++i) {
+                        if (i > 0) out << ",";
+                        out << ids[i];
+                    }
+                    out << "]";
+                }
                 const auto& t = parser->getSupportTelemetry();
                 const auto& examples = t.vendor_form_skip_examples_structured;
                 out << ",\"vendor_form_skip_examples_structured\":[";
@@ -3669,7 +3705,7 @@ int main(int argc, char* argv[]) {
 
     if (optind >= argc) {
         if (opts.show_support) {
-            printSupportMatrix(nullptr, opts.output_format, opts.support_schema_version);
+            printSupportMatrix(nullptr, opts.output_format, opts.support_schema_version, opts.verbose);
             return 0;
         }
         std::cerr << "Error: No input file specified\n";
@@ -3720,7 +3756,7 @@ int main(int argc, char* argv[]) {
         if (opts.summary || opts.dump_all) {
             std::cout << "\n";
         }
-        printSupportMatrix(&parser, opts.output_format, opts.support_schema_version);
+        printSupportMatrix(&parser, opts.output_format, opts.support_schema_version, opts.verbose);
     }
 
     if (!opts.find_name.empty()) {

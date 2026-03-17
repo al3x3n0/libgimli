@@ -146,6 +146,15 @@ public:
     bool hasDWPTUIndexSection() const { return dwp_loader_ && dwp_loader_->hasTUIndexSection(); }
     bool isDWPTUIndexValid() const { return dwp_loader_ && dwp_loader_->isTUIndexValid(); }
     size_t getDWPTUIndexedUnitCount() const { return dwp_loader_ ? dwp_loader_->getTUIndexedUnitCount() : 0; }
+    const std::vector<uint32_t>& getUnknownDWPCUSectionIds() const {
+        static const std::vector<uint32_t> empty;
+        return dwp_loader_ ? dwp_loader_->getUnknownCUSectionIds() : empty;
+    }
+    const std::vector<uint32_t>& getUnknownDWPTUSectionIds() const {
+        static const std::vector<uint32_t> empty;
+        return dwp_loader_ ? dwp_loader_->getUnknownTUSectionIds() : empty;
+    }
+    bool hasUnknownDWPSectionIds() const { return dwp_loader_ && dwp_loader_->hasUnknownSectionIds(); }
     const SplitDwarfStats& getSplitDwarfStats() const { return split_stats_; }
     const SupportTelemetry& getSupportTelemetry() const { return support_telemetry_; }
 

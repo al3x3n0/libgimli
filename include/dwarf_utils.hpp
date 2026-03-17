@@ -55,6 +55,8 @@ public:
     // Operation name conversion
     static std::string operationToString(DwarfOp op);
     static DwarfOp stringToOperation(const std::string& str);
+    static const std::vector<DwarfOp>& knownGnuExtensionOperations();
+    static bool isKnownGnuExtensionOperation(DwarfOp op);
     
     // Data reading utilities
     static uint64_t readULEB128(const uint8_t* data, uint64_t& offset, size_t max_offset);

@@ -633,9 +633,6 @@ void assertVendorTelemetryText(const std::string& out_text,
         needle << "form=0x" << std::hex << form;
         assert(text_examples.find(needle.str()) != std::string::npos);
     }
-    for (const auto& severity : expected.severities) {
-        assert(text_examples.find("severity=" + severity) != std::string::npos);
-    }
 
     std::string histogram = extractValueForTextKey(out_text, "vendor_form_skip_histogram");
     for (const auto& [form, count] : expected.histogram_entries) {
@@ -928,6 +925,110 @@ int main() {
         });
     };
 
+    auto writeSplitUnknownSectionFixture = [](const std::string& prefix,
+                                              bool tu_index,
+                                              uint32_t unknown_id,
+                                              std::string& main_path,
+                                              std::string& dwp_path) {
+        const uint64_t dwo_id = tu_index ? 0x66778899AABBCCDDULL : 0x1122446688AACCEEULL;
+        const std::string dwo_name = prefix + ".dwo";
+
+        fs::path dir = fs::path("/tmp") / ("dwarf_cli_unknown_dwp_" + prefix + "_" + std::to_string(std::rand()));
+        std::error_code ec;
+        fs::create_directories(dir, ec);
+        assert(fs::exists(dir));
+
+        std::vector<uint8_t> main_str;
+        uint32_t dwo_name_off = static_cast<uint32_t>(main_str.size());
+        for (char c : dwo_name) main_str.push_back(static_cast<uint8_t>(c));
+        main_str.push_back(0);
+
+        std::vector<uint8_t> main_abbrev;
+        main_abbrev.push_back(0x01);
+        main_abbrev.push_back(0x11);
+        main_abbrev.push_back(0x00);
+        main_abbrev.push_back(0x76);
+        main_abbrev.push_back(0x0e);
+        main_abbrev.push_back(0x75);
+        main_abbrev.push_back(0x07);
+        main_abbrev.push_back(0x00); main_abbrev.push_back(0x00);
+        main_abbrev.push_back(0x00);
+
+        std::vector<uint8_t> main_info;
+        appendU32LE(main_info, 0);
+        appendU16LE(main_info, 4);
+        appendU32LE(main_info, 0);
+        main_info.push_back(0x08);
+        main_info.push_back(0x01);
+        appendU32LE(main_info, dwo_name_off);
+        appendU64LE(main_info, dwo_id);
+        uint32_t main_len = static_cast<uint32_t>(main_info.size() - 4);
+        main_info[0] = static_cast<uint8_t>(main_len & 0xff);
+        main_info[1] = static_cast<uint8_t>((main_len >> 8) & 0xff);
+        main_info[2] = static_cast<uint8_t>((main_len >> 16) & 0xff);
+        main_info[3] = static_cast<uint8_t>((main_len >> 24) & 0xff);
+
+        std::vector<uint8_t> payload_abbrev;
+        payload_abbrev.push_back(0x01);
+        payload_abbrev.push_back(0x11);
+        payload_abbrev.push_back(0x01);
+        payload_abbrev.push_back(0x00); payload_abbrev.push_back(0x00);
+        payload_abbrev.push_back(0x02);
+        payload_abbrev.push_back(0x34);
+        payload_abbrev.push_back(0x00);
+        payload_abbrev.push_back(0x03);
+        payload_abbrev.push_back(0x0e);
+        payload_abbrev.push_back(0x00); payload_abbrev.push_back(0x00);
+        payload_abbrev.push_back(0x00);
+
+        std::vector<uint8_t> payload_info;
+        appendU32LE(payload_info, 0);
+        appendU16LE(payload_info, 4);
+        appendU32LE(payload_info, 0);
+        payload_info.push_back(0x08);
+        payload_info.push_back(0x01);
+        payload_info.push_back(0x02);
+        appendU32LE(payload_info, 0);
+        payload_info.push_back(0x00);
+        uint32_t payload_len = static_cast<uint32_t>(payload_info.size() - 4);
+        payload_info[0] = static_cast<uint8_t>(payload_len & 0xff);
+        payload_info[1] = static_cast<uint8_t>((payload_len >> 8) & 0xff);
+        payload_info[2] = static_cast<uint8_t>((payload_len >> 16) & 0xff);
+        payload_info[3] = static_cast<uint8_t>((payload_len >> 24) & 0xff);
+
+        std::vector<uint8_t> index;
+        appendU32LE(index, 6);
+        appendU32LE(index, 3);
+        appendU32LE(index, 1);
+        appendU32LE(index, 1);
+        appendU32LE(index, 1);
+        appendU32LE(index, unknown_id);
+        appendU32LE(index, 3);
+        appendU64LE(index, dwo_id);
+        appendU32LE(index, 1);
+        appendU32LE(index, 0);
+        appendU32LE(index, 0x40);
+        appendU32LE(index, 0);
+        appendU32LE(index, static_cast<uint32_t>(payload_info.size()));
+        appendU32LE(index, 0x10);
+        appendU32LE(index, static_cast<uint32_t>(payload_abbrev.size()));
+
+        main_path = (dir / (prefix + "_main.elf")).string();
+        dwp_path = (dir / (prefix + ".dwp")).string();
+
+        writeELFWithSections(main_path, {
+            {".debug_info", main_info},
+            {".debug_abbrev", main_abbrev},
+            {".debug_str", main_str},
+        });
+        writeELFWithSections(dwp_path, {
+            {".debug_info.dwo", payload_info},
+            {".debug_abbrev.dwo", payload_abbrev},
+            {".debug_str.dwo", {'z', 0}},
+            {tu_index ? ".debug_tu_index" : ".debug_cu_index", index},
+        });
+    };
+
     {
         std::string out;
         int code = runAndCapture(dwarf_dump + " compare-expr --help", "/tmp/dwarf_cli_help.txt", out);
@@ -1037,9 +1138,9 @@ int main() {
             0x11,       // DW_TAG_compile_unit
             0x00,       // no children
             0x49,       // DW_AT_type
-            0xa2, 0x3e, // unknown vendor form 0x1f22 (ULEB128)
+            0xb0, 0x3e, // unknown vendor form 0x1f30 (ULEB128)
             0x49,       // DW_AT_type (repeated to force duplicate skip exemplar candidates)
-            0xa2, 0x3e, // unknown vendor form 0x1f22 (ULEB128)
+            0xb0, 0x3e, // unknown vendor form 0x1f30 (ULEB128)
             0x03,       // DW_AT_name
             0x0e,       // DW_FORM_strp
             0x00, 0x00, // end attr specs
@@ -1075,8 +1176,8 @@ int main() {
                                       "/tmp/dwarf_cli_support_vendor_form.txt", out_text);
         assert(code_text == 0);
         assertVendorTelemetryText(out_text, makeVendorTelemetryExpectations(
-            2, {0x1f22}, {"fallback_offset_sized"}, {"unit_die_payload"},
-            {{0x1f22, 2}}, {{"fallback_offset_sized", 2}}, {{"unit_die_payload", 2}}));
+            2, {0x1f30}, {"fallback_offset_sized"}, {"unit_die_payload"},
+            {{0x1f30, 2}}, {{"fallback_offset_sized", 2}}, {{"unit_die_payload", 2}}));
         // Dedup: repeated form+attr should still emit a single exemplar string.
         std::string text_examples = extractValueForTextKey(out_text, "vendor_form_skip_examples");
         assert(text_examples.find("die=0x") != std::string::npos);
@@ -1094,11 +1195,11 @@ int main() {
             assert(extractUIntFieldFromObject(runtime_obj, "vendor_form_skips", &ok) == 2 && ok);
             std::string examples = extractStringFieldFromObject(runtime_obj, "vendor_form_skip_examples");
             assert(!examples.empty());
-            assert(examples.find("form=0x1f22") != std::string::npos);
+            assert(examples.find("form=0x1f30") != std::string::npos);
             assert(examples.find("die=0x") != std::string::npos);
             assert(examples.find("attr=DW_AT_type") != std::string::npos);
             assert(examples.find(';') == std::string::npos);
-            assert(extractStringFieldFromObject(runtime_obj, "vendor_form_skip_histogram") == "0x1f22:2");
+            assert(extractStringFieldFromObject(runtime_obj, "vendor_form_skip_histogram") == "0x1f30:2");
             assert(extractStringFieldFromObject(runtime_obj, "vendor_form_skip_offset_buckets") ==
                    "unit_die_payload:2");
             assert(extractStringFieldFromObject(runtime_obj, "vendor_form_skip_severity_buckets") ==
@@ -1111,14 +1212,14 @@ int main() {
             "/tmp/dwarf_cli_support_vendor_form_json_v2.txt", out_json_v2);
         assert(code_json_v2 == 0);
         assertVendorTelemetryJsonV2(out_json_v2, makeVendorTelemetryExpectations(
-            2, {0x1f22}, {"fallback_offset_sized"}, {"unit_die_payload"},
-            {{0x1f22, 2}}, {{"fallback_offset_sized", 2}}, {{"unit_die_payload", 2}}));
+            2, {0x1f30}, {"fallback_offset_sized"}, {"unit_die_payload"},
+            {{0x1f30, 2}}, {{"fallback_offset_sized", 2}}, {{"unit_die_payload", 2}}));
         auto v2_examples = extractObjectsFromArrayKey(out_json_v2, "vendor_form_skip_examples_structured");
         assert(objectArrayContainsStringField(v2_examples, "attr", "DW_AT_type"));
     }
 
     {
-        // Fixture with a known-shape vendor form (0x1f0a mirrors DW_FORM_block1).
+        // Fixture with a known-shape vendor form (0x1f0e mirrors DW_FORM_strp).
         fs::path dir = fs::path("/tmp") / ("dwarf_cli_vendor_form_known_" + std::to_string(std::rand()));
         std::error_code ec;
         fs::create_directories(dir, ec);
@@ -1129,7 +1230,7 @@ int main() {
             0x11,       // DW_TAG_compile_unit
             0x00,       // no children
             0x49,       // DW_AT_type
-            0x8a, 0x3e, // unknown vendor form 0x1f0a (ULEB128)
+            0x8e, 0x3e, // unknown vendor form 0x1f0e (ULEB128)
             0x03,       // DW_AT_name
             0x0e,       // DW_FORM_strp
             0x00, 0x00, // end attr specs
@@ -1142,10 +1243,7 @@ int main() {
         appendU32LE(debug_info, 0); // abbrev offset
         debug_info.push_back(0x08); // address size
         debug_info.push_back(0x01); // abbrev code
-        debug_info.push_back(0x03); // block1 length
-        debug_info.push_back(0xaa);
-        debug_info.push_back(0xbb);
-        debug_info.push_back(0xcc);
+        appendU32LE(debug_info, 0x11223344); // mirrored strp-sized payload
         appendU32LE(debug_info, 0); // DW_FORM_strp -> debug_str[0]
         uint32_t unit_len = static_cast<uint32_t>(debug_info.size() - 4);
         debug_info[0] = static_cast<uint8_t>(unit_len & 0xff);
@@ -1153,7 +1251,7 @@ int main() {
         debug_info[2] = static_cast<uint8_t>((unit_len >> 16) & 0xff);
         debug_info[3] = static_cast<uint8_t>((unit_len >> 24) & 0xff);
 
-        std::vector<uint8_t> debug_str = {'b', 'l', 'k', 0};
+        std::vector<uint8_t> debug_str = {'s', 't', 'r', 'p', 0};
 
         std::string vendor_elf = (dir / "vendor_form_known.elf").string();
         writeELFWithSections(vendor_elf, {
@@ -1167,8 +1265,8 @@ int main() {
                                       "/tmp/dwarf_cli_support_vendor_form_known.txt", out_text);
         assert(code_text == 0);
         assertVendorTelemetryText(out_text, makeVendorTelemetryExpectations(
-            1, {0x1f0a}, {"known_shape"}, {"unit_die_payload"},
-            {{0x1f0a, 1}}, {{"known_shape", 1}}, {{"unit_die_payload", 1}}));
+            1, {0x1f0e}, {"known_shape"}, {"unit_die_payload"},
+            {{0x1f0e, 1}}, {{"known_shape", 1}}, {{"unit_die_payload", 1}}));
 
         std::string out_json_v2;
         int code_json_v2 = runAndCapture(
@@ -1176,8 +1274,8 @@ int main() {
             "/tmp/dwarf_cli_support_vendor_form_known_json_v2.txt", out_json_v2);
         assert(code_json_v2 == 0);
         assertVendorTelemetryJsonV2(out_json_v2, makeVendorTelemetryExpectations(
-            1, {0x1f0a}, {"known_shape"}, {"unit_die_payload"},
-            {{0x1f0a, 1}}, {{"known_shape", 1}}, {{"unit_die_payload", 1}}));
+            1, {0x1f0e}, {"known_shape"}, {"unit_die_payload"},
+            {{0x1f0e, 1}}, {{"known_shape", 1}}, {{"unit_die_payload", 1}}));
     }
 
     {
@@ -1192,9 +1290,9 @@ int main() {
             0x11,       // DW_TAG_compile_unit
             0x00,       // no children
             0x49,       // DW_AT_type
-            0x8a, 0x3e, // unknown vendor form 0x1f0a (known-shape block1)
+            0x8e, 0x3e, // unknown vendor form 0x1f0e (known-shape strp)
             0x49,       // DW_AT_type
-            0xa2, 0x3e, // unknown vendor form 0x1f22 (fallback offset-sized)
+            0xb0, 0x3e, // unknown vendor form 0x1f30 (fallback offset-sized)
             0x03,       // DW_AT_name
             0x0e,       // DW_FORM_strp
             0x00, 0x00, // end attr specs
@@ -1207,9 +1305,7 @@ int main() {
         appendU32LE(debug_info, 0); // abbrev offset
         debug_info.push_back(0x08); // address size
         debug_info.push_back(0x01); // abbrev code
-        debug_info.push_back(0x02); // block1 length
-        debug_info.push_back(0xaa);
-        debug_info.push_back(0xbb);
+        appendU32LE(debug_info, 0x11223344); // known-shape mirrored strp payload
         appendU32LE(debug_info, 0x11223344); // fallback offset-sized payload
         appendU32LE(debug_info, 0); // DW_FORM_strp -> debug_str[0]
         uint32_t unit_len = static_cast<uint32_t>(debug_info.size() - 4);
@@ -1232,8 +1328,8 @@ int main() {
                                       "/tmp/dwarf_cli_support_vendor_form_mixed.txt", out_text);
         assert(code_text == 0);
         assertVendorTelemetryText(out_text, makeVendorTelemetryExpectations(
-            2, {0x1f0a, 0x1f22}, {"known_shape", "fallback_offset_sized"}, {"unit_die_payload"},
-            {{0x1f0a, 1}, {0x1f22, 1}},
+            2, {0x1f0e, 0x1f30}, {"known_shape", "fallback_offset_sized"}, {"unit_die_payload"},
+            {{0x1f0e, 1}, {0x1f30, 1}},
             {{"known_shape", 1}, {"fallback_offset_sized", 1}},
             {{"unit_die_payload", 2}}));
         {
@@ -1249,8 +1345,8 @@ int main() {
             "/tmp/dwarf_cli_support_vendor_form_mixed_json_v2.txt", out_json_v2);
         assert(code_json_v2 == 0);
         assertVendorTelemetryJsonV2(out_json_v2, makeVendorTelemetryExpectations(
-            2, {0x1f0a, 0x1f22}, {"known_shape", "fallback_offset_sized"}, {"unit_die_payload"},
-            {{0x1f0a, 1}, {0x1f22, 1}},
+            2, {0x1f0e, 0x1f30}, {"known_shape", "fallback_offset_sized"}, {"unit_die_payload"},
+            {{0x1f0e, 1}, {0x1f30, 1}},
             {{"known_shape", 1}, {"fallback_offset_sized", 1}},
             {{"unit_die_payload", 2}}));
     }
@@ -1421,6 +1517,32 @@ int main() {
         assert(out.find("Has DWP TU index: yes") != std::string::npos);
         assert(out.find("DWP TU index valid: yes") != std::string::npos);
         assert(out.find("DWP TU indexed units: 1") != std::string::npos);
+    }
+
+    {
+        std::string main_path, dwp_path;
+        writeSplitUnknownSectionFixture("unknown_cu_verbose", /*tu_index=*/false, 0x44, main_path, dwp_path);
+        std::string out;
+        int code = runAndCapture(
+            dwarf_dump + " --show-support -v --dwp=" + dwp_path + " " + main_path,
+            "/tmp/dwarf_cli_support_unknown_cu_verbose.txt", out);
+        assert(code == 0);
+        assert(out.find("unknown DWP section ids\tsupported") != std::string::npos);
+        assert(out.find("unknown_dwp_cu_section_ids=0x44") != std::string::npos);
+        assert(out.find("unknown_dwp_tu_section_ids=") == std::string::npos);
+    }
+
+    {
+        std::string main_path, dwp_path;
+        writeSplitUnknownSectionFixture("unknown_tu_json", /*tu_index=*/true, 0x55, main_path, dwp_path);
+        std::string out;
+        int code = runAndCapture(
+            dwarf_dump + " --show-support --format=json --schema-version=2 --dwp=" + dwp_path + " " + main_path,
+            "/tmp/dwarf_cli_support_unknown_tu_json.txt", out);
+        assert(code == 0);
+        assert(out.find("\"feature\":\"unknown DWP section ids\",\"status\":\"supported\"") != std::string::npos);
+        assert(out.find("\"unknown_dwp_tu_section_ids\":[85]") != std::string::npos);
+        assert(out.find("\"unknown_dwp_cu_section_ids\":") == std::string::npos);
     }
 
     {

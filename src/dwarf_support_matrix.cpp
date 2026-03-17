@@ -40,8 +40,10 @@ const std::vector<SupportMatrixRow>& getSupportMatrixRows() {
          "entry_value/call2/call4/call_ref, including entry_value materialization of register/address subexpressions to entry-time values"},
         {"expr", "WebAssembly extension (DW_OP_WASM_location)", "supported",
          "tokenization includes kind/index annotations; concrete and symbolic evaluators preserve synthetic WASM register-location identifiers"},
-        {"expr", "GNU extensions", "partial",
-         "major GNU ops supported (including parameter_ref, implicit_pointer referent preservation, GNU_entry_value materialization, GNU_uninit taint propagation, encoded_addr with absptr/pcrel/textrel/datarel/funcrel/aligned handling plus unknown-format absptr fallback, typed predecessors, and *_index utility decoding); unsupported-op diagnostics include raw opcode bytes/vendor classification plus structured unsupported-op metadata; unknown vendor ops are rejected"},
+        {"expr", "GNU extensions", "supported",
+         "the enumerated GNU DW_OP_* predecessor set is implemented in utility decoding plus concrete and symbolic evaluators, including TLS, entry/value, typed, implicit-pointer, parameter-ref, encoded_addr, and *_index variants"},
+        {"expr", "unknown vendor/extension opcodes", "unsupported",
+         "opcodes outside the known GNU set remain rejected by design while preserving unsupported_opcode and unsupported_vendor_extension diagnostics"},
         {"analysis", "SMT symbolic unknown-leaf handling", "supported",
          "symbolic unknown(...) leaves are encoded as opaque solver variables instead of immediate encoding failures"},
         {"analysis", "SMT uninitialized-taint equivalence", "supported",
@@ -52,8 +54,14 @@ const std::vector<SupportMatrixRow>& getSupportMatrixRows() {
          "composite piece locations carrying wide BYTES expressions compare deterministically instead of causing encoding_error"},
         {"analysis", "SMT structural equality prechecks", "supported",
          "exact symbolic-expression matches short-circuit before SMT, including unsupported shapes such as identical load(...,9) terms"},
+        {"analysis", "SMT malformed symbolic-shape prechecks", "supported",
+         "malformed/internal symbolic shapes with invalid arity now short-circuit deterministically instead of surfacing as generic encoding_error"},
+        {"analysis", "SMT invalid load/kind prechecks", "supported",
+         "zero-byte loads and invalid symbolic kind discriminants now short-circuit deterministically instead of surfacing as generic encoding_error"},
         {"analysis", "SMT oversized-load abstraction", "supported",
          "LOAD terms wider than 64 bits are modeled as opaque solver-visible values instead of immediate encoding failures"},
+        {"analysis", "SMT encoding_error elimination", "supported",
+         "symbolic-expression content no longer reports encoding_error; residual failures are backend/implementation defects rather than DWARF-shape limitations"},
         {"semantic", "preserved call-site/discriminant payload decoding", "supported",
          "utility helpers expose structured decoding for DW_AT_call_value/DW_AT_call_parameter/DW_AT_discr_list, including raw bytes, expression tokens, assembly rendering, and dwarf_dump surfacing"},
         {"semantic", "DW_AT_trampoline/DW_AT_extension", "supported",
@@ -64,8 +72,8 @@ const std::vector<SupportMatrixRow>& getSupportMatrixRows() {
          "CU/TU index parsing with bounded section extraction, including packaged real-DWO payload coverage"},
         {"split-dwarf", "DWO debug_addr in expr eval", "supported",
          "indexed ops resolve against .debug_addr.dwo when available"},
-        {"split-dwarf", "unknown DWP section ids", "partial",
-         "unknown sections are skipped safely"}
+        {"split-dwarf", "unknown DWP section ids", "supported",
+         "unknown sections are skipped safely and surfaced through parser/runtime telemetry"}
     };
     return kRows;
 }

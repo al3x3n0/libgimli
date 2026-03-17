@@ -534,16 +534,34 @@ std::shared_ptr<AttributeValue> AttributeParser::parseAttribute(DwarfForm form, 
                             case 0x0b: // data1
                             case 0x0c: // flag
                             case 0x0d: // sdata
+                            case 0x0e: // strp
                             case 0x0f: // udata
+                            case 0x10: // ref_addr
                             case 0x11: // ref1
                             case 0x12: // ref2
                             case 0x13: // ref4
                             case 0x14: // ref8
                             case 0x15: // ref_udata
+                            case 0x17: // sec_offset
                             case 0x18: // exprloc
                             case 0x19: // flag_present
+                            case 0x1a: // strx
+                            case 0x1b: // addrx
+                            case 0x1c: // ref_sup4
+                            case 0x1d: // strp_sup
                             case 0x1e: // data16
+                            case 0x1f: // line_strp
+                            case 0x22: // loclistx
+                            case 0x23: // rnglistx
                             case 0x24: // ref_sup8
+                            case 0x25: // strx1
+                            case 0x26: // strx2
+                            case 0x27: // strx3
+                            case 0x28: // strx4
+                            case 0x29: // addrx1
+                            case 0x2a: // addrx2
+                            case 0x2b: // addrx3
+                            case 0x2c: // addrx4
                                 return DwarfUtils::getFormSize(static_cast<DwarfForm>(low),
                                                                debug_info_.data(),
                                                                static_cast<size_t>(form_offset),

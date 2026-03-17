@@ -37,6 +37,38 @@ static void appendU16(std::vector<uint8_t>& out, uint16_t v);
 static void appendULEB(std::vector<uint8_t>& out, uint64_t v);
 static std::vector<uint8_t> loadTestDataBinary(const std::string& filename);
 
+static std::vector<uint8_t> makeMinimalKnownGnuExpression(DwarfOp op) {
+    switch (op) {
+        case DwarfOp::DW_OP_GNU_push_tls_address:
+            return {static_cast<uint8_t>(DwarfOp::DW_OP_const1u), 0x03, static_cast<uint8_t>(op)};
+        case DwarfOp::DW_OP_GNU_uninit:
+            return {static_cast<uint8_t>(DwarfOp::DW_OP_const1u), 0x01, static_cast<uint8_t>(op)};
+        case DwarfOp::DW_OP_GNU_encoded_addr:
+            return {static_cast<uint8_t>(op), 0x00, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11};
+        case DwarfOp::DW_OP_GNU_implicit_pointer:
+            return {static_cast<uint8_t>(op), 0x34, 0x12, 0x00, 0x00, 0x00};
+        case DwarfOp::DW_OP_GNU_entry_value:
+            return {static_cast<uint8_t>(op), 0x01, static_cast<uint8_t>(DwarfOp::DW_OP_reg0)};
+        case DwarfOp::DW_OP_GNU_const_type:
+            return {static_cast<uint8_t>(op), 0x01, 0x01, 0x7f};
+        case DwarfOp::DW_OP_GNU_regval_type:
+            return {static_cast<uint8_t>(op), 0x01, 0x01};
+        case DwarfOp::DW_OP_GNU_deref_type:
+            return {static_cast<uint8_t>(DwarfOp::DW_OP_const1u), 0x10, static_cast<uint8_t>(op), 0x01, 0x01};
+        case DwarfOp::DW_OP_GNU_convert:
+            return {static_cast<uint8_t>(DwarfOp::DW_OP_const1u), 0xaa, static_cast<uint8_t>(op), 0x01};
+        case DwarfOp::DW_OP_GNU_reinterpret:
+            return {static_cast<uint8_t>(DwarfOp::DW_OP_const1u), 0xaa, static_cast<uint8_t>(op), 0x01};
+        case DwarfOp::DW_OP_GNU_parameter_ref:
+            return {static_cast<uint8_t>(op), 0x34, 0x12, 0x00, 0x00};
+        case DwarfOp::DW_OP_GNU_addr_index:
+        case DwarfOp::DW_OP_GNU_const_index:
+            return {static_cast<uint8_t>(op), 0x01};
+        default:
+            return {static_cast<uint8_t>(op)};
+    }
+}
+
 void testDwarfUtils() {
     std::cout << "Testing DwarfUtils..." << std::endl;
 
@@ -124,6 +156,15 @@ void testDwarfUtils() {
     assert(DwarfUtils::stringToOperation("DW_OP_reg7") == DwarfOp::DW_OP_reg7);
     assert(DwarfUtils::stringToOperation("DW_OP_breg12") == DwarfOp::DW_OP_breg12);
     assert(DwarfUtils::stringToOperation("DW_OP_lit32") == static_cast<DwarfOp>(0));
+    const auto& known_gnu_ops = DwarfUtils::knownGnuExtensionOperations();
+    assert(known_gnu_ops.size() == 13);
+    for (auto op : known_gnu_ops) {
+        std::string name = DwarfUtils::operationToString(op);
+        assert(name.rfind("DW_OP_GNU_", 0) == 0);
+        assert(DwarfUtils::stringToOperation(name) == op);
+        assert(DwarfUtils::isKnownGnuExtensionOperation(op));
+    }
+    assert(!DwarfUtils::isKnownGnuExtensionOperation(static_cast<DwarfOp>(0xef)));
     for (int i = 0; i <= 0xff; ++i) {
         auto op = static_cast<DwarfOp>(static_cast<uint8_t>(i));
         std::string name = DwarfUtils::operationToString(op);
@@ -602,6 +643,100 @@ void testDwarfUtils() {
     std::cout << "DwarfUtils tests passed!" << std::endl;
 }
 
+void testKnownGNUOperationsClosedSetSupport() {
+    std::cout << "Testing known GNU extension opcode closed-set support..." << std::endl;
+
+    class TinyMemoryContext final : public MemoryContext {
+    public:
+        bool readMemory(uint64_t address, size_t size, void* buffer) const override {
+            auto it = mem_.find(address);
+            if (it == mem_.end() || !buffer || it->second.size() < size) return false;
+            std::memcpy(buffer, it->second.data(), size);
+            return true;
+        }
+
+        bool writeMemory(uint64_t address, size_t size, const void* buffer) override {
+            (void)address;
+            (void)size;
+            (void)buffer;
+            return false;
+        }
+
+        void setBytes(uint64_t address, std::vector<uint8_t> bytes) {
+            mem_[address] = std::move(bytes);
+        }
+
+    private:
+        std::unordered_map<uint64_t, std::vector<uint8_t>> mem_;
+    };
+
+    auto mem = std::make_shared<TinyMemoryContext>();
+    mem->setBytes(0x10, {0x5a});
+
+    std::vector<uint64_t> debug_addr_table = {0x1000, 0x2000};
+    EvaluationContext ctx;
+    ctx.address_size = 8;
+    ctx.offset_size = 4;
+    ctx.tls_base = 0x2000;
+    ctx.debug_addr_table = &debug_addr_table;
+    ctx.entry_registers = {0x41, 0x55};
+    ctx.resolve_base_type = [](uint64_t type_offset) -> std::optional<EvaluationContext::BaseTypeInfo> {
+        if (type_offset != 1) return std::nullopt;
+        EvaluationContext::BaseTypeInfo info;
+        info.byte_size = 1;
+        info.is_integer = true;
+        info.is_signed = false;
+        return info;
+    };
+    ctx.resolve_dwarf_procedure = [](uint64_t die_offset, uint64_t pc) -> std::optional<std::vector<uint8_t>> {
+        (void)pc;
+        if (die_offset == 0x1234) {
+            return std::vector<uint8_t>{static_cast<uint8_t>(DwarfOp::DW_OP_lit7)};
+        }
+        return std::nullopt;
+    };
+
+    ExpressionEvaluator eval(mem);
+    SymbolicExpressionEvaluator symbolic_eval;
+    const auto& known_gnu_ops = DwarfUtils::knownGnuExtensionOperations();
+    for (auto op : known_gnu_ops) {
+        auto expr = makeMinimalKnownGnuExpression(op);
+        auto tokens = DwarfUtils::expressionToTokens(expr, {ctx.address_size, ctx.offset_size, 0, false});
+        assert(!tokens.empty());
+        bool saw_gnu_token = false;
+        for (const auto& tok : tokens) {
+            if (tok.find(DwarfUtils::operationToString(op)) != std::string::npos) {
+                saw_gnu_token = true;
+                break;
+            }
+        }
+        assert(saw_gnu_token);
+
+        auto concrete = eval.evaluate(expr, ctx, /*pc=*/0x1000, /*registers=*/{0x11, 0x22});
+        assert(!concrete.unsupported_opcode.has_value());
+        assert(!concrete.unsupported_vendor_extension);
+        assert(concrete.type != ExpressionResult::INVALID);
+
+        auto symbolic = symbolic_eval.evaluate(expr, ctx, /*pc=*/0x1000, /*regs=*/{0x11, 0x22});
+        assert(!symbolic.unsupported_opcode.has_value());
+        assert(!symbolic.unsupported_vendor_extension);
+        assert(symbolic.type != SymbolicExpressionResult::Type::INVALID);
+    }
+
+    std::vector<uint8_t> unknown_vendor = {0xef};
+    auto concrete_unknown = eval.evaluate(unknown_vendor, ctx);
+    assert(concrete_unknown.unsupported_opcode.has_value());
+    assert(*concrete_unknown.unsupported_opcode == 0xef);
+    assert(concrete_unknown.unsupported_vendor_extension);
+
+    auto symbolic_unknown = symbolic_eval.evaluate(unknown_vendor, ctx);
+    assert(symbolic_unknown.unsupported_opcode.has_value());
+    assert(*symbolic_unknown.unsupported_opcode == 0xef);
+    assert(symbolic_unknown.unsupported_vendor_extension);
+
+    std::cout << "Known GNU extension opcode closed-set support tests passed!" << std::endl;
+}
+
 void testSupportMatrixSemanticRows() {
     std::cout << "Testing support matrix semantic rows..." << std::endl;
 
@@ -626,6 +761,68 @@ void testSupportMatrixSemanticRows() {
     assert(saw_relationship_row);
 
     std::cout << "Support matrix semantic row tests passed!" << std::endl;
+}
+
+void testSupportMatrixGNUExpressionRows() {
+    std::cout << "Testing support matrix GNU expression rows..." << std::endl;
+
+    const auto& rows = getSupportMatrixRows();
+    bool saw_known_gnu_row = false;
+    bool saw_unknown_vendor_row = false;
+    for (const auto& row : rows) {
+        if (row.area == "expr" &&
+            row.feature == "GNU extensions" &&
+            row.status == "supported") {
+            saw_known_gnu_row = true;
+            assert(row.notes.find("enumerated GNU DW_OP_* predecessor set") != std::string::npos);
+        }
+        if (row.area == "expr" &&
+            row.feature == "unknown vendor/extension opcodes" &&
+            row.status == "unsupported") {
+            saw_unknown_vendor_row = true;
+            assert(row.notes.find("unsupported_opcode") != std::string::npos);
+        }
+    }
+    assert(saw_known_gnu_row);
+    assert(saw_unknown_vendor_row);
+
+    std::cout << "Support matrix GNU expression row tests passed!" << std::endl;
+}
+
+void testSupportMatrixDWPUnknownSectionRows() {
+    std::cout << "Testing support matrix DWP unknown-section rows..." << std::endl;
+
+    const auto& rows = getSupportMatrixRows();
+    bool saw_unknown_dwp_row = false;
+    for (const auto& row : rows) {
+        if (row.area == "split-dwarf" &&
+            row.feature == "unknown DWP section ids" &&
+            row.status == "supported") {
+            saw_unknown_dwp_row = true;
+            assert(row.notes.find("surfaced") != std::string::npos);
+        }
+    }
+    assert(saw_unknown_dwp_row);
+
+    std::cout << "Support matrix DWP unknown-section row tests passed!" << std::endl;
+}
+
+void testSupportMatrixSMTEncodingErrorRows() {
+    std::cout << "Testing support matrix SMT encoding_error rows..." << std::endl;
+
+    const auto& rows = getSupportMatrixRows();
+    bool saw_encoding_row = false;
+    for (const auto& row : rows) {
+        if (row.area == "analysis" &&
+            row.feature == "SMT encoding_error elimination" &&
+            row.status == "supported") {
+            saw_encoding_row = true;
+            assert(row.notes.find("no longer reports encoding_error") != std::string::npos);
+        }
+    }
+    assert(saw_encoding_row);
+
+    std::cout << "Support matrix SMT encoding_error row tests passed!" << std::endl;
 }
 
 void testDIEIsTypeCoversModeledStandardTypes() {
@@ -5772,7 +5969,153 @@ void testSMTExpressionVerifierBehavior() {
 
         auto r = smt.verify(lhs, rhs);
         assert(r.verdict == ExpressionVerificationResult::Verdict::EQUIVALENT);
-        assert(r.solver_result == "precheck_structural_equal");
+        assert(r.solver_result == "precheck_invalid_symbolic_equal");
+    }
+
+    {
+        auto lhs_malformed = std::make_shared<SymExpr>();
+        lhs_malformed->kind = SymExpr::Kind::ADD;
+        lhs_malformed->args = {SymExpr::makeConst(1)};
+
+        auto rhs_malformed = std::make_shared<SymExpr>();
+        rhs_malformed->kind = SymExpr::Kind::SUB;
+        rhs_malformed->args = {SymExpr::makeConst(1)};
+
+        SymbolicExpressionResult lhs;
+        lhs.type = SymbolicExpressionResult::Type::VALUE;
+        lhs.expression = lhs_malformed;
+
+        SymbolicExpressionResult rhs;
+        rhs.type = SymbolicExpressionResult::Type::VALUE;
+        rhs.expression = rhs_malformed;
+
+        auto r = smt.verify(lhs, rhs);
+        assert(r.verdict == ExpressionVerificationResult::Verdict::DIFFERENT);
+        assert(r.solver_result == "precheck_invalid_symbolic_mismatch");
+        assert(r.solver_result != "encoding_error");
+    }
+
+    {
+        auto zero_load = SymExpr::makeLoad(SymExpr::makeConst(0x1000), 0);
+
+        SymbolicExpressionResult lhs;
+        lhs.type = SymbolicExpressionResult::Type::VALUE;
+        lhs.expression = zero_load;
+
+        SymbolicExpressionResult rhs = lhs;
+
+        auto r = smt.verify(lhs, rhs);
+        assert(r.verdict == ExpressionVerificationResult::Verdict::EQUIVALENT);
+        assert(r.solver_result == "precheck_invalid_load_equal");
+        assert(r.solver_result != "encoding_error");
+    }
+
+    {
+        SymbolicExpressionResult lhs;
+        lhs.type = SymbolicExpressionResult::Type::VALUE;
+        lhs.expression = SymExpr::makeLoad(SymExpr::makeConst(0x1000), 0);
+
+        SymbolicExpressionResult rhs;
+        rhs.type = SymbolicExpressionResult::Type::VALUE;
+        rhs.expression = SymExpr::makeLoad(SymExpr::makeConst(0x2000), 0);
+
+        auto r = smt.verify(lhs, rhs);
+        assert(r.verdict == ExpressionVerificationResult::Verdict::DIFFERENT);
+        assert(r.solver_result == "precheck_invalid_load_mismatch");
+        assert(r.solver_result != "encoding_error");
+    }
+
+    {
+        auto invalid_kind = std::make_shared<SymExpr>();
+        invalid_kind->kind = static_cast<SymExpr::Kind>(999);
+        invalid_kind->name = "bogus";
+        assert(invalid_kind->toString() == "malformed_kind(999)");
+
+        SymbolicExpressionResult lhs;
+        lhs.type = SymbolicExpressionResult::Type::VALUE;
+        lhs.expression = invalid_kind;
+
+        SymbolicExpressionResult rhs = lhs;
+
+        auto r = smt.verify(lhs, rhs);
+        assert(r.verdict == ExpressionVerificationResult::Verdict::EQUIVALENT);
+        assert(r.solver_result == "precheck_invalid_symbol_kind_equal");
+        assert(r.solver_result != "encoding_error");
+    }
+
+    {
+        auto lhs_invalid = std::make_shared<SymExpr>();
+        lhs_invalid->kind = static_cast<SymExpr::Kind>(999);
+
+        auto rhs_invalid = std::make_shared<SymExpr>();
+        rhs_invalid->kind = static_cast<SymExpr::Kind>(1000);
+
+        SymbolicExpressionResult lhs;
+        lhs.type = SymbolicExpressionResult::Type::VALUE;
+        lhs.expression = lhs_invalid;
+
+        SymbolicExpressionResult rhs;
+        rhs.type = SymbolicExpressionResult::Type::VALUE;
+        rhs.expression = rhs_invalid;
+
+        auto r = smt.verify(lhs, rhs);
+        assert(r.verdict == ExpressionVerificationResult::Verdict::DIFFERENT);
+        assert(r.solver_result == "precheck_invalid_symbol_kind_mismatch");
+        assert(r.solver_result != "encoding_error");
+    }
+
+    {
+        auto nested_null = std::make_shared<SymExpr>();
+        nested_null->kind = SymExpr::Kind::ADD;
+        nested_null->args = {SymExpr::makeConst(1), SymExprPtr{}};
+
+        SymbolicExpressionResult lhs;
+        lhs.type = SymbolicExpressionResult::Type::VALUE;
+        lhs.expression = nested_null;
+
+        SymbolicExpressionResult rhs = lhs;
+
+        auto r = smt.verify(lhs, rhs);
+        assert(r.verdict == ExpressionVerificationResult::Verdict::EQUIVALENT);
+        assert(r.solver_result == "precheck_invalid_symbolic_equal");
+        assert(r.solver_result != "encoding_error");
+    }
+
+    {
+        auto malformed = std::make_shared<SymExpr>();
+        malformed->kind = SymExpr::Kind::NEG;
+        malformed->args = {SymExpr::makeConst(1), SymExpr::makeConst(2)};
+
+        SymbolicExpressionResult lhs;
+        lhs.type = SymbolicExpressionResult::Type::VALUE;
+        lhs.expression = malformed;
+
+        SymbolicExpressionResult rhs;
+        rhs.type = SymbolicExpressionResult::Type::VALUE;
+        rhs.expression = SymExpr::makeConst(0);
+
+        auto r = smt.verify(lhs, rhs);
+        assert(r.verdict == ExpressionVerificationResult::Verdict::DIFFERENT);
+        assert(r.solver_result == "precheck_invalid_symbolic_mismatch");
+        assert(r.solver_result != "encoding_error");
+    }
+
+    {
+        auto invalid_kind = std::make_shared<SymExpr>();
+        invalid_kind->kind = static_cast<SymExpr::Kind>(999);
+
+        SymbolicExpressionResult lhs;
+        lhs.type = SymbolicExpressionResult::Type::VALUE;
+        lhs.expression = invalid_kind;
+
+        SymbolicExpressionResult rhs;
+        rhs.type = SymbolicExpressionResult::Type::VALUE;
+        rhs.expression = SymExpr::makeConst(0);
+
+        auto r = smt.verify(lhs, rhs);
+        assert(r.verdict == ExpressionVerificationResult::Verdict::DIFFERENT);
+        assert(r.solver_result == "precheck_invalid_symbol_kind_mismatch");
+        assert(r.solver_result != "encoding_error");
     }
 
     // Oversized loads should now remain solver-visible instead of dropping to encoding_error.
@@ -5979,6 +6322,181 @@ void testSMTExpressionVerifierBehavior() {
         auto r = smt.verify(lhs, rhs);
         assert(r.verdict == ExpressionVerificationResult::Verdict::DIFFERENT);
         assert(r.solver_result == "precheck_piece_location_presence_mismatch");
+    }
+
+    {
+        auto malformed = std::make_shared<SymExpr>();
+        malformed->kind = SymExpr::Kind::ITE;
+        malformed->args = {SymExpr::makeConst(1), SymExpr::makeConst(2)};
+
+        SymbolicExpressionResult lhs;
+        lhs.type = SymbolicExpressionResult::Type::COMPOSITE;
+        lhs.pieces.push_back({SymPiece::Kind::MEMORY, malformed, 8, 0, 0, {}});
+
+        SymbolicExpressionResult rhs = lhs;
+
+        auto r = smt.verify(lhs, rhs);
+        assert(r.verdict == ExpressionVerificationResult::Verdict::EQUIVALENT);
+        assert(r.solver_result == "precheck_piece_invalid_symbolic_equal");
+    }
+
+    {
+        auto lhs_malformed = std::make_shared<SymExpr>();
+        lhs_malformed->kind = SymExpr::Kind::ITE;
+        lhs_malformed->args = {SymExpr::makeConst(1), SymExpr::makeConst(2)};
+
+        auto rhs_malformed = std::make_shared<SymExpr>();
+        rhs_malformed->kind = SymExpr::Kind::MASK;
+        rhs_malformed->args = {};
+
+        SymbolicExpressionResult lhs;
+        lhs.type = SymbolicExpressionResult::Type::COMPOSITE;
+        lhs.pieces.push_back({SymPiece::Kind::MEMORY, lhs_malformed, 8, 0, 0, {}});
+
+        SymbolicExpressionResult rhs;
+        rhs.type = SymbolicExpressionResult::Type::COMPOSITE;
+        rhs.pieces.push_back({SymPiece::Kind::MEMORY, rhs_malformed, 8, 0, 0, {}});
+
+        auto r = smt.verify(lhs, rhs);
+        assert(r.verdict == ExpressionVerificationResult::Verdict::DIFFERENT);
+        assert(r.solver_result == "precheck_piece_invalid_symbolic_mismatch");
+        assert(r.solver_result != "encoding_error");
+    }
+
+    {
+        SymbolicExpressionResult lhs;
+        lhs.type = SymbolicExpressionResult::Type::COMPOSITE;
+        lhs.pieces.push_back(
+            {SymPiece::Kind::MEMORY, SymExpr::makeLoad(SymExpr::makeConst(0x1000), 0), 8, 0, 0, {}});
+
+        SymbolicExpressionResult rhs = lhs;
+
+        auto r = smt.verify(lhs, rhs);
+        assert(r.verdict == ExpressionVerificationResult::Verdict::EQUIVALENT);
+        assert(r.solver_result == "precheck_piece_invalid_load_equal");
+        assert(r.solver_result != "encoding_error");
+    }
+
+    {
+        SymbolicExpressionResult lhs;
+        lhs.type = SymbolicExpressionResult::Type::COMPOSITE;
+        lhs.pieces.push_back(
+            {SymPiece::Kind::MEMORY, SymExpr::makeLoad(SymExpr::makeConst(0x1000), 0), 8, 0, 0, {}});
+
+        SymbolicExpressionResult rhs;
+        rhs.type = SymbolicExpressionResult::Type::COMPOSITE;
+        rhs.pieces.push_back(
+            {SymPiece::Kind::MEMORY, SymExpr::makeLoad(SymExpr::makeConst(0x2000), 0), 8, 0, 0, {}});
+
+        auto r = smt.verify(lhs, rhs);
+        assert(r.verdict == ExpressionVerificationResult::Verdict::DIFFERENT);
+        assert(r.solver_result == "precheck_piece_invalid_load_mismatch");
+        assert(r.solver_result != "encoding_error");
+    }
+
+    {
+        auto invalid_kind = std::make_shared<SymExpr>();
+        invalid_kind->kind = static_cast<SymExpr::Kind>(999);
+
+        SymbolicExpressionResult lhs;
+        lhs.type = SymbolicExpressionResult::Type::COMPOSITE;
+        lhs.pieces.push_back({SymPiece::Kind::MEMORY, invalid_kind, 8, 0, 0, {}});
+
+        SymbolicExpressionResult rhs = lhs;
+
+        auto r = smt.verify(lhs, rhs);
+        assert(r.verdict == ExpressionVerificationResult::Verdict::EQUIVALENT);
+        assert(r.solver_result == "precheck_piece_invalid_symbol_kind_equal");
+        assert(r.solver_result != "encoding_error");
+    }
+
+    {
+        auto lhs_invalid = std::make_shared<SymExpr>();
+        lhs_invalid->kind = static_cast<SymExpr::Kind>(999);
+
+        auto rhs_invalid = std::make_shared<SymExpr>();
+        rhs_invalid->kind = static_cast<SymExpr::Kind>(1000);
+
+        SymbolicExpressionResult lhs;
+        lhs.type = SymbolicExpressionResult::Type::COMPOSITE;
+        lhs.pieces.push_back({SymPiece::Kind::MEMORY, lhs_invalid, 8, 0, 0, {}});
+
+        SymbolicExpressionResult rhs;
+        rhs.type = SymbolicExpressionResult::Type::COMPOSITE;
+        rhs.pieces.push_back({SymPiece::Kind::MEMORY, rhs_invalid, 8, 0, 0, {}});
+
+        auto r = smt.verify(lhs, rhs);
+        assert(r.verdict == ExpressionVerificationResult::Verdict::DIFFERENT);
+        assert(r.solver_result == "precheck_piece_invalid_symbol_kind_mismatch");
+        assert(r.solver_result != "encoding_error");
+    }
+
+    {
+        auto malformed = std::make_shared<SymExpr>();
+        malformed->kind = SymExpr::Kind::MASK;
+        malformed->args = {SymExpr::makeConst(1), SymExpr::makeConst(2)};
+
+        SymbolicExpressionResult lhs;
+        lhs.type = SymbolicExpressionResult::Type::COMPOSITE;
+        lhs.pieces.push_back({SymPiece::Kind::MEMORY, malformed, 8, 0, 0, {}});
+
+        SymbolicExpressionResult rhs;
+        rhs.type = SymbolicExpressionResult::Type::COMPOSITE;
+        rhs.pieces.push_back({SymPiece::Kind::MEMORY, SymExpr::makeConst(0), 8, 0, 0, {}});
+
+        auto r = smt.verify(lhs, rhs);
+        assert(r.verdict == ExpressionVerificationResult::Verdict::DIFFERENT);
+        assert(r.solver_result == "precheck_piece_invalid_symbolic_mismatch");
+        assert(r.solver_result != "encoding_error");
+    }
+
+    // Representative symbolic-content paths should no longer ever report encoding_error.
+    {
+        auto malformed = std::make_shared<SymExpr>();
+        malformed->kind = SymExpr::Kind::ADD;
+        malformed->args = {SymExpr::makeConst(1)};
+
+        auto invalid_kind = std::make_shared<SymExpr>();
+        invalid_kind->kind = static_cast<SymExpr::Kind>(999);
+
+        std::vector<SMTVerificationResult> results;
+
+        {
+            SymbolicExpressionResult lhs;
+            lhs.type = SymbolicExpressionResult::Type::VALUE;
+            lhs.expression = malformed;
+
+            SymbolicExpressionResult rhs;
+            rhs.type = SymbolicExpressionResult::Type::VALUE;
+            rhs.expression = SymExpr::makeConst(0);
+            results.push_back(smt.verify(lhs, rhs));
+        }
+
+        {
+            SymbolicExpressionResult lhs;
+            lhs.type = SymbolicExpressionResult::Type::VALUE;
+            lhs.expression = SymExpr::makeLoad(SymExpr::makeConst(0x1000), 9);
+
+            SymbolicExpressionResult rhs;
+            rhs.type = SymbolicExpressionResult::Type::VALUE;
+            rhs.expression = SymExpr::makeConst(0);
+            results.push_back(smt.verify(lhs, rhs));
+        }
+
+        {
+            SymbolicExpressionResult lhs;
+            lhs.type = SymbolicExpressionResult::Type::COMPOSITE;
+            lhs.pieces.push_back({SymPiece::Kind::MEMORY, invalid_kind, 8, 0, 0, {}});
+
+            SymbolicExpressionResult rhs;
+            rhs.type = SymbolicExpressionResult::Type::COMPOSITE;
+            rhs.pieces.push_back({SymPiece::Kind::MEMORY, SymExpr::makeConst(0), 8, 0, 0, {}});
+            results.push_back(smt.verify(lhs, rhs));
+        }
+
+        for (const auto& result : results) {
+            assert(result.solver_result != "encoding_error");
+        }
     }
 
     std::cout << "SMTExpressionVerifier behavior tests passed!" << std::endl;
@@ -6801,7 +7319,7 @@ void testDIEParserUnknownVendorFormSkip() {
     };
 
     // Unknown vendor form with offset-sized payload family (legacy fallback path).
-    runCase(/*vendor_form=*/0x1f22,
+    runCase(/*vendor_form=*/0x1f30,
             /*payload=*/std::vector<uint8_t>{0x44, 0x33, 0x22, 0x11},
             /*expected_name=*/"ok");
 
@@ -6836,6 +7354,49 @@ void testDIEParserUnknownVendorFormSkip() {
     runCase(/*vendor_form=*/0x1f24,
             /*payload=*/std::vector<uint8_t>{0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11},
             /*expected_name=*/"sup8");
+
+    // Unknown vendor form mirroring DW_FORM_strp (4-byte payload in DWARF32).
+    runCase(/*vendor_form=*/0x1f0e,
+            /*payload=*/std::vector<uint8_t>{0x04, 0x03, 0x02, 0x01},
+            /*expected_name=*/"strp");
+
+    // Unknown vendor form mirroring DW_FORM_ref_addr (4-byte payload in DWARF4/32-bit offsets).
+    runCase(/*vendor_form=*/0x1f10,
+            /*payload=*/std::vector<uint8_t>{0x78, 0x56, 0x34, 0x12},
+            /*expected_name=*/"refa");
+
+    // Unknown vendor form mirroring DW_FORM_sec_offset.
+    runCase(/*vendor_form=*/0x1f17,
+            /*payload=*/std::vector<uint8_t>{0xef, 0xbe, 0xad, 0xde},
+            /*expected_name=*/"seco");
+
+    // Unknown vendor forms mirroring indexed operand families.
+    runCase(/*vendor_form=*/0x1f1a,
+            /*payload=*/std::vector<uint8_t>{0x81, 0x01},
+            /*expected_name=*/"strx");
+    runCase(/*vendor_form=*/0x1f1b,
+            /*payload=*/std::vector<uint8_t>{0x82, 0x01},
+            /*expected_name=*/"addrx");
+    runCase(/*vendor_form=*/0x1f1f,
+            /*payload=*/std::vector<uint8_t>{0x44, 0x33, 0x22, 0x11},
+            /*expected_name=*/"line");
+    runCase(/*vendor_form=*/0x1f25,
+            /*payload=*/std::vector<uint8_t>{0x7a},
+            /*expected_name=*/"sx1");
+    runCase(/*vendor_form=*/0x1f2a,
+            /*payload=*/std::vector<uint8_t>{0xcd, 0xab},
+            /*expected_name=*/"ax2");
+
+    // Unknown vendor form with nested indirect -> mirrored strp payload family.
+    std::vector<uint8_t> nested_vendor_indirect_strp;
+    appendULEB(nested_vendor_indirect_strp, 0x1f0e);
+    nested_vendor_indirect_strp.push_back(0x44);
+    nested_vendor_indirect_strp.push_back(0x33);
+    nested_vendor_indirect_strp.push_back(0x22);
+    nested_vendor_indirect_strp.push_back(0x11);
+    runCase(/*vendor_form=*/0x1f16,
+            /*payload=*/nested_vendor_indirect_strp,
+            /*expected_name=*/"vind2");
 
     std::cout << "DIEParser unknown vendor form skip tests passed!" << std::endl;
 }
@@ -14357,6 +14918,44 @@ void testDWPIndexParsing() {
         assert(tu.findUnit(sig).has_value());
     }
 
+    // Unknown section ids should be preserved without disturbing known-column mapping.
+    {
+        std::vector<uint8_t> idx_unknown;
+        appendU32(idx_unknown, 6);
+        appendU32(idx_unknown, 3);
+        appendU32(idx_unknown, 1);
+        appendU32(idx_unknown, 1);
+        appendU32(idx_unknown, 1);   // DW_SECT_INFO
+        appendU32(idx_unknown, 0x42); // unknown
+        appendU32(idx_unknown, 3);   // DW_SECT_ABBREV
+        appendU64(idx_unknown, sig);
+        appendU32(idx_unknown, 1);
+        appendU32(idx_unknown, 0x20);
+        appendU32(idx_unknown, 0x90);
+        appendU32(idx_unknown, 0x30);
+        appendU32(idx_unknown, 0x200);
+        appendU32(idx_unknown, 0x123);
+        appendU32(idx_unknown, 0x300);
+
+        DWPLoader lu;
+        assert(lu.parseIndexData(idx_unknown, false));
+        auto eu = lu.findUnit(sig);
+        assert(eu.has_value());
+        assert(eu->info_offset == 0x20 && eu->info_size == 0x200);
+        assert(eu->abbrev_offset == 0x30 && eu->abbrev_size == 0x300);
+        assert(lu.getUnknownCUSectionIds().size() == 1);
+        assert(lu.getUnknownCUSectionIds()[0] == 0x42);
+        assert(lu.getUnknownTUSectionIds().empty());
+        assert(lu.hasUnknownSectionIds());
+
+        std::vector<uint8_t> idx_unknown_tu = idx_unknown;
+        DWPLoader ltu;
+        assert(ltu.parseIndexData(idx_unknown_tu, true));
+        assert(ltu.getUnknownCUSectionIds().empty());
+        assert(ltu.getUnknownTUSectionIds().size() == 1);
+        assert(ltu.getUnknownTUSectionIds()[0] == 0x42);
+    }
+
     std::cout << "DWP index parsing tests passed!" << std::endl;
 }
 
@@ -15225,6 +15824,27 @@ void testDwarfParserDWPStateTransitions() {
         return idx;
     };
 
+    auto buildUnknownCUIndex = [](uint64_t sig, uint32_t info_size, uint32_t abbrev_size,
+                                  uint32_t unknown_id) -> std::vector<uint8_t> {
+        std::vector<uint8_t> idx;
+        appendU32(idx, 6); // version
+        appendU32(idx, 3); // section_count
+        appendU32(idx, 1); // unit_count
+        appendU32(idx, 1); // slot_count
+        appendU32(idx, 1); // DW_SECT_INFO
+        appendU32(idx, unknown_id);
+        appendU32(idx, 3); // DW_SECT_ABBREV
+        appendU64(idx, sig);
+        appendU32(idx, 1); // row index
+        appendU32(idx, 0); // info off
+        appendU32(idx, 0x44); // unknown off
+        appendU32(idx, 0); // abbrev off
+        appendU32(idx, info_size);
+        appendU32(idx, 0x20); // unknown size
+        appendU32(idx, abbrev_size);
+        return idx;
+    };
+
     auto buildMalformedCUIndex = []() -> std::vector<uint8_t> {
         std::vector<uint8_t> idx;
         appendU32(idx, 6); // version
@@ -15239,6 +15859,8 @@ void testDwarfParserDWPStateTransitions() {
     std::string bad_path = (std::filesystem::path(dir) / "state_bad.dwp").string();
     std::string good_path = (std::filesystem::path(dir) / "state_good.dwp").string();
     std::string tu_path = (std::filesystem::path(dir) / "state_tu_only.dwp").string();
+    std::string unknown_cu_path = (std::filesystem::path(dir) / "state_unknown_cu.dwp").string();
+    std::string unknown_tu_path = (std::filesystem::path(dir) / "state_unknown_tu.dwp").string();
 
     std::vector<uint8_t> info = buildPayloadInfo();
     std::vector<uint8_t> abbrev = buildPayloadAbbrev();
@@ -15266,6 +15888,22 @@ void testDwarfParserDWPStateTransitions() {
         {".debug_tu_index", buildValidCUIndex(sig, static_cast<uint32_t>(info.size()), static_cast<uint32_t>(abbrev.size()))},
     });
 
+    writeELFWithSections(unknown_cu_path, {
+        {".debug_info.dwo", info},
+        {".debug_abbrev.dwo", abbrev},
+        {".debug_str.dwo", str},
+        {".debug_cu_index", buildUnknownCUIndex(sig, static_cast<uint32_t>(info.size()),
+                                                static_cast<uint32_t>(abbrev.size()), 0x44)},
+    });
+
+    writeELFWithSections(unknown_tu_path, {
+        {".debug_info.dwo", info},
+        {".debug_abbrev.dwo", abbrev},
+        {".debug_str.dwo", str},
+        {".debug_tu_index", buildUnknownCUIndex(sig, static_cast<uint32_t>(info.size()),
+                                                static_cast<uint32_t>(abbrev.size()), 0x55)},
+    });
+
     DwarfParser parser("unused_main_path.elf");
 
     // Before loading DWP.
@@ -15290,9 +15928,24 @@ void testDwarfParserDWPStateTransitions() {
     assert(parser.hasDWPIndexSection());
     assert(parser.isDWPIndexValid());
     assert(parser.getDWPIndexedUnitCount() == 1);
+    assert(!parser.hasUnknownDWPSectionIds());
+    assert(parser.getUnknownDWPCUSectionIds().empty());
+    assert(parser.getUnknownDWPTUSectionIds().empty());
     assert(!parser.hasDWPTUIndexSection());
     assert(!parser.isDWPTUIndexValid());
     assert(parser.getDWPTUIndexedUnitCount() == 0);
+
+    // After valid index with unknown CU section ids.
+    assert(parser.loadDWPFile(unknown_cu_path));
+    assert(parser.hasLoadedDWP());
+    assert(parser.getLoadedDWPPath() == unknown_cu_path);
+    assert(parser.hasDWPIndexSection());
+    assert(parser.isDWPIndexValid());
+    assert(parser.getDWPIndexedUnitCount() == 1);
+    assert(parser.hasUnknownDWPSectionIds());
+    assert(parser.getUnknownDWPCUSectionIds().size() == 1);
+    assert(parser.getUnknownDWPCUSectionIds()[0] == 0x44);
+    assert(parser.getUnknownDWPTUSectionIds().empty());
 
     // After TU-only valid index.
     assert(parser.loadDWPFile(tu_path));
@@ -15304,6 +15957,22 @@ void testDwarfParserDWPStateTransitions() {
     assert(parser.hasDWPTUIndexSection());
     assert(parser.isDWPTUIndexValid());
     assert(parser.getDWPTUIndexedUnitCount() == 1);
+    assert(!parser.hasUnknownDWPSectionIds());
+
+    // After TU-only valid index with unknown section ids.
+    assert(parser.loadDWPFile(unknown_tu_path));
+    assert(parser.hasLoadedDWP());
+    assert(parser.getLoadedDWPPath() == unknown_tu_path);
+    assert(!parser.hasDWPIndexSection());
+    assert(!parser.isDWPIndexValid());
+    assert(parser.getDWPIndexedUnitCount() == 0);
+    assert(parser.hasDWPTUIndexSection());
+    assert(parser.isDWPTUIndexValid());
+    assert(parser.getDWPTUIndexedUnitCount() == 1);
+    assert(parser.hasUnknownDWPSectionIds());
+    assert(parser.getUnknownDWPCUSectionIds().empty());
+    assert(parser.getUnknownDWPTUSectionIds().size() == 1);
+    assert(parser.getUnknownDWPTUSectionIds()[0] == 0x55);
 
     std::cout << "DwarfParser DWP state transition tests passed!" << std::endl;
 }
@@ -18636,7 +19305,11 @@ int main() {
     
     try {
 	    testDwarfUtils();
+    testKnownGNUOperationsClosedSetSupport();
     testSupportMatrixSemanticRows();
+    testSupportMatrixGNUExpressionRows();
+    testSupportMatrixDWPUnknownSectionRows();
+    testSupportMatrixSMTEncodingErrorRows();
 	    testDIEIsTypeCoversModeledStandardTypes();
 	    testExpressionEvaluator();
 	    testExpressionEvaluatorUnsupportedOp();

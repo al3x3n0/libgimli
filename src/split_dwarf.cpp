@@ -8,6 +8,35 @@
 
 namespace dwarf {
 
+namespace {
+
+static bool isKnownDWPSectionId(uint32_t section_id) {
+    switch (section_id) {
+        case 1: // DW_SECT_INFO
+        case 3: // DW_SECT_ABBREV
+        case 4: // DW_SECT_LINE
+        case 5: // DW_SECT_LOCLISTS
+        case 6: // DW_SECT_STR_OFFSETS
+        case 7: // DW_SECT_MACRO
+        case 8: // DW_SECT_RNGLISTS
+        case 9: // DW_SECT_ADDR
+            return true;
+        default:
+            return false;
+    }
+}
+
+static void recordUnknownDWPSectionId(std::vector<uint32_t>& unknown_ids, uint32_t section_id) {
+    if (isKnownDWPSectionId(section_id)) {
+        return;
+    }
+    if (std::find(unknown_ids.begin(), unknown_ids.end(), section_id) == unknown_ids.end()) {
+        unknown_ids.push_back(section_id);
+    }
+}
+
+} // namespace
+
 // SplitDwarfLoader implementation
 
 SplitDwarfLoader::SplitDwarfLoader() {
@@ -428,7 +457,9 @@ bool DWPLoader::parseIndex(const std::vector<uint8_t>& index_data, bool is_tu_in
     std::vector<uint32_t> section_ids;
     section_ids.reserve(parsed.section_count);
     for (uint32_t i = 0; i < parsed.section_count; ++i) {
-        section_ids.push_back(readU32(offset));
+        uint32_t section_id = readU32(offset);
+        section_ids.push_back(section_id);
+        recordUnknownDWPSectionId(parsed.unknown_section_ids, section_id);
         if (decode_error) return false;
     }
 
