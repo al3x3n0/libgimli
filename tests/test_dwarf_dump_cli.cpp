@@ -112,6 +112,7 @@ int runAndCapture(const std::string& cmd, const std::string& out_path, std::stri
 }
 
 std::string findDWPTool() {
+    // Optional real-package coverage auto-activates when one of these tools exists.
     const std::vector<std::string> commands = {
         "command -v dwp >/dev/null 2>&1 && printf dwp",
         "command -v llvm-dwp >/dev/null 2>&1 && printf llvm-dwp",
@@ -1634,7 +1635,8 @@ int main() {
     {
         const std::string tool = findDWPTool();
         if (tool.empty()) {
-            std::cout << "Skipping real tool-produced DWP CLI fixture test: no dwp/llvm-dwp available\n";
+            std::cout << "Skipping real tool-produced DWP CLI fixture test: no dwp/llvm-dwp available"
+                      << " (test auto-activates when either tool is installed)\n";
         } else {
             fs::path dir = fs::path("/tmp") / ("dwarf_cli_real_dwp_" + std::to_string(std::rand()));
             std::error_code ec;

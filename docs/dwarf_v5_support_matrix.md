@@ -125,6 +125,12 @@ When a file path is provided, runtime output includes split-DWARF observability 
 21. SMT symbolic verification no longer reports `encoding_error` for symbolic-expression content paths; any future occurrence should be treated as a backend or verifier defect rather than a supported DWARF limitation.
 22. Optional real `dwp` fixture coverage now auto-activates when `dwp` or `llvm-dwp` is available in the test environment, while continuing to skip cleanly on environments that only have compiler-produced `.o` + `.dwo` support.
 
+The real packaged-`.dwp` coverage path currently has three explicit environment requirements:
+1. a compiler that can emit split-DWARF `.o` + `.dwo` output,
+2. either `dwp` or `llvm-dwp` on `PATH`, and
+3. a test environment that allows invoking those tools at runtime.
+When any of those are missing, the parser and CLI real-package tests intentionally report a skip rather than a failure.
+
 ## Next gaps to target
 
 1. Promote the optional real toolchain-produced `.dwp` package tests into CI or other environments where `dwp`/`llvm-dwp` is guaranteed to be available.

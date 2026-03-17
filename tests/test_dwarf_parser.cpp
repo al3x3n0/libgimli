@@ -15457,13 +15457,15 @@ static bool tryBuildRealSplitDwarfFixture(const std::string& dir,
 }
 
 static std::string findDWPTool() {
+    // Optional real-package coverage auto-activates when one of these tools exists.
     const std::vector<std::string> commands = {
         "command -v dwp >/dev/null 2>&1 && printf dwp",
         "command -v llvm-dwp >/dev/null 2>&1 && printf llvm-dwp",
     };
 
     for (const auto& probe : commands) {
-        std::string out_path = (std::filesystem::path(makeTempDir("dwp_tool_probe_")) / "tool.txt").string();
+        std::string out_path = (std::filesystem::path("/tmp") /
+                                ("dwp_tool_probe_" + std::to_string(std::rand()) + ".txt")).string();
         std::string cmd = "/bin/zsh -lc '" + probe + "' > \"" + out_path + "\" 2>/dev/null";
         int rc = std::system(cmd.c_str());
         if (rc != 0) {
@@ -15840,7 +15842,8 @@ void testSplitDwarfRealToolProducedDWPFixture() {
 
     const std::string tool = findDWPTool();
     if (tool.empty()) {
-        std::cout << "Skipping real tool-produced DWP fixture test: no dwp/llvm-dwp available\n";
+        std::cout << "Skipping real tool-produced DWP fixture test: no dwp/llvm-dwp available"
+                  << " (test auto-activates when either tool is installed)\n";
         return;
     }
 
