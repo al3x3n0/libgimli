@@ -111,6 +111,92 @@ int runAndCapture(const std::string& cmd, const std::string& out_path, std::stri
     return exitCodeFromSystem(rc);
 }
 
+std::string findDWPTool() {
+    const std::vector<std::string> commands = {
+        "command -v dwp >/dev/null 2>&1 && printf dwp",
+        "command -v llvm-dwp >/dev/null 2>&1 && printf llvm-dwp",
+    };
+
+    for (const auto& probe : commands) {
+        fs::path tmp = fs::path("/tmp") / ("dwp_cli_probe_" + std::to_string(std::rand()) + ".txt");
+        std::string cmd = "/bin/zsh -lc '" + probe + "' > \"" + tmp.string() + "\" 2>/dev/null";
+        int rc = std::system(cmd.c_str());
+        if (rc != 0) {
+            std::error_code ec;
+            fs::remove(tmp, ec);
+            continue;
+        }
+        std::ifstream ifs(tmp);
+        std::string tool;
+        std::getline(ifs, tool);
+        std::error_code ec;
+        fs::remove(tmp, ec);
+        if (!tool.empty()) {
+            return tool;
+        }
+    }
+
+    return {};
+}
+
+bool tryBuildRealSplitDwarfFixture(const std::string& dir,
+                                   std::string& out_obj_path,
+                                   std::string& out_dwo_path) {
+    const fs::path source_path = fs::path(dir) / "real_cli_split_fixture.c";
+    out_obj_path = (fs::path(dir) / "real_cli_split_fixture.o").string();
+    out_dwo_path = (fs::path(dir) / "real_cli_split_fixture.dwo").string();
+
+    {
+        std::ofstream src(source_path);
+        src
+            << "typedef const int split_answer_t;\n"
+            << "static int split_global = 7;\n"
+            << "split_answer_t split_answer(int x) {\n"
+            << "    int local = x + split_global;\n"
+            << "    return local;\n"
+            << "}\n";
+    }
+
+    const std::vector<std::string> commands = {
+        "cd \"" + dir + "\" && clang -target x86_64-unknown-linux-gnu -c -g -gsplit-dwarf -O0 \"" +
+            source_path.filename().string() + "\" -o \"" + fs::path(out_obj_path).filename().string() + "\"",
+        "cd \"" + dir + "\" && clang -c -g -gsplit-dwarf -O0 \"" +
+            source_path.filename().string() + "\" -o \"" + fs::path(out_obj_path).filename().string() + "\"",
+        "cd \"" + dir + "\" && gcc -c -g -gsplit-dwarf -O0 \"" +
+            source_path.filename().string() + "\" -o \"" + fs::path(out_obj_path).filename().string() + "\""
+    };
+
+    for (const auto& command : commands) {
+        std::error_code ec;
+        fs::remove(out_obj_path, ec);
+        fs::remove(out_dwo_path, ec);
+        int rc = std::system(command.c_str());
+        if (rc == 0 && fs::exists(out_obj_path) && fs::exists(out_dwo_path)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool buildRealDWPFromTool(const std::string& dir,
+                          const std::string& obj_path,
+                          const std::string& dwp_path) {
+    const std::string tool = findDWPTool();
+    if (tool.empty()) {
+        return false;
+    }
+
+    std::string command =
+        "cd \"" + dir + "\" && " + tool + " \"" +
+        fs::path(obj_path).filename().string() + "\" -o \"" +
+        fs::path(dwp_path).filename().string() + "\"";
+    std::error_code ec;
+    fs::remove(dwp_path, ec);
+    int rc = std::system(command.c_str());
+    return rc == 0 && fs::exists(dwp_path) && fs::file_size(dwp_path, ec) > 0;
+}
+
 std::string extractFirstObjectFromArrayKey(const std::string& json, const std::string& key) {
     const std::string array_key = "\"" + key + "\":";
     size_t p = json.find(array_key);
@@ -1543,6 +1629,45 @@ int main() {
         assert(out.find("\"feature\":\"unknown DWP section ids\",\"status\":\"supported\"") != std::string::npos);
         assert(out.find("\"unknown_dwp_tu_section_ids\":[85]") != std::string::npos);
         assert(out.find("\"unknown_dwp_cu_section_ids\":") == std::string::npos);
+    }
+
+    {
+        const std::string tool = findDWPTool();
+        if (tool.empty()) {
+            std::cout << "Skipping real tool-produced DWP CLI fixture test: no dwp/llvm-dwp available\n";
+        } else {
+            fs::path dir = fs::path("/tmp") / ("dwarf_cli_real_dwp_" + std::to_string(std::rand()));
+            std::error_code ec;
+            fs::create_directories(dir, ec);
+            assert(fs::exists(dir));
+
+            std::string obj_path;
+            std::string dwo_path;
+            bool built = tryBuildRealSplitDwarfFixture(dir.string(), obj_path, dwo_path);
+            if (!built) {
+                std::cout << "Skipping real tool-produced DWP CLI fixture test: no suitable compiler output\n";
+            } else {
+                std::string dwp_path = (dir / "real_cli_fixture.dwp").string();
+                bool packaged = buildRealDWPFromTool(dir.string(), obj_path, dwp_path);
+                if (!packaged) {
+                    std::cout << "Skipping real tool-produced DWP CLI fixture test: "
+                              << tool << " did not produce a usable package\n";
+                } else {
+                    std::error_code rename_ec;
+                    fs::rename(dwo_path, dwo_path + ".hidden", rename_ec);
+                    assert(!rename_ec);
+
+                    std::string out;
+                    int code = runAndCapture(
+                        dwarf_dump + " --show-support --dwp=" + dwp_path + " " + obj_path,
+                        "/tmp/dwarf_cli_real_tool_dwp_support.txt", out);
+                    assert(code == 0);
+                    assert(out.find("has_loaded_dwp=yes") != std::string::npos);
+                    assert(out.find("dwp_path=" + dwp_path) != std::string::npos);
+                    assert(out.find("dwp_hits=") != std::string::npos);
+                }
+            }
+        }
     }
 
     {

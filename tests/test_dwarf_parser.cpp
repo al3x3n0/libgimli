@@ -15456,6 +15456,34 @@ static bool tryBuildRealSplitDwarfFixture(const std::string& dir,
     return false;
 }
 
+static std::string findDWPTool() {
+    const std::vector<std::string> commands = {
+        "command -v dwp >/dev/null 2>&1 && printf dwp",
+        "command -v llvm-dwp >/dev/null 2>&1 && printf llvm-dwp",
+    };
+
+    for (const auto& probe : commands) {
+        std::string out_path = (std::filesystem::path(makeTempDir("dwp_tool_probe_")) / "tool.txt").string();
+        std::string cmd = "/bin/zsh -lc '" + probe + "' > \"" + out_path + "\" 2>/dev/null";
+        int rc = std::system(cmd.c_str());
+        if (rc != 0) {
+            std::error_code ec;
+            std::filesystem::remove(out_path, ec);
+            continue;
+        }
+        std::ifstream ifs(out_path);
+        std::string tool;
+        std::getline(ifs, tool);
+        std::error_code ec;
+        std::filesystem::remove(out_path, ec);
+        if (!tool.empty()) {
+            return tool;
+        }
+    }
+
+    return {};
+}
+
 static uint64_t fnv1a64String(const std::string& s) {
     uint64_t h = 1469598103934665603ULL;
     for (unsigned char c : s) {
@@ -15555,6 +15583,25 @@ static bool buildSyntheticDWPFromRealFixture(const std::string& obj_path,
 
     writeELFWithSections(dwp_path, dwp_sections);
     return true;
+}
+
+static bool buildRealDWPFromTool(const std::string& dir,
+                                 const std::string& obj_path,
+                                 const std::string& dwp_path) {
+    const std::string tool = findDWPTool();
+    if (tool.empty()) {
+        return false;
+    }
+
+    namespace fs = std::filesystem;
+    const std::string command =
+        "cd \"" + dir + "\" && " + tool + " \"" +
+        fs::path(obj_path).filename().string() + "\" -o \"" +
+        fs::path(dwp_path).filename().string() + "\"";
+    std::error_code ec;
+    fs::remove(dwp_path, ec);
+    int rc = std::system(command.c_str());
+    return rc == 0 && fs::exists(dwp_path) && fs::file_size(dwp_path, ec) > 0;
 }
 
 void testSplitDwarfIntegrationELFIO() {
@@ -15777,6 +15824,65 @@ void testSplitDwarfRealCompilerDWPFixture() {
     assert(found_var);
 
     std::cout << "Real compiler DWP fixture tests passed!" << std::endl;
+}
+
+void testSplitDwarfRealToolProducedDWPFixture() {
+    std::cout << "Testing split DWARF DWP integration (real packaging tool)..." << std::endl;
+
+    std::string dir = makeTempDir("dwarf_split_real_tool_dwp_");
+    std::string obj_path;
+    std::string dwo_path;
+    bool built = tryBuildRealSplitDwarfFixture(dir, obj_path, dwo_path);
+    if (!built) {
+        std::cout << "Skipping real tool-produced DWP fixture test: no suitable compiler output\n";
+        return;
+    }
+
+    const std::string tool = findDWPTool();
+    if (tool.empty()) {
+        std::cout << "Skipping real tool-produced DWP fixture test: no dwp/llvm-dwp available\n";
+        return;
+    }
+
+    std::string dwp_path = (std::filesystem::path(dir) / "real_tool_split_fixture.dwp").string();
+    bool packaged = buildRealDWPFromTool(dir, obj_path, dwp_path);
+    if (!packaged) {
+        std::cout << "Skipping real tool-produced DWP fixture test: " << tool
+                  << " did not produce a usable package\n";
+        return;
+    }
+
+    std::filesystem::rename(dwo_path, dwo_path + ".hidden");
+
+    DwarfParser parser(obj_path);
+    assert(parser.loadDWPFile(dwp_path));
+    assert(parser.load());
+
+    const auto& stats = parser.getSplitDwarfStats();
+    assert(stats.dwp_hits >= 1);
+    assert(stats.dwo_hits == 0);
+
+    auto funcs = parser.findDIEsByName("split_answer");
+    bool found_func = false;
+    for (const auto& die : funcs) {
+        if (die && die->getTag() == DwarfTag::DW_TAG_subprogram) {
+            found_func = true;
+            break;
+        }
+    }
+    assert(found_func);
+
+    auto vars = parser.findDIEsByName("split_global");
+    bool found_var = false;
+    for (const auto& die : vars) {
+        if (die && die->getTag() == DwarfTag::DW_TAG_variable) {
+            found_var = true;
+            break;
+        }
+    }
+    assert(found_var);
+
+    std::cout << "Real tool-produced DWP fixture tests passed!" << std::endl;
 }
 
 void testDwarfParserDWPStateTransitions() {
@@ -19471,6 +19577,7 @@ int main() {
     testSplitDwarfIntegrationELFIO();
     testSplitDwarfRealCompilerFixture();
     testSplitDwarfRealCompilerDWPFixture();
+    testSplitDwarfRealToolProducedDWPFixture();
     testDwarfParserDWPStateTransitions();
     testSplitDwarfPrefersDWPOverDWO();
     testSplitDwarfFallsBackToDWOWhenDWPDoesNotContainUnit();

@@ -123,9 +123,10 @@ When a file path is provided, runtime output includes split-DWARF observability 
 19. SMT verification now treats zero-byte symbolic loads and invalid symbolic kind discriminants as deterministic precheck outcomes instead of generic `encoding_error`, both for top-level values and composite piece locations.
 20. SMT encoding now falls back to opaque solver-visible terms for malformed/invalid symbolic nodes that somehow bypass verifier prechecks, so residual `encoding_error` is reserved for verifier/backend failures rather than symbolic-expression content.
 21. SMT symbolic verification no longer reports `encoding_error` for symbolic-expression content paths; any future occurrence should be treated as a backend or verifier defect rather than a supported DWARF limitation.
+22. Optional real `dwp` fixture coverage now auto-activates when `dwp` or `llvm-dwp` is available in the test environment, while continuing to skip cleanly on environments that only have compiler-produced `.o` + `.dwo` support.
 
 ## Next gaps to target
 
-1. Add real toolchain-produced `.dwp` package fixtures when `dwp`/`llvm-dwp` is available in CI or test environments.
+1. Promote the optional real toolchain-produced `.dwp` package tests into CI or other environments where `dwp`/`llvm-dwp` is guaranteed to be available.
 2. Expand vendor-form skip heuristics for additional payload families only as new real-world samples surface beyond the currently covered mirrored string-pointer, offset, indexed, block, supplementary-reference, fixed-width, and nested-indirect shapes.
 3. Broaden non-GNU vendor expression opcode semantics only when real producer samples justify it; unknown vendor ops remain intentionally diagnosed and rejected.
