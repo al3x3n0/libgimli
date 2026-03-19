@@ -419,7 +419,11 @@ CompareExprExecutionResult executeCompareExpr(const DwarfParser& lhs,
                     << "\"missing_lhs\":" << summary.missing_lhs << ","
                     << "\"missing_rhs\":" << summary.missing_rhs << ","
                     << "\"solver_result_counts\":" << renderCountsJson(solver_counts) << ","
-                    << "\"verifier_backend_counts\":" << renderCountsJson(backend_counts)
+                    << "\"verifier_backend_counts\":" << renderCountsJson(backend_counts) << ","
+                    << "\"unknown_reason_counts\":" << renderCountsJson(summary.unknown_reason_counts) << ","
+                    << "\"unknown_solver_result_counts\":" << renderCountsJson(summary.unknown_solver_result_counts) << ","
+                    << "\"unknown_lhs_attribute_kind_counts\":" << renderCountsJson(summary.unknown_lhs_attribute_kind_counts) << ","
+                    << "\"unknown_rhs_attribute_kind_counts\":" << renderCountsJson(summary.unknown_rhs_attribute_kind_counts)
                     << "}"
                     << "},"
                     << "\"gate\":{"

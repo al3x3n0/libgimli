@@ -72,6 +72,31 @@ std::string jsonEscape(const std::string& s) {
     return out.str();
 }
 
+std::string renderCountsText(const std::map<std::string, size_t>& counts) {
+    if (counts.empty()) return "none";
+    std::ostringstream out;
+    bool first = true;
+    for (const auto& kv : counts) {
+        if (!first) out << ",";
+        first = false;
+        out << kv.first << ":" << kv.second;
+    }
+    return out.str();
+}
+
+std::string renderCountsJson(const std::map<std::string, size_t>& counts) {
+    std::ostringstream out;
+    out << "{";
+    bool first = true;
+    for (const auto& kv : counts) {
+        if (!first) out << ",";
+        first = false;
+        out << "\"" << jsonEscape(kv.first) << "\":" << kv.second;
+    }
+    out << "}";
+    return out.str();
+}
+
 void collectNamedByTag(const std::shared_ptr<DIE>& die,
                        DwarfTag tag,
                        CompareKeyMode mode,
@@ -469,6 +494,14 @@ CrossBinaryComparisonSummary CrossBinaryExpressionComparator::summarize(
                 break;
             case ExpressionVerificationResult::Verdict::UNKNOWN:
                 ++s.unknown;
+                s.unknown_reason_counts[c.verification.reason.empty() ? "unspecified"
+                                                                     : c.verification.reason]++;
+                s.unknown_solver_result_counts[c.verification.solver_result.empty() ? "unspecified"
+                                                                                    : c.verification.solver_result]++;
+                s.unknown_lhs_attribute_kind_counts[c.verification.lhs_attribute_kind.empty() ? "unspecified"
+                                                                                               : c.verification.lhs_attribute_kind]++;
+                s.unknown_rhs_attribute_kind_counts[c.verification.rhs_attribute_kind.empty() ? "unspecified"
+                                                                                               : c.verification.rhs_attribute_kind]++;
                 break;
         }
     }
@@ -521,8 +554,13 @@ std::string CrossBinaryExpressionComparator::renderTextReport(
         out << kv.first << ":" << kv.second;
     }
     out << "\n";
+    out << "unknown_reason_counts=" << renderCountsText(s.unknown_reason_counts)
+        << " unknown_solver_result_counts=" << renderCountsText(s.unknown_solver_result_counts)
+        << " unknown_lhs_attribute_kind_counts=" << renderCountsText(s.unknown_lhs_attribute_kind_counts)
+        << " unknown_rhs_attribute_kind_counts=" << renderCountsText(s.unknown_rhs_attribute_kind_counts)
+        << "\n";
 
-    out << "name|tag|lhs_present|rhs_present|lhs_offset|rhs_offset|verdict|verifier_backend|solver_result|reason|lhs_unsupported_opcode|rhs_unsupported_opcode|lhs_unsupported_vendor_extension|rhs_unsupported_vendor_extension|coverage_total|coverage_eq|coverage_diff|coverage_unknown|coverage_uncovered|reloc_issues\n";
+    out << "name|tag|lhs_present|rhs_present|lhs_offset|rhs_offset|verdict|verifier_backend|solver_result|reason|lhs_attribute_kind|rhs_attribute_kind|lhs_attribute_detail|rhs_attribute_detail|lhs_unsupported_opcode|rhs_unsupported_opcode|lhs_unsupported_vendor_extension|rhs_unsupported_vendor_extension|coverage_total|coverage_eq|coverage_diff|coverage_unknown|coverage_uncovered|reloc_issues\n";
     size_t rows = (max_rows == 0) ? comparisons.size() : std::min(max_rows, comparisons.size());
     for (size_t i = 0; i < rows; ++i) {
         const auto& c = comparisons[i];
@@ -541,6 +579,10 @@ std::string CrossBinaryExpressionComparator::renderTextReport(
             << c.verification.verifier_backend << "|"
             << c.verification.solver_result << "|"
             << c.verification.reason << "|"
+            << c.verification.lhs_attribute_kind << "|"
+            << c.verification.rhs_attribute_kind << "|"
+            << c.verification.lhs_attribute_detail << "|"
+            << c.verification.rhs_attribute_detail << "|"
             << (c.verification.lhs_unsupported_opcode ? DwarfUtils::formatAddress(*c.verification.lhs_unsupported_opcode, false) : "") << "|"
             << (c.verification.rhs_unsupported_opcode ? DwarfUtils::formatAddress(*c.verification.rhs_unsupported_opcode, false) : "") << "|"
             << (c.verification.lhs_unsupported_vendor_extension ? "1" : "0") << "|"
@@ -606,6 +648,10 @@ std::string CrossBinaryExpressionComparator::renderJsonReport(
         out << "\"" << jsonEscape(kv.first) << "\":" << kv.second;
     }
     out << "},";
+    out << "\"unknown_reason_counts\":" << renderCountsJson(s.unknown_reason_counts) << ",";
+    out << "\"unknown_solver_result_counts\":" << renderCountsJson(s.unknown_solver_result_counts) << ",";
+    out << "\"unknown_lhs_attribute_kind_counts\":" << renderCountsJson(s.unknown_lhs_attribute_kind_counts) << ",";
+    out << "\"unknown_rhs_attribute_kind_counts\":" << renderCountsJson(s.unknown_rhs_attribute_kind_counts) << ",";
     out << "\"truncated\":" << (truncated ? "true" : "false") << ",";
     out << "\"comparisons\":[";
     for (size_t i = 0; i < rows; ++i) {
@@ -622,6 +668,10 @@ std::string CrossBinaryExpressionComparator::renderJsonReport(
             << "\"verifier_backend\":\"" << jsonEscape(c.verification.verifier_backend) << "\","
             << "\"solver_result\":\"" << jsonEscape(c.verification.solver_result) << "\","
             << "\"reason\":\"" << jsonEscape(c.verification.reason) << "\","
+            << "\"lhs_attribute_kind\":\"" << jsonEscape(c.verification.lhs_attribute_kind) << "\","
+            << "\"rhs_attribute_kind\":\"" << jsonEscape(c.verification.rhs_attribute_kind) << "\","
+            << "\"lhs_attribute_detail\":\"" << jsonEscape(c.verification.lhs_attribute_detail) << "\","
+            << "\"rhs_attribute_detail\":\"" << jsonEscape(c.verification.rhs_attribute_detail) << "\","
             << "\"lhs_unsupported_opcode\":"
             << (c.verification.lhs_unsupported_opcode ? std::to_string(*c.verification.lhs_unsupported_opcode) : "null") << ","
             << "\"rhs_unsupported_opcode\":"

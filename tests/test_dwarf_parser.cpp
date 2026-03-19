@@ -5725,6 +5725,10 @@ void testExpressionVerifier() {
                ExpressionVerificationResult::Verdict::UNKNOWN
 #endif
         );
+        assert(r.lhs_attribute_kind == "location_expression");
+        assert(r.rhs_attribute_kind == "location_expression");
+        assert(r.lhs_attribute_detail.find("attr=DW_AT_location") != std::string::npos);
+        assert(r.rhs_attribute_detail.find("attr=DW_AT_location") != std::string::npos);
     }
 
     // DIE-level helper: location-list selection by default vs by PC.
@@ -5759,6 +5763,10 @@ void testExpressionVerifier() {
                ExpressionVerificationResult::Verdict::UNKNOWN
 #endif
         );
+        assert(r_default.lhs_attribute_kind == "location_list");
+        assert(r_default.rhs_attribute_kind == "location_list");
+        assert(r_default.lhs_attribute_detail.find("entries=2") != std::string::npos);
+        assert(r_default.rhs_attribute_detail.find("entries=2") != std::string::npos);
 
         DIEExpressionSelectionOptions lhs_sel;
         lhs_sel.use_pc_for_location_list = true;
@@ -5775,6 +5783,8 @@ void testExpressionVerifier() {
                ExpressionVerificationResult::Verdict::UNKNOWN
 #endif
         );
+        assert(r_pc.lhs_attribute_detail.find("selection=pc(") != std::string::npos);
+        assert(r_pc.rhs_attribute_detail.find("selection=pc(") != std::string::npos);
     }
 
     // DIE-level helper returns UNKNOWN when attribute is missing.
@@ -5783,6 +5793,46 @@ void testExpressionVerifier() {
         auto rhs_die = std::make_shared<DIE>(DwarfTag::DW_TAG_variable, 0, 0);
         auto r = verifier.verifyDIEAttributeExpressions(lhs_die, ctx, {}, rhs_die, ctx, {});
         assert(r.verdict == ExpressionVerificationResult::Verdict::UNKNOWN);
+        assert(r.lhs_attribute_kind == "missing");
+        assert(r.lhs_attribute_detail.find("attr=DW_AT_location") != std::string::npos);
+        assert(r.reason.find("lhs expression extraction failed: attribute missing") != std::string::npos);
+    }
+
+    // DIE-level helper reports non-expression attributes with detail.
+    {
+        auto lhs_die = std::make_shared<DIE>(DwarfTag::DW_TAG_variable, 0, 0);
+        auto rhs_die = std::make_shared<DIE>(DwarfTag::DW_TAG_variable, 0, 0);
+        lhs_die->addAttribute(DwarfAttribute::DW_AT_location,
+                              std::make_shared<UnsignedAttributeValue>(7));
+        rhs_die->addAttribute(
+            DwarfAttribute::DW_AT_location,
+            std::make_shared<LocationAttributeValue>(LocationAttributeValue::LocationType::EXPRESSION,
+                                                     std::vector<uint8_t>{static_cast<uint8_t>(DwarfOp::DW_OP_lit0),
+                                                                          static_cast<uint8_t>(DwarfOp::DW_OP_stack_value)}));
+        auto r = verifier.verifyDIEAttributeExpressions(lhs_die, ctx, {}, rhs_die, ctx, {});
+        assert(r.verdict == ExpressionVerificationResult::Verdict::UNKNOWN);
+        assert(r.lhs_attribute_kind == "non_expression_like");
+        assert(r.lhs_attribute_detail.find("value_type=unsigned") != std::string::npos);
+        assert(r.lhs_attribute_detail.find("preview=7") != std::string::npos);
+    }
+
+    // DIE-level helper preserves attribute detail when verification hits unsupported opcodes.
+    {
+        auto lhs_die = std::make_shared<DIE>(DwarfTag::DW_TAG_variable, 0, 0);
+        auto rhs_die = std::make_shared<DIE>(DwarfTag::DW_TAG_variable, 0, 0);
+        lhs_die->addAttribute(
+            DwarfAttribute::DW_AT_location,
+            std::make_shared<LocationAttributeValue>(LocationAttributeValue::LocationType::EXPRESSION,
+                                                     std::vector<uint8_t>{0xff}));
+        rhs_die->addAttribute(
+            DwarfAttribute::DW_AT_location,
+            std::make_shared<LocationAttributeValue>(LocationAttributeValue::LocationType::EXPRESSION,
+                                                     std::vector<uint8_t>{static_cast<uint8_t>(DwarfOp::DW_OP_lit0)}));
+        auto r = verifier.verifyDIEAttributeExpressions(lhs_die, ctx, {}, rhs_die, ctx, {});
+        assert(r.verdict == ExpressionVerificationResult::Verdict::UNKNOWN);
+        assert(r.reason.find("lhs unsupported opcode 0xff") != std::string::npos);
+        assert(r.reason.find("attr=DW_AT_location") != std::string::npos);
+        assert(r.lhs_attribute_kind == "location_expression");
     }
 
     std::cout << "ExpressionVerifier tests passed!" << std::endl;
@@ -6612,11 +6662,36 @@ void testCrossBinaryExpressionComparator() {
     );
     assert(summary.missing_lhs == 0);
     assert(summary.missing_rhs == 1);
+    assert(!summary.unknown_reason_counts.empty());
+    {
+        size_t unknown_reason_total = 0;
+        for (const auto& kv : summary.unknown_reason_counts) unknown_reason_total += kv.second;
+        assert(unknown_reason_total == summary.unknown);
+    }
+    {
+        size_t unknown_solver_total = 0;
+        for (const auto& kv : summary.unknown_solver_result_counts) unknown_solver_total += kv.second;
+        assert(unknown_solver_total == summary.unknown);
+    }
+    {
+        size_t unknown_rhs_kind_total = 0;
+        for (const auto& kv : summary.unknown_rhs_attribute_kind_counts) unknown_rhs_kind_total += kv.second;
+        assert(unknown_rhs_kind_total == summary.unknown);
+    }
+    {
+        size_t unknown_lhs_kind_total = 0;
+        for (const auto& kv : summary.unknown_lhs_attribute_kind_counts) unknown_lhs_kind_total += kv.second;
+        assert(unknown_lhs_kind_total == summary.unknown);
+    }
 
     std::string text_report = cmp.renderTextReport(results);
     assert(text_report.find("summary total=3") != std::string::npos);
+    assert(text_report.find("unknown_reason_counts=") != std::string::npos);
+    assert(text_report.find("unknown_lhs_attribute_kind_counts=") != std::string::npos);
     assert(text_report.find("x|DW_TAG_variable|1|1|") != std::string::npos);
     assert(text_report.find("lhs_unsupported_opcode") != std::string::npos);
+    assert(text_report.find("lhs_attribute_kind") != std::string::npos);
+    assert(text_report.find("rhs_attribute_detail") != std::string::npos);
     assert(text_report.find("DIFFERENT") != std::string::npos ||
 #if DWARF_HAS_Z3
            false
@@ -6636,6 +6711,10 @@ void testCrossBinaryExpressionComparator() {
     ) != std::string::npos);
     assert(json_report.find("\"name\":\"x\"") != std::string::npos);
     assert(json_report.find("\"lhs_unsupported_opcode\"") != std::string::npos);
+    assert(json_report.find("\"lhs_attribute_kind\"") != std::string::npos);
+    assert(json_report.find("\"rhs_attribute_detail\"") != std::string::npos);
+    assert(json_report.find("\"unknown_reason_counts\"") != std::string::npos);
+    assert(json_report.find("\"unknown_rhs_attribute_kind_counts\"") != std::string::npos);
 
     CrossBinaryGateOptions gate_default;
     auto gate_fail = cmp.evaluateGate(results, gate_default);
@@ -6905,9 +6984,15 @@ void testCrossBinaryExpressionComparator() {
         const auto& row = range_rows.front();
         assert(row.range_aware);
         assert(row.coverage_total == 0x30);
+#if DWARF_HAS_Z3
         assert(row.coverage_equivalent == 0x20);
         assert(row.coverage_different == 0);
         assert(row.coverage_unknown == 0);
+#else
+        assert(row.coverage_equivalent == 0);
+        assert(row.coverage_different == 0);
+        assert(row.coverage_unknown == 0x20);
+#endif
         assert(row.coverage_uncovered == 0x10);
         assert(row.range_segments.size() == 3);
         assert(row.range_segments[0].start == 0x10 && row.range_segments[0].end == 0x20);
@@ -6935,7 +7020,12 @@ void testCrossBinaryExpressionComparator() {
         auto range_summary = cmp.summarize(range_rows);
         assert(range_summary.total == 1);
         assert(range_summary.coverage_total == 0x30);
+#if DWARF_HAS_Z3
         assert(range_summary.coverage_equivalent == 0x20);
+#else
+        assert(range_summary.coverage_equivalent == 0);
+        assert(range_summary.coverage_unknown == 0x20);
+#endif
         assert(range_summary.coverage_uncovered == 0x10);
 
         CrossBinaryGateOptions coverage_gate;
@@ -6989,7 +7079,12 @@ void testCrossBinaryExpressionComparator() {
         const auto& raw = raw_rows.front();
         assert(raw.range_aware);
         assert(raw.coverage_total == 0x10);
+#if DWARF_HAS_Z3
         assert(raw.coverage_equivalent == 0x10);
+#else
+        assert(raw.coverage_equivalent == 0);
+        assert(raw.coverage_unknown == 0x10);
+#endif
         assert(raw.coverage_uncovered == 0);
         assert(raw.range_segments.size() == 2);
         assert(raw.range_segments[0].start == 0x10 && raw.range_segments[0].end == 0x18);
@@ -7003,7 +7098,12 @@ void testCrossBinaryExpressionComparator() {
         const auto& norm = norm_rows.front();
         assert(norm.range_aware);
         assert(norm.coverage_total == 0x10);
+#if DWARF_HAS_Z3
         assert(norm.coverage_equivalent == 0x10);
+#else
+        assert(norm.coverage_equivalent == 0);
+        assert(norm.coverage_unknown == 0x10);
+#endif
         assert(norm.coverage_uncovered == 0);
         assert(norm.range_segments.size() == 1);
         assert(norm.range_segments[0].start == 0x10 && norm.range_segments[0].end == 0x20);
@@ -17137,6 +17237,79 @@ void testVariableLocationDiagnosticContextViaDwarfParser() {
     std::cout << "Parser variable location diagnostic context tests passed!" << std::endl;
 }
 
+void testDwarfParserLoadsCFIWithoutDebugInfo() {
+    std::cout << "Testing DwarfParser load without debug_info but with CFI..." << std::endl;
+
+    auto appendULEB = [](std::vector<uint8_t>& out, uint64_t v) { appendULEB128(out, v); };
+    auto appendSLEBLocal = [](std::vector<uint8_t>& out, int64_t v) {
+        bool more = true;
+        while (more) {
+            uint8_t byte = static_cast<uint8_t>(v & 0x7f);
+            bool sign = (byte & 0x40) != 0;
+            v >>= 7;
+            if ((v == 0 && !sign) || (v == -1 && sign)) {
+                more = false;
+            } else {
+                byte |= 0x80;
+            }
+            out.push_back(byte);
+        }
+    };
+
+    std::vector<uint8_t> debug_frame;
+    auto startEntry32 = [&](uint32_t id) -> size_t {
+        size_t start = debug_frame.size();
+        appendU32(debug_frame, 0);
+        appendU32(debug_frame, id);
+        return start;
+    };
+    auto finishEntry32 = [&](size_t start) {
+        uint32_t len = static_cast<uint32_t>(debug_frame.size() - start - 4);
+        debug_frame[start + 0] = static_cast<uint8_t>(len & 0xff);
+        debug_frame[start + 1] = static_cast<uint8_t>((len >> 8) & 0xff);
+        debug_frame[start + 2] = static_cast<uint8_t>((len >> 16) & 0xff);
+        debug_frame[start + 3] = static_cast<uint8_t>((len >> 24) & 0xff);
+    };
+
+    size_t cie_start = startEntry32(0xffffffff);
+    debug_frame.push_back(0x04); // version 4
+    debug_frame.push_back(0x00); // augmentation string NUL
+    debug_frame.push_back(0x08); // address_size
+    debug_frame.push_back(0x00); // segment_selector_size
+    appendULEB(debug_frame, 1);  // code_alignment_factor
+    appendSLEBLocal(debug_frame, -8); // data_alignment_factor
+    appendULEB(debug_frame, 16); // return_address_register
+    finishEntry32(cie_start);
+
+    size_t fde_start = startEntry32(0);
+    appendU64(debug_frame, 0x1000);
+    appendU64(debug_frame, 0x20);
+    debug_frame.push_back(static_cast<uint8_t>(0x0c)); // DW_CFA_def_cfa
+    appendULEB(debug_frame, 7);  // rsp
+    appendULEB(debug_frame, 8);  // cfa offset
+    finishEntry32(fde_start);
+
+    std::string dir = makeTempDir("dwarf_cfi_only_");
+    std::string elf_path = (std::filesystem::path(dir) / "cfi_only.elf").string();
+    writeELFWithSections(elf_path, {
+        {".debug_frame", debug_frame},
+    });
+
+    DwarfParser parser(elf_path);
+    assert(parser.load());
+    assert(parser.isValid());
+    assert(parser.getCompilationUnits().empty());
+    assert(parser.hasCFI());
+
+    UnwindInfo ui = parser.getUnwindInfo(0x1004);
+    assert(ui.valid);
+    assert(ui.cfa.type == CFA_Type::REGISTER_OFFSET);
+    assert(ui.cfa.reg_num == 7);
+    assert(ui.cfa.offset == 8);
+
+    std::cout << "DwarfParser CFI-only load tests passed!" << std::endl;
+}
+
 void testCallStackAArch64CFAExpressionUnwind() {
     std::cout << "Testing CallStackBuilder unwind with CFA expression..." << std::endl;
 
@@ -19590,6 +19763,7 @@ int main() {
     testSplitDwarfDWOAddrxUsesDWODebugAddr();
     testTypedOpsTypedefChainViaDwarfParser();
     testVariableLocationDiagnosticContextViaDwarfParser();
+    testDwarfParserLoadsCFIWithoutDebugInfo();
     testCallStackAArch64CFAExpressionUnwind();
 	    testEHFramePCRelativeEncoding();
 	    testEHFrameAlignedEncoding();

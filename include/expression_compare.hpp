@@ -5,6 +5,7 @@
 #include "symbolic_verifier.hpp"
 #include <limits>
 #include <memory>
+#include <map>
 #include <set>
 #include <string>
 #include <vector>
@@ -78,6 +79,10 @@ struct CrossBinaryComparisonSummary {
     uint64_t coverage_different = 0;
     uint64_t coverage_unknown = 0;
     uint64_t coverage_uncovered = 0;
+    std::map<std::string, size_t> unknown_reason_counts;
+    std::map<std::string, size_t> unknown_solver_result_counts;
+    std::map<std::string, size_t> unknown_lhs_attribute_kind_counts;
+    std::map<std::string, size_t> unknown_rhs_attribute_kind_counts;
 };
 
 struct CrossBinaryGateOptions {

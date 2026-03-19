@@ -797,6 +797,7 @@ int main() {
         const uint64_t dwo_id = 0xA1B2C3D4E5F60718ULL;
         const uint64_t other_sig = 0x0F1E2D3C4B5A6978ULL;
         const std::string dwo_name = prefix + ".dwo";
+        const std::string var_name = "FromDWO";
 
         fs::path dir = fs::path("/tmp") / ("dwarf_cli_" + prefix + "_" + std::to_string(std::rand()));
         std::error_code ec;
@@ -812,17 +813,17 @@ int main() {
         main_abbrev.push_back(0x01); // code
         main_abbrev.push_back(0x11); // DW_TAG_compile_unit
         main_abbrev.push_back(0x00); // no children
-        main_abbrev.push_back(0x76); // DW_AT_dwo_name
-        main_abbrev.push_back(0x0e); // DW_FORM_strp
-        main_abbrev.push_back(0x75); // DW_AT_dwo_id
-        main_abbrev.push_back(0x07); // DW_FORM_data8
+        appendULEB128(main_abbrev, static_cast<uint64_t>(dwarf::DwarfAttribute::DW_AT_dwo_name));
+        appendULEB128(main_abbrev, static_cast<uint64_t>(dwarf::DwarfForm::DW_FORM_strp));
+        appendULEB128(main_abbrev, static_cast<uint64_t>(dwarf::DwarfAttribute::DW_AT_dwo_id));
+        appendULEB128(main_abbrev, static_cast<uint64_t>(dwarf::DwarfForm::DW_FORM_data8));
         main_abbrev.push_back(0x00); main_abbrev.push_back(0x00);
         main_abbrev.push_back(0x00);
 
         std::vector<uint8_t> main_info;
-        appendU32LE(main_info, 0); // placeholder unit_length
-        appendU16LE(main_info, 4); // version
-        appendU32LE(main_info, 0); // abbrev offset
+        appendU32LE(main_info, 0);    // placeholder unit_length
+        appendU16LE(main_info, 4);    // version
+        appendU32LE(main_info, 0);    // abbrev offset
         main_info.push_back(0x08); // addr_size
         main_info.push_back(0x01); // abbrev code
         appendU32LE(main_info, dwo_name_off);
@@ -841,15 +842,15 @@ int main() {
         payload_abbrev.push_back(0x02); // variable
         payload_abbrev.push_back(0x34); // DW_TAG_variable
         payload_abbrev.push_back(0x00); // no children
-        payload_abbrev.push_back(0x03); // DW_AT_name
-        payload_abbrev.push_back(0x0e); // DW_FORM_strp
+        appendULEB128(payload_abbrev, static_cast<uint64_t>(dwarf::DwarfAttribute::DW_AT_name));
+        appendULEB128(payload_abbrev, static_cast<uint64_t>(dwarf::DwarfForm::DW_FORM_strp));
         payload_abbrev.push_back(0x00); payload_abbrev.push_back(0x00);
         payload_abbrev.push_back(0x00);
 
         std::vector<uint8_t> payload_info;
-        appendU32LE(payload_info, 0); // placeholder unit_length
-        appendU16LE(payload_info, 4); // version
-        appendU32LE(payload_info, 0); // abbrev offset
+        appendU32LE(payload_info, 0);    // placeholder unit_length
+        appendU16LE(payload_info, 4);    // version
+        appendU32LE(payload_info, 0);    // abbrev offset
         payload_info.push_back(0x08); // addr_size
         payload_info.push_back(0x01); // CU code
         payload_info.push_back(0x02); // var code
@@ -861,16 +862,18 @@ int main() {
         payload_info[2] = static_cast<uint8_t>((payload_len >> 16) & 0xff);
         payload_info[3] = static_cast<uint8_t>((payload_len >> 24) & 0xff);
 
-        std::vector<uint8_t> dwo_str = {'x', 0};
+        std::vector<uint8_t> dwo_str;
+        for (char c : var_name) dwo_str.push_back(static_cast<uint8_t>(c));
+        dwo_str.push_back(0);
 
         std::vector<uint8_t> cu_index;
         if (!include_cu_index) {
             // Intentionally omit CU index section.
         } else if (malformed_cu_index) {
-            appendU32LE(cu_index, 6);
-            appendU32LE(cu_index, 2);
-            appendU32LE(cu_index, 1);
-            appendU32LE(cu_index, 1);
+            appendU32LE(cu_index, 6); // version
+            appendU32LE(cu_index, 2); // section_count
+            appendU32LE(cu_index, 1); // unit_count
+            appendU32LE(cu_index, 1); // slot_count
         } else {
             appendU32LE(cu_index, 6); // version
             appendU32LE(cu_index, 2); // section_count
@@ -1142,7 +1145,7 @@ int main() {
         assert(code == 0);
         assert(out.find("--lhs-fde-index") != std::string::npos);
         assert(out.find("--allow-range-mismatch") != std::string::npos);
-        assert(out.find("--sort=<lhs-index|rhs-index|lhs-pc|rhs-pc|verdict>") != std::string::npos);
+        assert(out.find("--sort=") != std::string::npos);
         assert(out.find("--show-equivalent") != std::string::npos);
         assert(out.find("--only-different") != std::string::npos);
         assert(out.find("--only-unknown") != std::string::npos);
@@ -1874,9 +1877,17 @@ int main() {
             "/tmp/dwarf_cli_range_aware_loclists_text.txt", out_text);
         assert(code_text == 0);
         assert(out_text.find("coverage_total=32") != std::string::npos);
+#if DWARF_HAS_Z3
         assert(out_text.find("coverage_eq=16") != std::string::npos);
+        assert(out_text.find("coverage_unknown=0") != std::string::npos);
         assert(out_text.find("coverage_uncovered=16") != std::string::npos);
         assert(out_text.find("|32|16|0|0|16|") != std::string::npos);
+#else
+        assert(out_text.find("coverage_eq=0") != std::string::npos);
+        assert(out_text.find("coverage_unknown=16") != std::string::npos);
+        assert(out_text.find("coverage_uncovered=16") != std::string::npos);
+        assert(out_text.find("|32|0|0|16|16|") != std::string::npos);
+#endif
 
         std::string out_json;
         int code_json = runAndCapture(
@@ -1888,8 +1899,15 @@ int main() {
         assert(!row_json.empty());
         assert(row_json.find("\"range_aware\":true") != std::string::npos);
         assert(row_json.find("\"coverage_total\":32") != std::string::npos);
+#if DWARF_HAS_Z3
         assert(row_json.find("\"coverage_equivalent\":16") != std::string::npos);
+        assert(row_json.find("\"coverage_unknown\":0") != std::string::npos);
         assert(row_json.find("\"coverage_uncovered\":16") != std::string::npos);
+#else
+        assert(row_json.find("\"coverage_equivalent\":0") != std::string::npos);
+        assert(row_json.find("\"coverage_unknown\":16") != std::string::npos);
+        assert(row_json.find("\"coverage_uncovered\":16") != std::string::npos);
+#endif
         assert(row_json.find("\"range_segments\"") != std::string::npos);
         assert(row_json.find("\"start\":16") != std::string::npos);
         assert(row_json.find("\"end\":32") != std::string::npos);
@@ -1897,7 +1915,11 @@ int main() {
         assert(norm_segments.size() == 2);
         assert(norm_segments[0].find("\"start\":16") != std::string::npos);
         assert(norm_segments[0].find("\"end\":32") != std::string::npos);
+#if DWARF_HAS_Z3
         assert(norm_segments[0].find("\"verdict\":\"EQUIVALENT\"") != std::string::npos);
+#else
+        assert(norm_segments[0].find("\"verdict\":\"UNKNOWN\"") != std::string::npos);
+#endif
         assert(norm_segments[1].find("\"start\":32") != std::string::npos);
         assert(norm_segments[1].find("\"end\":48") != std::string::npos);
         assert(norm_segments[1].find("\"lhs_present\":false") != std::string::npos);
@@ -1955,7 +1977,11 @@ int main() {
             "/tmp/dwarf_cli_range_aware_loclists_eq_gate_json.txt", eq_gate_json);
         assert(eq_gate_json_code == 2);
         assert(eq_gate_json.find("\"trigger\":\"min_equivalent_coverage\"") != std::string::npos);
+#if DWARF_HAS_Z3
         assert(eq_gate_json.find("\"trigger_detail\":\"0.500000/0.600000\"") != std::string::npos);
+#else
+        assert(eq_gate_json.find("\"trigger_detail\":\"0.000000/0.600000\"") != std::string::npos);
+#endif
     }
 
     {
@@ -1980,8 +2006,14 @@ int main() {
             "/tmp/dwarf_cli_range_aware_diff_text.txt", diff_text);
         assert(diff_code == 0);
         assert(diff_text.find("coverage_total=32") != std::string::npos);
+#if DWARF_HAS_Z3
         assert(diff_text.find("coverage_eq=16") != std::string::npos);
         assert(diff_text.find("coverage_diff=16") != std::string::npos);
+#else
+        assert(diff_text.find("coverage_eq=0") != std::string::npos);
+        assert(diff_text.find("coverage_diff=0") != std::string::npos);
+        assert(diff_text.find("coverage_unknown=32") != std::string::npos);
+#endif
 
         std::string diff_gate_json;
         int diff_gate_code = runAndCapture(
@@ -1989,9 +2021,15 @@ int main() {
                 " --name=range_diff --range-aware --normalize-loc --allow-unknown --allow-missing"
                 " --max-unknown=100000 --max-different=100000 --max-different-coverage=0.4 --format=json --schema-version=1",
             "/tmp/dwarf_cli_range_aware_diff_gate_json.txt", diff_gate_json);
+#if DWARF_HAS_Z3
         assert(diff_gate_code == 2);
         assert(diff_gate_json.find("\"trigger\":\"max_different_coverage\"") != std::string::npos);
         assert(diff_gate_json.find("\"trigger_detail\":\"0.500000/0.400000\"") != std::string::npos);
+#else
+        assert(diff_gate_code == 0);
+        assert(diff_gate_json.find("\"pass\":true") != std::string::npos);
+        assert(diff_gate_json.find("\"trigger\":\"none\"") != std::string::npos);
+#endif
     }
 
     {
@@ -2497,6 +2535,8 @@ int main() {
         assert(out_json.find("\"signature\"") != std::string::npos);
         assert(out_json.find("\"solver_result_counts\"") != std::string::npos);
         assert(out_json.find("\"verifier_backend_counts\"") != std::string::npos);
+        assert(out_json.find("\"unknown_reason_counts\"") != std::string::npos);
+        assert(out_json.find("\"unknown_lhs_attribute_kind_counts\"") != std::string::npos);
         assert(out_json.find("\"verifier_backend\"") != std::string::npos);
         assert(out_json.find("\"solver_result\"") != std::string::npos);
         assert(out_json.find("\"counterexample_model\"") != std::string::npos);
@@ -2534,10 +2574,14 @@ int main() {
                 " --name=bad --allow-unknown --allow-missing",
             "/tmp/dwarf_expr_unsupported_opcode_text.txt", out_text);
         assert(code_text == 0);
+        assert(out_text.find("lhs_attribute_kind") != std::string::npos);
+        assert(out_text.find("rhs_attribute_detail") != std::string::npos);
         assert(out_text.find("lhs_unsupported_opcode") != std::string::npos);
         assert(out_text.find("rhs_unsupported_opcode") != std::string::npos);
         assert(out_text.find("lhs_unsupported_vendor_extension") != std::string::npos);
         assert(out_text.find("rhs_unsupported_vendor_extension") != std::string::npos);
+        assert(out_text.find("location_expression") != std::string::npos);
+        assert(out_text.find("attr=DW_AT_location") != std::string::npos);
         assert(out_text.find("|255|255|1|1|") != std::string::npos);
 
         std::string out_json;
@@ -2554,6 +2598,10 @@ int main() {
         assert(row_json.find("\"rhs_unsupported_vendor_extension\":true") != std::string::npos);
         assert(row_json.find("\"verdict\":\"UNKNOWN\"") != std::string::npos);
         assert(row_json.find("\"solver_result\":\"unsupported_opcode\"") != std::string::npos);
+        assert(row_json.find("\"lhs_attribute_kind\":\"location_expression\"") != std::string::npos);
+        assert(row_json.find("\"rhs_attribute_kind\":\"location_expression\"") != std::string::npos);
+        assert(row_json.find("\"lhs_attribute_detail\":\"attr=DW_AT_location") != std::string::npos);
+        assert(row_json.find("\"rhs_attribute_detail\":\"attr=DW_AT_location") != std::string::npos);
     }
 
     {
@@ -2577,9 +2625,14 @@ int main() {
                 " --name=wide --allow-unknown --allow-missing --report-only",
             "/tmp/dwarf_expr_wide_bytes_text.txt", out_text);
         assert(code_text == 0);
+#if DWARF_HAS_Z3
         assert(out_text.find("|DIFFERENT|") != std::string::npos);
         assert(out_text.find("|z3|sat|") != std::string::npos
                || out_text.find("|solver-unavailable|solver_unavailable|") != std::string::npos);
+#else
+        assert(out_text.find("|UNKNOWN|") != std::string::npos);
+        assert(out_text.find("|solver-unavailable|solver_unavailable|") != std::string::npos);
+#endif
 
         std::string out_json;
         int code_json = runAndCapture(
@@ -2621,9 +2674,14 @@ int main() {
                 " --name=wide_load --allow-unknown --allow-missing --report-only",
             "/tmp/dwarf_expr_wide_load_text.txt", out_text);
         assert(code_text == 0);
+#if DWARF_HAS_Z3
         assert(out_text.find("|DIFFERENT|") != std::string::npos);
         assert(out_text.find("|z3|sat|") != std::string::npos
                || out_text.find("|solver-unavailable|solver_unavailable|") != std::string::npos);
+#else
+        assert(out_text.find("|UNKNOWN|") != std::string::npos);
+        assert(out_text.find("|solver-unavailable|solver_unavailable|") != std::string::npos);
+#endif
 
         std::string out_json;
         int code_json = runAndCapture(

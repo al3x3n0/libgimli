@@ -176,8 +176,21 @@ bool DwarfParser::load() {
     if (!loadDWARFSections()) {
         return false;
     }
-    
-    if (!parseCompilationUnits()) {
+
+    const bool has_full_debug_info =
+        !debug_info_.empty() && !debug_abbrev_.empty() && !debug_str_.empty();
+    const bool has_partial_debug_info =
+        !debug_info_.empty() || !debug_abbrev_.empty() || !debug_str_.empty();
+
+    if (has_full_debug_info) {
+        if (!parseCompilationUnits()) {
+            return false;
+        }
+    } else if (has_partial_debug_info) {
+        DwarfUtils::setLastError("Incomplete DWARF unit sections");
+        return false;
+    } else if (!hasCFI()) {
+        DwarfUtils::setLastError("No DWARF debug info or CFI sections available");
         return false;
     }
 
@@ -224,23 +237,10 @@ bool DwarfParser::loadELFFile() {
 }
 
 bool DwarfParser::loadDWARFSections() {
-    // Load .debug_info section
-    if (!loadSection(constants::DEBUG_INFO_SECTION, debug_info_)) {
-        DwarfUtils::setLastError("Failed to load .debug_info section");
-        return false;
-    }
-    
-    // Load .debug_abbrev section
-    if (!loadSection(constants::DEBUG_ABBREV_SECTION, debug_abbrev_)) {
-        DwarfUtils::setLastError("Failed to load .debug_abbrev section");
-        return false;
-    }
-    
-    // Load .debug_str section
-    if (!loadSection(constants::DEBUG_STR_SECTION, debug_str_)) {
-        DwarfUtils::setLastError("Failed to load .debug_str section");
-        return false;
-    }
+    // Load CU-oriented DWARF sections on a best-effort basis so CFI-only objects remain usable.
+    loadSection(constants::DEBUG_INFO_SECTION, debug_info_);
+    loadSection(constants::DEBUG_ABBREV_SECTION, debug_abbrev_);
+    loadSection(constants::DEBUG_STR_SECTION, debug_str_);
     
     // Load optional sections
     loadSection(constants::DEBUG_LINE_SECTION, debug_line_);
