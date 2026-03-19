@@ -212,6 +212,9 @@ DwarfAttribute DwarfUtils::stringToAttribute(const std::string& str) {
     if (str == "DW_AT_const_expr") return DwarfAttribute::DW_AT_const_expr;
     if (str == "DW_AT_enum_class") return DwarfAttribute::DW_AT_enum_class;
     if (str == "DW_AT_linkage_name") return DwarfAttribute::DW_AT_linkage_name;
+    if (str == "DW_AT_string_length_bit_size") return DwarfAttribute::DW_AT_string_length_bit_size;
+    if (str == "DW_AT_string_length_byte_size") return DwarfAttribute::DW_AT_string_length_byte_size;
+    if (str == "DW_AT_rank") return DwarfAttribute::DW_AT_rank;
     if (str == "DW_AT_addr_base") return DwarfAttribute::DW_AT_addr_base;
     if (str == "DW_AT_rnglists_base") return DwarfAttribute::DW_AT_rnglists_base;
     if (str == "DW_AT_loclists_base") return DwarfAttribute::DW_AT_loclists_base;
@@ -1361,6 +1364,9 @@ std::string DwarfUtils::attributeToString(DwarfAttribute attr) {
         case DwarfAttribute::DW_AT_const_expr: return "DW_AT_const_expr";
         case DwarfAttribute::DW_AT_enum_class: return "DW_AT_enum_class";
         case DwarfAttribute::DW_AT_linkage_name: return "DW_AT_linkage_name";
+        case DwarfAttribute::DW_AT_string_length_bit_size: return "DW_AT_string_length_bit_size";
+        case DwarfAttribute::DW_AT_string_length_byte_size: return "DW_AT_string_length_byte_size";
+        case DwarfAttribute::DW_AT_rank: return "DW_AT_rank";
         case DwarfAttribute::DW_AT_addr_base: return "DW_AT_addr_base";
         case DwarfAttribute::DW_AT_rnglists_base: return "DW_AT_rnglists_base";
         case DwarfAttribute::DW_AT_loclists_base: return "DW_AT_loclists_base";

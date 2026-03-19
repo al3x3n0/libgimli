@@ -616,6 +616,10 @@ std::shared_ptr<AttributeValue> AttributeParser::parseAttribute(DwarfAttribute a
         case DwarfAttribute::DW_AT_stmt_list:
             return parseLineAttribute(attr, form, offset);
 
+        case DwarfAttribute::DW_AT_sibling:
+        case DwarfAttribute::DW_AT_discr:
+            return parseReferenceMetadataAttribute(attr, form, offset);
+
         case DwarfAttribute::DW_AT_location:
         case DwarfAttribute::DW_AT_frame_base:
         case DwarfAttribute::DW_AT_data_member_location:
@@ -628,6 +632,11 @@ std::shared_ptr<AttributeValue> AttributeParser::parseAttribute(DwarfAttribute a
 
         case DwarfAttribute::DW_AT_ranges:
             return parseRangeAttribute(attr, form, offset);
+
+        case DwarfAttribute::DW_AT_name:
+        case DwarfAttribute::DW_AT_linkage_name:
+        case DwarfAttribute::DW_AT_GNU_dwo_name:
+            return parseStringMetadataAttribute(attr, form, offset);
 
         case DwarfAttribute::DW_AT_type:
         case DwarfAttribute::DW_AT_abstract_origin:
@@ -647,7 +656,11 @@ std::shared_ptr<AttributeValue> AttributeParser::parseAttribute(DwarfAttribute a
 
         case DwarfAttribute::DW_AT_entry_pc:
         case DwarfAttribute::DW_AT_call_return_pc:
+        case DwarfAttribute::DW_AT_low_pc:
             return parseAddressMetadataAttribute(attr, form, offset);
+
+        case DwarfAttribute::DW_AT_high_pc:
+            return parseHighPCAttribute(attr, form, offset);
 
         case DwarfAttribute::DW_AT_binary_scale:
         case DwarfAttribute::DW_AT_decimal_scale:
@@ -663,10 +676,20 @@ std::shared_ptr<AttributeValue> AttributeParser::parseAttribute(DwarfAttribute a
         case DwarfAttribute::DW_AT_calling_convention:
         case DwarfAttribute::DW_AT_encoding:
         case DwarfAttribute::DW_AT_identifier_case:
+        case DwarfAttribute::DW_AT_ordering:
+        case DwarfAttribute::DW_AT_language:
+        case DwarfAttribute::DW_AT_discr_value:
+        case DwarfAttribute::DW_AT_decl_column:
+        case DwarfAttribute::DW_AT_decl_file:
+        case DwarfAttribute::DW_AT_decl_line:
+        case DwarfAttribute::DW_AT_call_column:
+        case DwarfAttribute::DW_AT_call_file:
+        case DwarfAttribute::DW_AT_call_line:
         case DwarfAttribute::DW_AT_string_length_bit_size:
         case DwarfAttribute::DW_AT_string_length_byte_size:
         case DwarfAttribute::DW_AT_signature:
         case DwarfAttribute::DW_AT_dwo_id:
+        case DwarfAttribute::DW_AT_GNU_dwo_id:
             return parseScalarMetadataAttribute(attr, form, offset);
 
         case DwarfAttribute::DW_AT_addr_base:
@@ -688,6 +711,7 @@ std::shared_ptr<AttributeValue> AttributeParser::parseAttribute(DwarfAttribute a
         case DwarfAttribute::DW_AT_mutable:
         case DwarfAttribute::DW_AT_declaration:
         case DwarfAttribute::DW_AT_external:
+        case DwarfAttribute::DW_AT_volatile:
         case DwarfAttribute::DW_AT_artificial:
         case DwarfAttribute::DW_AT_variable_parameter:
         case DwarfAttribute::DW_AT_object_pointer:
@@ -728,6 +752,11 @@ std::shared_ptr<AttributeValue> AttributeParser::parseAttribute(DwarfAttribute a
         case DwarfAttribute::DW_AT_start_scope:
         case DwarfAttribute::DW_AT_data_bit_offset:
             return parseConstValueAttribute(attr, form, offset);
+
+        case DwarfAttribute::DW_AT_byte_size:
+        case DwarfAttribute::DW_AT_bit_offset:
+        case DwarfAttribute::DW_AT_bit_size:
+            return parseConstantReferenceExpressionMetadataAttribute(attr, form, offset);
 
         default:
             // Fall back to generic parsing
@@ -1022,6 +1051,26 @@ std::shared_ptr<AttributeValue> AttributeParser::parseAddressMetadataAttribute(D
     return nullptr;
 }
 
+std::shared_ptr<AttributeValue> AttributeParser::parseHighPCAttribute(DwarfAttribute attr,
+                                                                      DwarfForm form,
+                                                                      uint64_t& offset) const {
+    (void)attr;
+    if (auto value = parseAddressAttribute(form, offset)) {
+        return value;
+    }
+    if (auto value = parseDataAttribute(form, offset)) {
+        return value;
+    }
+    if (form == DwarfForm::DW_FORM_implicit_const) {
+        return parseFormImplicitConst(offset);
+    }
+    auto raw = parseAttribute(form, offset);
+    if ((static_cast<uint16_t>(form) & 0xff00u) == 0x1f00u) {
+        return raw;
+    }
+    return nullptr;
+}
+
 std::shared_ptr<AttributeValue> AttributeParser::parseScalarMetadataAttribute(DwarfAttribute attr,
                                                                               DwarfForm form,
                                                                               uint64_t& offset) const {
@@ -1029,6 +1078,9 @@ std::shared_ptr<AttributeValue> AttributeParser::parseScalarMetadataAttribute(Dw
     auto value = parseDataAttribute(form, offset);
     if (value) {
         return value;
+    }
+    if (form == DwarfForm::DW_FORM_implicit_const) {
+        return parseFormImplicitConst(offset);
     }
     auto raw = parseAttribute(form, offset);
     if ((static_cast<uint16_t>(form) & 0xff00u) == 0x1f00u) {
@@ -1096,6 +1148,29 @@ std::shared_ptr<AttributeValue> AttributeParser::parseExpressionBlockMetadataAtt
     }
     if (auto block = parseBlockAttribute(form, offset)) {
         return block;
+    }
+    auto raw = parseAttribute(form, offset);
+    if ((static_cast<uint16_t>(form) & 0xff00u) == 0x1f00u) {
+        return raw;
+    }
+    return nullptr;
+}
+
+std::shared_ptr<AttributeValue> AttributeParser::parseConstantReferenceExpressionMetadataAttribute(DwarfAttribute attr,
+                                                                                                   DwarfForm form,
+                                                                                                   uint64_t& offset) const {
+    (void)attr;
+    if (auto value = parseDataAttribute(form, offset)) {
+        return value;
+    }
+    if (form == DwarfForm::DW_FORM_implicit_const) {
+        return parseFormImplicitConst(offset);
+    }
+    if (auto expr = parseExpressionAttribute(form, offset)) {
+        return expr;
+    }
+    if (auto ref = parseReferenceAttribute(form, offset)) {
+        return ref;
     }
     auto raw = parseAttribute(form, offset);
     if ((static_cast<uint16_t>(form) & 0xff00u) == 0x1f00u) {

@@ -114,11 +114,13 @@ public:
     std::shared_ptr<AttributeValue> parseConstValueAttribute(DwarfAttribute attr, DwarfForm form, uint64_t& offset) const;
     std::shared_ptr<AttributeValue> parseReferenceMetadataAttribute(DwarfAttribute attr, DwarfForm form, uint64_t& offset) const;
     std::shared_ptr<AttributeValue> parseAddressMetadataAttribute(DwarfAttribute attr, DwarfForm form, uint64_t& offset) const;
+    std::shared_ptr<AttributeValue> parseHighPCAttribute(DwarfAttribute attr, DwarfForm form, uint64_t& offset) const;
     std::shared_ptr<AttributeValue> parseScalarMetadataAttribute(DwarfAttribute attr, DwarfForm form, uint64_t& offset) const;
     std::shared_ptr<AttributeValue> parseOffsetScalarMetadataAttribute(DwarfAttribute attr, DwarfForm form, uint64_t& offset) const;
     std::shared_ptr<AttributeValue> parseStringMetadataAttribute(DwarfAttribute attr, DwarfForm form, uint64_t& offset) const;
     std::shared_ptr<AttributeValue> parseFlagMetadataAttribute(DwarfAttribute attr, DwarfForm form, uint64_t& offset) const;
     std::shared_ptr<AttributeValue> parseExpressionBlockMetadataAttribute(DwarfAttribute attr, DwarfForm form, uint64_t& offset) const;
+    std::shared_ptr<AttributeValue> parseConstantReferenceExpressionMetadataAttribute(DwarfAttribute attr, DwarfForm form, uint64_t& offset) const;
     
     // Utility methods
     std::string getString(uint64_t offset) const;
