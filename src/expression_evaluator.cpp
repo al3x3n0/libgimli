@@ -266,26 +266,10 @@ void ExpressionEvaluator::setExecutionError(std::string msg) const {
 }
 
 std::string ExpressionEvaluator::diagnosticContextSuffix() const {
-    std::ostringstream oss;
-    bool any = false;
-    if (context_.diagnostic_cu_offset.has_value()) {
-        oss << (any ? ", " : " [") << "cu=0x"
-            << std::hex << *context_.diagnostic_cu_offset << std::dec;
-        any = true;
-    }
-    if (context_.diagnostic_die_offset.has_value()) {
-        oss << (any ? ", " : " [") << "die=0x"
-            << std::hex << *context_.diagnostic_die_offset << std::dec;
-        any = true;
-    }
-    if (!context_.diagnostic_attribute.empty()) {
-        oss << (any ? ", " : " [") << "attr=" << context_.diagnostic_attribute;
-        any = true;
-    }
-    if (any) {
-        oss << "]";
-    }
-    return oss.str();
+    return DwarfUtils::formatDiagnosticContext(
+        context_.diagnostic_cu_offset,
+        context_.diagnostic_die_offset,
+        context_.diagnostic_attribute);
 }
 
 bool ExpressionEvaluator::requireStack(size_t n, const char* op_name) {

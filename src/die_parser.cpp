@@ -3,7 +3,13 @@
 #include "dwarf_utils.hpp"
 #include <iostream>
 
-#define DEBUG_OUT(x) if (verbose_) { std::cerr << x << std::endl; }
+#define DEBUG_OUT(x) do { \
+    if (verbose_) { \
+        std::ostringstream dwarf_debug_stream__; \
+        dwarf_debug_stream__ << x; \
+        DwarfUtils::printDebugMessage(std::cerr, dwarf_debug_stream__.str()); \
+    } \
+} while (false)
 #include <sstream>
 #include <algorithm>
 #include <cstring>
@@ -198,7 +204,7 @@ std::vector<std::shared_ptr<DIE>> DIEParser::parseCompilationUnits() {
     vendor_form_skip_details_.clear();
     uint64_t offset = 0;
     
-    DEBUG_OUT("Debug: Starting to parse compilation units, debug_info size: " << debug_info_.size());
+    DEBUG_OUT("Starting to parse compilation units, debug_info size: " << debug_info_.size());
     
     while (offset < debug_info_.size()) {
         // Need at least the initial length.
@@ -210,7 +216,7 @@ std::vector<std::shared_ptr<DIE>> DIEParser::parseCompilationUnits() {
         clearDecodeError();
         uint32_t initial_length = readU32(offset);
         if (hasDecodeError()) break;
-        DEBUG_OUT("Debug: Raw length value: 0x" << std::hex << initial_length << std::dec);
+        DEBUG_OUT("Raw length value: 0x" << std::hex << initial_length << std::dec);
         if (initial_length == 0) break;
 
         bool is_dwarf64 = (initial_length == 0xffffffff);
@@ -222,7 +228,7 @@ std::vector<std::shared_ptr<DIE>> DIEParser::parseCompilationUnits() {
         if (unit_length > (debug_info_.size() - start_offset - header_size)) break;
         uint64_t unit_end = start_offset + header_size + unit_length;
 
-        DEBUG_OUT("Debug: Found compilation unit at offset " << biased_start_offset
+        DEBUG_OUT("Found compilation unit at offset " << biased_start_offset
                   << ", length: " << unit_length
                   << ", dwarf64: " << (is_dwarf64 ? "yes" : "no"));
 
@@ -236,7 +242,7 @@ std::vector<std::shared_ptr<DIE>> DIEParser::parseCompilationUnits() {
             offset = unit_end;
             continue;
         }
-        DEBUG_OUT("Debug: DWARF version: " << version);
+        DEBUG_OUT("DWARF version: " << version);
         
         uint64_t abbrev_offset;
         uint8_t address_size;
@@ -253,12 +259,12 @@ std::vector<std::shared_ptr<DIE>> DIEParser::parseCompilationUnits() {
                 continue;
             }
             unit_type_raw = readU8(offset);
-            DEBUG_OUT("Debug: DWARF 5 unit type: " << (int)unit_type_raw);
+            DEBUG_OUT("DWARF 5 unit type: " << (int)unit_type_raw);
             address_size = readU8(offset);
-            DEBUG_OUT("Debug: Address size: " << (int)address_size);
+            DEBUG_OUT("Address size: " << (int)address_size);
 
             abbrev_offset = is_dwarf64 ? readU64(offset) : readU32(offset);
-            DEBUG_OUT("Debug: Abbrev offset: 0x" << std::hex << abbrev_offset << std::dec);
+            DEBUG_OUT("Abbrev offset: 0x" << std::hex << abbrev_offset << std::dec);
 
             // DWARF 5 unit headers have extra fields based on unit_type.
             // See DWARF v5 section 7.5.1.1 (Unit header).
@@ -289,9 +295,9 @@ std::vector<std::shared_ptr<DIE>> DIEParser::parseCompilationUnits() {
                 continue;
             }
             abbrev_offset = is_dwarf64 ? readU64(offset) : readU32(offset);
-            DEBUG_OUT("Debug: Abbrev offset: 0x" << std::hex << abbrev_offset << std::dec);
+            DEBUG_OUT("Abbrev offset: 0x" << std::hex << abbrev_offset << std::dec);
             address_size = readU8(offset);
-            DEBUG_OUT("Debug: Address size: " << (int)address_size);
+            DEBUG_OUT("Address size: " << (int)address_size);
         }
         if (hasDecodeError()) {
             offset = unit_end;
@@ -316,16 +322,16 @@ std::vector<std::shared_ptr<DIE>> DIEParser::parseCompilationUnits() {
                                                                           "<type-unit>"));
             }
             compilation_units.push_back(cu_die);
-            DEBUG_OUT("Debug: Successfully parsed compilation unit DIE");
+            DEBUG_OUT("Successfully parsed compilation unit DIE");
         } else {
-            DEBUG_OUT("Debug: Failed to parse compilation unit DIE");
+            DEBUG_OUT("Failed to parse compilation unit DIE");
         }
         
         // Move to next compilation unit regardless of CU DIE parse result.
         offset = unit_end;
     }
     
-    DEBUG_OUT("Debug: Parsed " << compilation_units.size() << " compilation units");
+    DEBUG_OUT("Parsed " << compilation_units.size() << " compilation units");
     return compilation_units;
 }
 
@@ -346,21 +352,21 @@ std::shared_ptr<DIE> DIEParser::parseDIE(uint64_t& offset,
     if (hasDecodeError()) {
         return nullptr;
     }
-    DEBUG_OUT("Debug: parseDIE at offset " << start_offset << ", abbrev_code: " << abbrev_code);
+    DEBUG_OUT("parseDIE at offset " << start_offset << ", abbrev_code: " << abbrev_code);
     
     if (abbrev_code == 0) {
-        DEBUG_OUT("Debug: Null DIE found");
+        DEBUG_OUT("Null DIE found");
         return nullptr; // Null DIE
     }
     
     // Parse abbreviation entry
     auto abbrev_entry = lookupAbbreviationEntry(abbrev_code, abbrev_offset);
     if (abbrev_entry.code == 0) {
-        DEBUG_OUT("Debug: Failed to find abbreviation entry for code " << abbrev_code);
+        DEBUG_OUT("Failed to find abbreviation entry for code " << abbrev_code);
         return nullptr;
     }
     
-    DEBUG_OUT("Debug: Found abbreviation entry, tag: " << static_cast<int>(abbrev_entry.tag));
+    DEBUG_OUT("Found abbreviation entry, tag: " << static_cast<int>(abbrev_entry.tag));
     
     // Create DIE
     auto die = std::make_shared<DIE>(abbrev_entry.tag, biased_start_offset, 0);
@@ -482,7 +488,7 @@ std::shared_ptr<DIE> DIEParser::parseDIE(uint64_t& offset,
             uint64_t child_start_offset = offset;
             auto child = parseDIE(offset, abbrev_data, abbrev_offset, cu_base_offset, offset_size, info_end);
             if (!child) {
-                DEBUG_OUT("Debug: No more children at offset " << child_start_offset);
+                DEBUG_OUT("No more children at offset " << child_start_offset);
                 break;
             }
             die->addChild(child);
@@ -490,12 +496,12 @@ std::shared_ptr<DIE> DIEParser::parseDIE(uint64_t& offset,
             
             // Safety check: if offset didn't advance, break to prevent infinite loop
             if (offset <= child_start_offset) {
-                DEBUG_OUT("Debug: Offset didn't advance, breaking child parsing loop");
+                DEBUG_OUT("Offset didn't advance, breaking child parsing loop");
                 break;
             }
         }
         if (child_count >= 1000) {
-            DEBUG_OUT("Debug: Reached child parsing limit, stopping");
+            DEBUG_OUT("Reached child parsing limit, stopping");
         }
     }
     
@@ -789,18 +795,18 @@ DIEParser::AbbreviationEntry DIEParser::parseAbbreviationEntry(uint64_t& offset)
 DIEParser::AbbreviationEntry DIEParser::lookupAbbreviationEntry(uint64_t code, uint64_t abbrev_offset) const {
     // Parse the abbreviation table and look up the code
     uint64_t offset = abbrev_offset;
-    DEBUG_OUT("Debug: Looking up abbreviation code " << code << " starting at offset " << abbrev_offset
+    DEBUG_OUT("Looking up abbreviation code " << code << " starting at offset " << abbrev_offset
               << " in table of size " << debug_abbrev_.size());
     
     while (offset < debug_abbrev_.size()) {
         uint64_t before = offset;
         AbbreviationEntry entry = parseAbbreviationEntry(offset);
-        DEBUG_OUT("Debug: Found abbreviation entry with code " << entry.code << " at offset " << offset);
+        DEBUG_OUT("Found abbreviation entry with code " << entry.code << " at offset " << offset);
         if (entry.code == 0) {
             break; // End of table
         }
         if (entry.code == code) {
-            DEBUG_OUT("Debug: Found matching abbreviation entry!");
+            DEBUG_OUT("Found matching abbreviation entry!");
             return entry;
         }
         if (offset <= before) {
@@ -808,7 +814,7 @@ DIEParser::AbbreviationEntry DIEParser::lookupAbbreviationEntry(uint64_t code, u
         }
     }
     
-    DEBUG_OUT("Debug: Abbreviation code " << code << " not found");
+    DEBUG_OUT("Abbreviation code " << code << " not found");
     // Not found
     AbbreviationEntry empty;
     empty.code = 0;

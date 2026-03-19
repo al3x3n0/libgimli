@@ -624,6 +624,51 @@ std::string DwarfUtils::formatSize(uint64_t size, bool hex) {
     return formatAddress(size, hex);
 }
 
+std::string DwarfUtils::formatKeyValueFields(const std::vector<std::pair<std::string, std::string>>& fields,
+                                            const std::string& prefix,
+                                            const std::string& separator,
+                                            const std::string& suffix) {
+    std::ostringstream oss;
+    bool any = false;
+    for (const auto& field : fields) {
+        if (field.second.empty()) continue;
+        oss << (any ? separator : prefix);
+        if (!field.first.empty()) {
+            oss << field.first << "=";
+        }
+        oss << field.second;
+        any = true;
+    }
+    if (any) {
+        oss << suffix;
+    }
+    return oss.str();
+}
+
+std::string DwarfUtils::formatDiagnosticContext(const std::optional<uint64_t>& cu_offset,
+                                                const std::optional<uint64_t>& die_offset,
+                                                const std::string& attribute) {
+    std::vector<std::pair<std::string, std::string>> fields;
+    if (cu_offset.has_value()) {
+        fields.emplace_back("cu", formatOffset(*cu_offset, true));
+    }
+    if (die_offset.has_value()) {
+        fields.emplace_back("die", formatOffset(*die_offset, true));
+    }
+    if (!attribute.empty()) {
+        fields.emplace_back("attr", attribute);
+    }
+    return formatKeyValueFields(fields);
+}
+
+std::string DwarfUtils::formatDebugMessage(const std::string& message) {
+    return "Debug: " + message;
+}
+
+void DwarfUtils::printDebugMessage(std::ostream& os, const std::string& message) {
+    os << formatDebugMessage(message) << std::endl;
+}
+
 // Validation utilities
 bool DwarfUtils::isValidTag(DwarfTag tag) {
     return tag != static_cast<DwarfTag>(0);

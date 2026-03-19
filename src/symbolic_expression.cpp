@@ -489,26 +489,10 @@ SymExprPtr SymbolicExpressionEvaluator::objectAddrExpr() const {
 }
 
 std::string SymbolicExpressionEvaluator::diagnosticContextSuffix() const {
-    std::ostringstream oss;
-    bool any = false;
-    if (ctx_.diagnostic_cu_offset.has_value()) {
-        oss << (any ? ", " : " [") << "cu=0x"
-            << std::hex << *ctx_.diagnostic_cu_offset << std::dec;
-        any = true;
-    }
-    if (ctx_.diagnostic_die_offset.has_value()) {
-        oss << (any ? ", " : " [") << "die=0x"
-            << std::hex << *ctx_.diagnostic_die_offset << std::dec;
-        any = true;
-    }
-    if (!ctx_.diagnostic_attribute.empty()) {
-        oss << (any ? ", " : " [") << "attr=" << ctx_.diagnostic_attribute;
-        any = true;
-    }
-    if (any) {
-        oss << "]";
-    }
-    return oss.str();
+    return DwarfUtils::formatDiagnosticContext(
+        ctx_.diagnostic_cu_offset,
+        ctx_.diagnostic_die_offset,
+        ctx_.diagnostic_attribute);
 }
 
 void SymbolicExpressionEvaluator::appendDiagnosticContext(SymbolicExpressionResult& result) const {

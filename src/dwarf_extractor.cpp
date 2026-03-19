@@ -411,7 +411,7 @@ std::string DwarfExtractor::formatLocation(uint64_t location) {
 
 void DwarfExtractor::debugOutput(const std::string& message) const {
     if (verbose_) {
-        std::cerr << "Debug: " << message << std::endl;
+        DwarfUtils::printDebugMessage(std::cerr, message);
     }
 }
 

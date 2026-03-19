@@ -418,14 +418,16 @@ bool DwarfParser::loadSection(const std::string& section_name, std::vector<uint8
     ELFIO::section* section = elf_->sections[section_name];
     if (!section) {
         if (verbose_) {
-            std::cerr << "Debug: Section " << section_name << " not found" << std::endl;
+            DwarfUtils::printDebugMessage(std::cerr, "Section " + section_name + " not found");
         }
         return false;
     }
     
     data = getSectionData(section);
     if (verbose_) {
-        std::cerr << "Debug: Section " << section_name << " loaded, size: " << data.size() << std::endl;
+        DwarfUtils::printDebugMessage(
+            std::cerr,
+            "Section " + section_name + " loaded, size: " + std::to_string(data.size()));
     }
     return !data.empty();
 }

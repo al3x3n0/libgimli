@@ -108,6 +108,15 @@ void testDwarfUtils() {
     assert(DwarfUtils::stringToAttribute("DW_AT_const_value") == DwarfAttribute::DW_AT_const_value);
     assert(DwarfUtils::stringToAttribute("DW_AT_call_line") == DwarfAttribute::DW_AT_call_line);
     assert(DwarfUtils::stringToAttribute("DW_AT_macros") == DwarfAttribute::DW_AT_macros);
+    assert(DwarfUtils::formatKeyValueFields({{"cu", "0x10"}, {"die", "0x20"}, {"attr", "DW_AT_name"}}) ==
+           " [cu=0x10, die=0x20, attr=DW_AT_name]");
+    assert(DwarfUtils::formatKeyValueFields({{"source", "dwo"}, {"reason", ""}, {"dwo_id", "0x44"}}) ==
+           " [source=dwo, dwo_id=0x44]");
+    assert(DwarfUtils::formatDiagnosticContext(0x10, 0x20, "DW_AT_location") ==
+           " [cu=0x10, die=0x20, attr=DW_AT_location]");
+    assert(DwarfUtils::formatDiagnosticContext(std::nullopt, 0x20, "") == " [die=0x20]");
+    assert(DwarfUtils::formatDebugMessage("Section .debug_info loaded, size: 64") ==
+           "Debug: Section .debug_info loaded, size: 64");
 
     // Test form conversion
     assert(DwarfUtils::formToString(DwarfForm::DW_FORM_strp) == "DW_FORM_strp");

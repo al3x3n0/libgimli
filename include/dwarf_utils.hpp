@@ -3,6 +3,7 @@
 #include "dwarf_types.hpp"
 #include <memory>
 #include <optional>
+#include <ostream>
 #include <string>
 #include <vector>
 #include <map>
@@ -75,6 +76,15 @@ public:
     static std::string formatAddress(uint64_t address, bool hex = true);
     static std::string formatOffset(uint64_t offset, bool hex = true);
     static std::string formatSize(uint64_t size, bool hex = false);
+    static std::string formatKeyValueFields(const std::vector<std::pair<std::string, std::string>>& fields,
+                                            const std::string& prefix = " [",
+                                            const std::string& separator = ", ",
+                                            const std::string& suffix = "]");
+    static std::string formatDiagnosticContext(const std::optional<uint64_t>& cu_offset,
+                                               const std::optional<uint64_t>& die_offset,
+                                               const std::string& attribute);
+    static std::string formatDebugMessage(const std::string& message);
+    static void printDebugMessage(std::ostream& os, const std::string& message);
     
     // Validation utilities
     static bool isValidTag(DwarfTag tag);
