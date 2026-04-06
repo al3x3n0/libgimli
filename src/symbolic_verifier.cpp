@@ -36,47 +36,6 @@ std::string formatUnsupportedDetail(const char* side, uint8_t opcode, bool vendo
     return ss.str();
 }
 
-std::string summarizeSymResult(const SymbolicExpressionResult& r) {
-    std::ostringstream ss;
-    switch (r.type) {
-        case SymbolicExpressionResult::Type::ADDRESS:
-            ss << "ADDRESS:" << (r.expression ? r.expression->toString() : "<null>");
-            break;
-        case SymbolicExpressionResult::Type::VALUE:
-            ss << "VALUE:" << (r.expression ? r.expression->toString() : "<null>");
-            break;
-        case SymbolicExpressionResult::Type::REGISTER:
-            ss << "REGISTER:" << (r.expression ? r.expression->toString() : "<null>");
-            break;
-        case SymbolicExpressionResult::Type::COMPOSITE:
-            ss << "COMPOSITE[";
-            for (size_t i = 0; i < r.pieces.size(); ++i) {
-                if (i != 0) ss << ";";
-                const auto& p = r.pieces[i];
-                ss << "k=" << static_cast<int>(p.kind)
-                   << ",bs=" << p.byte_size
-                   << ",bits=" << p.bit_size
-                   << ",bo=" << p.bit_offset;
-                if (p.location) ss << ",loc=" << p.location->toString();
-                if (!p.implicit_bytes.empty()) {
-                    ss << ",impl=";
-                    for (uint8_t b : p.implicit_bytes) {
-                        ss << std::hex;
-                        if (b < 0x10) ss << "0";
-                        ss << static_cast<unsigned>(b);
-                        ss << std::dec;
-                    }
-                }
-            }
-            ss << "]";
-            break;
-        case SymbolicExpressionResult::Type::INVALID:
-            ss << "INVALID:" << r.error;
-            break;
-    }
-    return ss.str();
-}
-
 std::string truncatePreview(const std::string& input, size_t max_len = 96) {
     if (input.size() <= max_len) return input;
     if (max_len <= 3) return input.substr(0, max_len);
@@ -280,8 +239,8 @@ ExpressionVerificationResult ExpressionVerifier::verifyWithContexts(
     SymbolicExpressionResult l = sym.evaluate(lhs, lhs_ctx, lhs_pc, lhs_regs);
     SymbolicExpressionResult r = sym.evaluate(rhs, rhs_ctx, rhs_pc, rhs_regs);
 
-    out.lhs_summary = summarizeSymResult(l);
-    out.rhs_summary = summarizeSymResult(r);
+    out.lhs_summary = summarizeSymbolicResult(l);
+    out.rhs_summary = summarizeSymbolicResult(r);
     out.lhs_unsupported_opcode = l.unsupported_opcode;
     out.rhs_unsupported_opcode = r.unsupported_opcode;
     out.lhs_unsupported_vendor_extension = l.unsupported_vendor_extension;

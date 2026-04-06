@@ -38,6 +38,8 @@ struct ExpressionVerificationResult {
     std::string normalization_kind;
     std::string lhs_normalized_summary;
     std::string rhs_normalized_summary;
+    bool lhs_normalization_changed = false;
+    bool rhs_normalization_changed = false;
     std::string lhs_summary;
     std::string rhs_summary;
     std::string verifier_backend;

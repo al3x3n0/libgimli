@@ -93,6 +93,8 @@ struct CrossBinaryComparisonSummary {
     uint64_t coverage_uncovered = 0;
     uint64_t coverage_unsupported = 0;
     size_t normalized_equal = 0;
+    size_t normalization_attempted = 0;
+    size_t normalization_changed = 0;
     size_t unsupported_isolated_rows = 0;
     size_t unsupported_row_count = 0;
     size_t unsupported_segment_count = 0;

@@ -7254,20 +7254,27 @@ void testCrossBinaryExpressionComparator() {
         assert(normalized_x->verification.normalization_kind == "symbolic_canonical");
         assert(!normalized_x->verification.lhs_normalized_summary.empty());
         assert(!normalized_x->verification.rhs_normalized_summary.empty());
+        assert(!normalized_x->verification.lhs_summary.empty());
+        assert(!normalized_x->verification.rhs_summary.empty());
         assert(normalized_x->verification.normalization_equal);
         assert(normalized_x->verification.verdict == ExpressionVerificationResult::Verdict::EQUIVALENT);
         assert(normalized_x->verification.solver_result == "normalized_equal");
 
         auto normalized_summary = cmp.summarize(normalized_results);
+        assert(normalized_summary.normalization_attempted >= 1);
+        assert(normalized_summary.normalization_changed <= normalized_summary.normalization_attempted);
         assert(normalized_summary.normalized_equal >= 1);
         assert(normalized_summary.normalization_kind_counts["symbolic_canonical"] >= 1);
 
         std::string normalized_text = cmp.renderTextReport(normalized_results);
         assert(normalized_text.find("normalization_applied") != std::string::npos);
         assert(normalized_text.find("normalized_equal=") != std::string::npos);
+        assert(normalized_text.find("normalization_changed") != std::string::npos);
         assert(normalized_text.find("normalization_kind_counts=") != std::string::npos);
 
         std::string normalized_json = cmp.renderJsonReport(normalized_results);
+        assert(normalized_json.find("\"normalization_attempted\":") != std::string::npos);
+        assert(normalized_json.find("\"normalization_changed\":") != std::string::npos);
         assert(normalized_json.find("\"normalization_applied\":true") != std::string::npos);
         assert(normalized_json.find("\"normalization_equal\":true") != std::string::npos);
         assert(normalized_json.find("\"normalization_kind\":\"symbolic_canonical\"") != std::string::npos);

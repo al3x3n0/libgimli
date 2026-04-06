@@ -224,6 +224,69 @@ std::string canonicalizeCompositePiece(const SymPiece& piece) {
     return out.str();
 }
 
+std::pair<std::string, std::string> canonicalizeResultKindAndKey(const SymbolicExpressionResult& result) {
+    if (result.type == SymbolicExpressionResult::Type::INVALID) return {"", ""};
+    if (result.type == SymbolicExpressionResult::Type::COMPOSITE) {
+        std::ostringstream key;
+        key << "composite[";
+        for (size_t i = 0; i < result.pieces.size(); ++i) {
+            if (i != 0) key << ";";
+            key << canonicalizeCompositePiece(result.pieces[i]);
+        }
+        key << "]";
+        return {"symbolic_composite", key.str()};
+    }
+    if (!result.expression) return {"", ""};
+
+    std::string prefix;
+    switch (result.type) {
+        case SymbolicExpressionResult::Type::ADDRESS:
+            prefix = "symbolic_address";
+            break;
+        case SymbolicExpressionResult::Type::VALUE:
+            prefix = "symbolic_value";
+            break;
+        case SymbolicExpressionResult::Type::REGISTER:
+            prefix = "symbolic_register";
+            break;
+        default:
+            break;
+    }
+    if (prefix.empty()) return {"", ""};
+    return {prefix, canonicalizeSymExpr(result.expression)};
+}
+
+std::string rawResultKindAndKey(const SymbolicExpressionResult& result) {
+    if (result.type == SymbolicExpressionResult::Type::INVALID) return "";
+    if (result.type == SymbolicExpressionResult::Type::COMPOSITE) {
+        std::ostringstream key;
+        key << "symbolic_composite[";
+        for (size_t i = 0; i < result.pieces.size(); ++i) {
+            if (i != 0) key << ";";
+            key << canonicalizeCompositePiece(result.pieces[i]);
+        }
+        key << "]";
+        return key.str();
+    }
+    if (!result.expression) return "";
+    std::string prefix;
+    switch (result.type) {
+        case SymbolicExpressionResult::Type::ADDRESS:
+            prefix = "symbolic_address";
+            break;
+        case SymbolicExpressionResult::Type::VALUE:
+            prefix = "symbolic_value";
+            break;
+        case SymbolicExpressionResult::Type::REGISTER:
+            prefix = "symbolic_register";
+            break;
+        default:
+            break;
+    }
+    if (prefix.empty()) return "";
+    return prefix + ":" + result.expression->toString();
+}
+
 NormalizedExpressionInfo normalizeExpressionSemantically(const std::vector<uint8_t>& expr,
                                                          const EvaluationContext& ctx,
                                                          uint64_t pc,
@@ -233,38 +296,10 @@ NormalizedExpressionInfo normalizeExpressionSemantically(const std::vector<uint8
 
     SymbolicExpressionEvaluator evaluator;
     SymbolicExpressionResult result = evaluator.evaluate(expr, ctx, pc, regs);
-    switch (result.type) {
-        case SymbolicExpressionResult::Type::ADDRESS:
-            out.available = static_cast<bool>(result.expression);
-            out.kind = "symbolic_address";
-            out.key = out.available ? "addr:" + canonicalizeSymExpr(result.expression) : "";
-            return out;
-        case SymbolicExpressionResult::Type::VALUE:
-            out.available = static_cast<bool>(result.expression);
-            out.kind = "symbolic_value";
-            out.key = out.available ? "value:" + canonicalizeSymExpr(result.expression) : "";
-            return out;
-        case SymbolicExpressionResult::Type::REGISTER:
-            out.available = static_cast<bool>(result.expression);
-            out.kind = "symbolic_register";
-            out.key = out.available ? "register:" + canonicalizeSymExpr(result.expression) : "";
-            return out;
-        case SymbolicExpressionResult::Type::COMPOSITE: {
-            out.available = true;
-            out.kind = "symbolic_composite";
-            std::ostringstream key;
-            key << "composite[";
-            for (size_t i = 0; i < result.pieces.size(); ++i) {
-                if (i != 0) key << ";";
-                key << canonicalizeCompositePiece(result.pieces[i]);
-            }
-            key << "]";
-            out.key = key.str();
-            return out;
-        }
-        case SymbolicExpressionResult::Type::INVALID:
-            return out;
-    }
+    auto [kind, key] = canonicalizeResultKindAndKey(result);
+    out.available = !key.empty();
+    out.kind = kind;
+    out.key = key;
     return out;
 }
 
@@ -532,9 +567,13 @@ NamedExpressionComparison compareOne(const std::string& name,
     auto lhs_loc = std::dynamic_pointer_cast<LocationAttributeValue>(lhs_attr);
     auto rhs_loc = std::dynamic_pointer_cast<LocationAttributeValue>(rhs_attr);
     bool normalization_attempted = false;
+    bool lhs_normalization_changed = false;
+    bool rhs_normalization_changed = false;
     std::string lhs_normalized_summary;
     std::string rhs_normalized_summary;
     std::string normalization_kind;
+    std::string lhs_raw_summary;
+    std::string rhs_raw_summary;
 
     const bool use_range_aware_lists =
         opts.enable_range_aware_location_compare &&
@@ -547,6 +586,18 @@ NamedExpressionComparison compareOne(const std::string& name,
         std::vector<uint8_t> rhs_expr;
         if (selectExpressionBytes(lhs_die, opts.attribute, opts.use_location_list_pc, opts.lhs_location_list_pc, lhs_expr) &&
             selectExpressionBytes(rhs_die, opts.attribute, opts.use_location_list_pc, opts.rhs_location_list_pc, rhs_expr)) {
+            SymbolicExpressionEvaluator raw_evaluator;
+            SymbolicExpressionResult lhs_raw = raw_evaluator.evaluate(
+                lhs_expr, lhs_ctx,
+                opts.lhs_evaluation_pc != 0 ? opts.lhs_evaluation_pc : opts.lhs_location_list_pc,
+                opts.lhs_registers);
+            SymbolicExpressionResult rhs_raw = raw_evaluator.evaluate(
+                rhs_expr, rhs_ctx,
+                opts.rhs_evaluation_pc != 0 ? opts.rhs_evaluation_pc : opts.rhs_location_list_pc,
+                opts.rhs_registers);
+            lhs_raw_summary = summarizeSymbolicResult(lhs_raw);
+            rhs_raw_summary = summarizeSymbolicResult(rhs_raw);
+
             auto lhs_norm = normalizeExpressionSemantically(
                 lhs_expr, lhs_ctx,
                 opts.lhs_evaluation_pc != 0 ? opts.lhs_evaluation_pc : opts.lhs_location_list_pc,
@@ -564,6 +615,21 @@ NamedExpressionComparison compareOne(const std::string& name,
                 out.verification.normalization_kind = "symbolic_canonical";
                 out.verification.lhs_normalized_summary = lhs_normalized_summary;
                 out.verification.rhs_normalized_summary = rhs_normalized_summary;
+
+                const std::string lhs_norm_full = lhs_norm.available
+                                                     ? (lhs_norm.kind + ":" + lhs_norm.key)
+                                                     : "";
+                const std::string rhs_norm_full = rhs_norm.available
+                                                     ? (rhs_norm.kind + ":" + rhs_norm.key)
+                                                     : "";
+                const std::string lhs_raw_key = rawResultKindAndKey(lhs_raw);
+                const std::string rhs_raw_key = rawResultKindAndKey(rhs_raw);
+                lhs_normalization_changed = !lhs_raw_key.empty() &&
+                                           !lhs_norm_full.empty() &&
+                                           lhs_raw_key != lhs_norm_full;
+                rhs_normalization_changed = !rhs_raw_key.empty() &&
+                                           !rhs_norm_full.empty() &&
+                                           rhs_raw_key != rhs_norm_full;
                 if (lhs_norm.available && rhs_norm.available && lhs_norm.key == rhs_norm.key) {
                     out.verification.normalization_equal = true;
                     out.verification.verdict = ExpressionVerificationResult::Verdict::EQUIVALENT;
@@ -571,6 +637,10 @@ NamedExpressionComparison compareOne(const std::string& name,
                     out.verification.reason_class = "equivalent";
                     out.verification.verifier_backend = "structural";
                     out.verification.solver_result = "normalized_equal";
+                    out.verification.lhs_summary = lhs_raw_summary;
+                    out.verification.rhs_summary = rhs_raw_summary;
+                    out.verification.lhs_normalization_changed = lhs_normalization_changed;
+                    out.verification.rhs_normalization_changed = rhs_normalization_changed;
                     return out;
                 }
             }
@@ -776,6 +846,14 @@ NamedExpressionComparison compareOne(const std::string& name,
         out.verification.normalization_kind = normalization_kind;
         out.verification.lhs_normalized_summary = lhs_normalized_summary;
         out.verification.rhs_normalized_summary = rhs_normalized_summary;
+        if (!lhs_raw_summary.empty()) {
+            out.verification.lhs_summary = lhs_raw_summary;
+        }
+        if (!rhs_raw_summary.empty()) {
+            out.verification.rhs_summary = rhs_raw_summary;
+        }
+        out.verification.lhs_normalization_changed = lhs_normalization_changed;
+        out.verification.rhs_normalization_changed = rhs_normalization_changed;
     }
     return out;
 }
@@ -864,6 +942,10 @@ CrossBinaryComparisonSummary CrossBinaryExpressionComparator::summarize(
         if (!c.rhs_present) ++s.missing_rhs;
         if (c.verification.normalization_equal) ++s.normalized_equal;
         if (c.verification.normalization_applied) {
+            ++s.normalization_attempted;
+            if (c.verification.lhs_normalization_changed || c.verification.rhs_normalization_changed) {
+                ++s.normalization_changed;
+            }
             s.normalization_kind_counts[c.verification.normalization_kind.empty() ? "unspecified"
                                                                                   : c.verification.normalization_kind]++;
         }
@@ -980,11 +1062,13 @@ std::string CrossBinaryExpressionComparator::renderTextReport(
         << " unsupported_rows=" << s.unsupported_row_count
         << " unsupported_isolated_rows=" << s.unsupported_isolated_rows
         << " unsupported_segments=" << s.unsupported_segment_count
+        << " normalization_attempted=" << s.normalization_attempted
+        << " normalization_changed=" << s.normalization_changed
         << " normalized_equal=" << s.normalized_equal
         << " normalization_kind_counts=" << renderCountsText(s.normalization_kind_counts)
         << "\n";
 
-    out << "name|tag|lhs_present|rhs_present|lhs_offset|rhs_offset|verdict|verifier_backend|solver_result|reason|reason_class|isolation_kind|normalization_applied|normalization_equal|normalization_kind|lhs_normalized_summary|rhs_normalized_summary|lhs_attribute_kind|rhs_attribute_kind|lhs_attribute_detail|rhs_attribute_detail|lhs_unsupported_opcode|rhs_unsupported_opcode|lhs_unsupported_vendor_extension|rhs_unsupported_vendor_extension|coverage_total|coverage_eq|coverage_diff|coverage_unknown|coverage_unsupported|coverage_uncovered|unsupported_segments|reloc_issues\n";
+    out << "name|tag|lhs_present|rhs_present|lhs_offset|rhs_offset|verdict|verifier_backend|solver_result|reason|reason_class|isolation_kind|normalization_applied|normalization_equal|normalization_kind|lhs_normalization_changed|rhs_normalization_changed|lhs_normalized_summary|rhs_normalized_summary|lhs_summary|rhs_summary|lhs_attribute_kind|rhs_attribute_kind|lhs_attribute_detail|rhs_attribute_detail|lhs_unsupported_opcode|rhs_unsupported_opcode|lhs_unsupported_vendor_extension|rhs_unsupported_vendor_extension|coverage_total|coverage_eq|coverage_diff|coverage_unknown|coverage_unsupported|coverage_uncovered|unsupported_segments|reloc_issues\n";
     size_t rows = (max_rows == 0) ? comparisons.size() : std::min(max_rows, comparisons.size());
     for (size_t i = 0; i < rows; ++i) {
         const auto& c = comparisons[i];
@@ -1008,8 +1092,12 @@ std::string CrossBinaryExpressionComparator::renderTextReport(
             << (c.verification.normalization_applied ? "1" : "0") << "|"
             << (c.verification.normalization_equal ? "1" : "0") << "|"
             << c.verification.normalization_kind << "|"
+            << (c.verification.lhs_normalization_changed ? "1" : "0") << "|"
+            << (c.verification.rhs_normalization_changed ? "1" : "0") << "|"
             << c.verification.lhs_normalized_summary << "|"
             << c.verification.rhs_normalized_summary << "|"
+            << c.verification.lhs_summary << "|"
+            << c.verification.rhs_summary << "|"
             << c.verification.lhs_attribute_kind << "|"
             << c.verification.rhs_attribute_kind << "|"
             << c.verification.lhs_attribute_detail << "|"
@@ -1092,6 +1180,8 @@ std::string CrossBinaryExpressionComparator::renderJsonReport(
     out << "\"unsupported_rows\":" << s.unsupported_row_count << ",";
     out << "\"unsupported_isolated_rows\":" << s.unsupported_isolated_rows << ",";
     out << "\"unsupported_segments\":" << s.unsupported_segment_count << ",";
+    out << "\"normalization_attempted\":" << s.normalization_attempted << ",";
+    out << "\"normalization_changed\":" << s.normalization_changed << ",";
     out << "\"normalized_equal\":" << s.normalized_equal << ",";
     out << "\"normalization_kind_counts\":" << renderCountsJson(s.normalization_kind_counts) << ",";
     out << "\"truncated\":" << (truncated ? "true" : "false") << ",";
@@ -1115,8 +1205,12 @@ std::string CrossBinaryExpressionComparator::renderJsonReport(
             << "\"normalization_applied\":" << (c.verification.normalization_applied ? "true" : "false") << ","
             << "\"normalization_equal\":" << (c.verification.normalization_equal ? "true" : "false") << ","
             << "\"normalization_kind\":\"" << jsonEscape(c.verification.normalization_kind) << "\","
+            << "\"lhs_normalization_changed\":" << (c.verification.lhs_normalization_changed ? "true" : "false") << ","
+            << "\"rhs_normalization_changed\":" << (c.verification.rhs_normalization_changed ? "true" : "false") << ","
             << "\"lhs_normalized_summary\":\"" << jsonEscape(c.verification.lhs_normalized_summary) << "\","
             << "\"rhs_normalized_summary\":\"" << jsonEscape(c.verification.rhs_normalized_summary) << "\","
+            << "\"lhs_summary\":\"" << jsonEscape(c.verification.lhs_summary) << "\","
+            << "\"rhs_summary\":\"" << jsonEscape(c.verification.rhs_summary) << "\","
             << "\"lhs_attribute_kind\":\"" << jsonEscape(c.verification.lhs_attribute_kind) << "\","
             << "\"rhs_attribute_kind\":\"" << jsonEscape(c.verification.rhs_attribute_kind) << "\","
             << "\"lhs_attribute_detail\":\"" << jsonEscape(c.verification.lhs_attribute_detail) << "\","

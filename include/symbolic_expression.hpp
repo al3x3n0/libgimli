@@ -169,4 +169,6 @@ private:
     void appendDiagnosticContext(SymbolicExpressionResult& result) const;
 };
 
+std::string summarizeSymbolicResult(const SymbolicExpressionResult& r);
+
 } // namespace dwarf

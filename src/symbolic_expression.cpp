@@ -2173,4 +2173,45 @@ bool SymbolicExpressionEvaluator::executeProcedureSubexprInPlace(const std::vect
     return true;
 }
 
+std::string summarizeSymbolicResult(const SymbolicExpressionResult& r) {
+    std::ostringstream ss;
+    switch (r.type) {
+        case SymbolicExpressionResult::Type::ADDRESS:
+            ss << "ADDRESS:" << (r.expression ? r.expression->toString() : "<null>");
+            break;
+        case SymbolicExpressionResult::Type::VALUE:
+            ss << "VALUE:" << (r.expression ? r.expression->toString() : "<null>");
+            break;
+        case SymbolicExpressionResult::Type::REGISTER:
+            ss << "REGISTER:" << (r.expression ? r.expression->toString() : "<null>");
+            break;
+        case SymbolicExpressionResult::Type::COMPOSITE:
+            ss << "COMPOSITE[";
+            for (size_t i = 0; i < r.pieces.size(); ++i) {
+                if (i != 0) ss << ";";
+                const auto& p = r.pieces[i];
+                ss << "k=" << static_cast<int>(p.kind)
+                   << ",bs=" << p.byte_size
+                   << ",bits=" << p.bit_size
+                   << ",bo=" << p.bit_offset;
+                if (p.location) ss << ",loc=" << p.location->toString();
+                if (!p.implicit_bytes.empty()) {
+                    ss << ",impl=";
+                    for (uint8_t b : p.implicit_bytes) {
+                        ss << std::hex;
+                        if (b < 0x10) ss << "0";
+                        ss << static_cast<unsigned>(b);
+                        ss << std::dec;
+                    }
+                }
+            }
+            ss << "]";
+            break;
+        case SymbolicExpressionResult::Type::INVALID:
+            ss << "INVALID:" << r.error;
+            break;
+    }
+    return ss.str();
+}
+
 } // namespace dwarf

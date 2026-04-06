@@ -2826,12 +2826,18 @@ int main() {
         assert(!row_json.empty());
         assert(row_json.find("\"normalization_applied\":true") != std::string::npos);
         assert(row_json.find("\"normalization_equal\":true") != std::string::npos);
+        assert(row_json.find("\"lhs_normalization_changed\":") != std::string::npos);
+        assert(row_json.find("\"rhs_normalization_changed\":") != std::string::npos);
         assert(row_json.find("\"normalization_kind\":\"symbolic_canonical\"") != std::string::npos);
+        assert(row_json.find("\"lhs_summary\"") != std::string::npos);
+        assert(row_json.find("\"rhs_summary\"") != std::string::npos);
         assert(row_json.find("\"lhs_normalized_summary\"") != std::string::npos);
         assert(row_json.find("\"rhs_normalized_summary\"") != std::string::npos);
         assert(row_json.find("\"solver_result\":\"normalized_equal\"") != std::string::npos);
         assert(row_json.find("\"verdict\":\"EQUIVALENT\"") != std::string::npos);
         assert(out_json.find("\"normalized_equal\":1") != std::string::npos);
+        assert(out_json.find("\"normalization_attempted\":1") != std::string::npos);
+        assert(out_json.find("\"normalization_changed\":") != std::string::npos);
         assert(out_json.find("\"normalization_kind_counts\"") != std::string::npos);
     }
 
