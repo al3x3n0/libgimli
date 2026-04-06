@@ -14,6 +14,20 @@ struct ExtractedExpressionDetail {
     std::string detail;
 };
 
+std::string classifyVerificationResult(ExpressionVerificationResult::Verdict verdict,
+                                       const std::string& solver_result,
+                                       const std::string& reason,
+                                       const std::string& isolation_kind) {
+    if (verdict == ExpressionVerificationResult::Verdict::EQUIVALENT) return "equivalent";
+    if (verdict == ExpressionVerificationResult::Verdict::DIFFERENT) return "different";
+    if (!isolation_kind.empty()) return "unsupported_isolated";
+    if (solver_result == "unsupported_opcode") return "unsupported_isolated";
+    if (reason.find("extraction failed") != std::string::npos) return "extraction_failure";
+    if (solver_result == "solver_unavailable") return "solver_unavailable";
+    if (solver_result == "unknown") return "solver_unknown";
+    return "unknown";
+}
+
 std::string formatUnsupportedDetail(const char* side, uint8_t opcode, bool vendor_extension) {
     std::ostringstream ss;
     ss << side << " unsupported opcode 0x"
@@ -276,6 +290,8 @@ ExpressionVerificationResult ExpressionVerifier::verifyWithContexts(
     if (l.type == SymbolicExpressionResult::Type::INVALID && l.unsupported_opcode.has_value()) {
         out.verdict = ExpressionVerificationResult::Verdict::UNKNOWN;
         out.reason = formatUnsupportedDetail("lhs", *l.unsupported_opcode, l.unsupported_vendor_extension);
+        out.reason_class = "unsupported_isolated";
+        out.isolation_kind = "unsupported_opcode";
         if (!out.lhs_attribute_detail.empty()) {
             out.reason += " " + out.lhs_attribute_detail;
         }
@@ -286,6 +302,8 @@ ExpressionVerificationResult ExpressionVerifier::verifyWithContexts(
     if (r.type == SymbolicExpressionResult::Type::INVALID && r.unsupported_opcode.has_value()) {
         out.verdict = ExpressionVerificationResult::Verdict::UNKNOWN;
         out.reason = formatUnsupportedDetail("rhs", *r.unsupported_opcode, r.unsupported_vendor_extension);
+        out.reason_class = "unsupported_isolated";
+        out.isolation_kind = "unsupported_opcode";
         if (!out.rhs_attribute_detail.empty()) {
             out.reason += " " + out.rhs_attribute_detail;
         }
@@ -302,6 +320,7 @@ ExpressionVerificationResult ExpressionVerifier::verifyWithContexts(
     out.solver_result = smt_result.solver_result;
     out.counterexample_model = smt_result.model;
     out.counterexample_witness = smt_result.witness;
+    out.reason_class = classifyVerificationResult(out.verdict, out.solver_result, out.reason, out.isolation_kind);
     return out;
 }
 
@@ -325,6 +344,7 @@ ExpressionVerificationResult ExpressionVerifier::verifyDIEAttributeExpressions(
         out.lhs_attribute_kind = lhs_detail.kind;
         out.lhs_attribute_detail = lhs_detail.detail;
         out.reason = "lhs expression extraction failed: " + lhs_reason;
+        out.reason_class = "extraction_failure";
         if (!out.lhs_attribute_detail.empty()) {
             out.reason += " (" + out.lhs_attribute_detail + ")";
         }
@@ -341,6 +361,7 @@ ExpressionVerificationResult ExpressionVerifier::verifyDIEAttributeExpressions(
         out.rhs_attribute_kind = rhs_detail.kind;
         out.rhs_attribute_detail = rhs_detail.detail;
         out.reason = "rhs expression extraction failed: " + rhs_reason;
+        out.reason_class = "extraction_failure";
         if (!out.rhs_attribute_detail.empty()) {
             out.reason += " (" + out.rhs_attribute_detail + ")";
         }
@@ -366,6 +387,7 @@ ExpressionVerificationResult ExpressionVerifier::verifyDIEAttributeExpressions(
             out.reason += " " + out.rhs_attribute_detail;
         }
     }
+    out.reason_class = classifyVerificationResult(out.verdict, out.solver_result, out.reason, out.isolation_kind);
     return out;
 }
 

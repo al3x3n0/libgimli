@@ -158,7 +158,13 @@ private:
 
     SymbolicExpressionResult evaluateFromOffset(const std::vector<uint8_t>& expr, uint64_t start_off);
     bool executeProcedureSubexprInPlace(const std::vector<uint8_t>& subexpr);
+    std::optional<SymbolicExpressionResult> handleVendorProfileOpcode(uint8_t opcode,
+                                                                      const std::vector<uint8_t>& expr,
+                                                                      uint64_t& off);
     SymbolicExpressionResult evalEntryValueSubexpr(const std::vector<uint8_t>& subexpr);
+    SymbolicExpressionResult materializeResultAsValue(const SymbolicExpressionResult& result,
+                                                      const std::vector<uint64_t>& register_bank,
+                                                      const char* op_name) const;
     std::string diagnosticContextSuffix() const;
     void appendDiagnosticContext(SymbolicExpressionResult& result) const;
 };

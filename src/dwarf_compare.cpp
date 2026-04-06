@@ -349,6 +349,8 @@ CompareExprExecutionResult executeCompareExpr(const DwarfParser& lhs,
             oss << "{"
                 << "\"profile\":{"
                 << "\"verify_profile\":\"" << jsonEscape(options.verify_profile) << "\","
+                << "\"vendor_op_profile\":\""
+                << jsonEscape(vendorExpressionProfileName(options.compare_options.vendor_expression_profile)) << "\","
                 << "\"verify_features\":" << renderVerifyFeaturesJson(verify_features) << ","
                 << "\"solver_timeout_ms\":" << options.compare_options.verification_options.solver_timeout_ms << ","
                 << "\"gate_profile\":\"" << jsonEscape(options.gate_profile) << "\","
@@ -367,6 +369,7 @@ CompareExprExecutionResult executeCompareExpr(const DwarfParser& lhs,
                 << "}\n";
         } else {
             oss << "verify_profile=" << options.verify_profile
+                << " vendor_op_profile=" << vendorExpressionProfileName(options.compare_options.vendor_expression_profile)
                 << " verify_features=" << renderVerifyFeaturesText(verify_features)
                 << " solver_timeout_ms=" << options.compare_options.verification_options.solver_timeout_ms
                 << " gate_profile=" << options.gate_profile
@@ -400,6 +403,8 @@ CompareExprExecutionResult executeCompareExpr(const DwarfParser& lhs,
                     << "\"reloc_check\":" << (options.compare_options.enable_relocation_checks ? "true" : "false") << ","
                     << "\"normalize_loc\":" << (options.compare_options.enable_location_semantic_normalization ? "true" : "false") << ","
                     << "\"range_aware\":" << (options.compare_options.enable_range_aware_location_compare ? "true" : "false") << ","
+                    << "\"vendor_op_profile\":\""
+                    << jsonEscape(vendorExpressionProfileName(options.compare_options.vendor_expression_profile)) << "\","
                     << "\"verify_profile\":\"" << jsonEscape(options.verify_profile) << "\","
                     << "\"verify_features\":" << renderVerifyFeaturesJson(verify_features) << ","
                     << "\"solver_timeout_ms\":" << options.compare_options.verification_options.solver_timeout_ms << ","
@@ -475,6 +480,8 @@ CompareExprExecutionResult executeCompareExpr(const DwarfParser& lhs,
                 << "\"reloc_check\":" << (options.compare_options.enable_relocation_checks ? "true" : "false") << ","
                 << "\"normalize_loc\":" << (options.compare_options.enable_location_semantic_normalization ? "true" : "false") << ","
                 << "\"range_aware\":" << (options.compare_options.enable_range_aware_location_compare ? "true" : "false") << ","
+                << "\"vendor_op_profile\":\""
+                << jsonEscape(vendorExpressionProfileName(options.compare_options.vendor_expression_profile)) << "\","
                 << "\"verify_profile\":\"" << jsonEscape(options.verify_profile) << "\","
                 << "\"verify_features\":" << renderVerifyFeaturesJson(verify_features) << ","
                 << "\"solver_timeout_ms\":" << options.compare_options.verification_options.solver_timeout_ms << ","

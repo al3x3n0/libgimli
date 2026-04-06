@@ -11,6 +11,19 @@
 
 namespace dwarf {
 
+enum class VendorExpressionProfile {
+    NONE,
+    SYNTHETIC_V1
+};
+
+inline const char* vendorExpressionProfileName(VendorExpressionProfile profile) {
+    switch (profile) {
+        case VendorExpressionProfile::NONE: return "none";
+        case VendorExpressionProfile::SYNTHETIC_V1: return "synthetic-v1";
+    }
+    return "none";
+}
+
 // Simple memory context interface for expression evaluation
 class MemoryContext {
 public:
@@ -61,6 +74,7 @@ struct EvaluationContext {
     uint8_t address_size = 8;          // Target address size in bytes (4 or 8 typically)
     uint8_t offset_size = 4;           // DWARF DIE reference size in bytes (4 for DWARF32, 8 for DWARF64)
     uint64_t cu_base_offset = 0;       // CU header start offset in DIE offset space (bias-aware)
+    VendorExpressionProfile vendor_expression_profile = VendorExpressionProfile::NONE;
     // Optional diagnostic context for richer unsupported-op/form error reporting.
     std::optional<uint64_t> diagnostic_cu_offset;
     std::optional<uint64_t> diagnostic_die_offset;
@@ -68,8 +82,13 @@ struct EvaluationContext {
 
     struct BaseTypeInfo {
         uint64_t byte_size = 0;
+        uint64_t bit_size = 0;
         bool is_integer = false;
         bool is_signed = false;
+        bool is_boolean = false;
+        bool is_address = false;
+        bool is_float = false;
+        uint64_t endianity = 0;
         DW_ATE encoding = DW_ATE::DW_ATE_unsigned;
     };
 
@@ -115,6 +134,7 @@ struct ExpressionResult {
     bool uninitialized = false;
     std::optional<uint8_t> unsupported_opcode;
     bool unsupported_vendor_extension = false;
+    std::vector<uint8_t> raw_value_bytes;  // Exact bytes for VALUE results when available.
     std::vector<PieceDescriptor> pieces;  // For COMPOSITE type
 
     ExpressionResult(Type t, uint64_t v, const std::string& desc = "")
@@ -282,8 +302,14 @@ private:
     uint64_t readAddressSized(uint64_t& offset, const std::vector<uint8_t>& data) const;
     uint64_t readOffsetSized(uint64_t& offset, const std::vector<uint8_t>& data) const;
     size_t pointerByteSize(const char* op_name) const;
+    bool materializeResultAsValue(const ExpressionResult& result,
+                                  const std::vector<uint64_t>& register_bank,
+                                  const char* op_name,
+                                  uint64_t& out_value,
+                                  std::optional<std::vector<uint8_t>>& out_bytes);
 
     bool executeInPlace(const std::vector<uint8_t>& expression);
+    bool handleVendorProfileOpcode(uint8_t opcode, uint64_t& offset, const std::vector<uint8_t>& expression);
     
     // Operation dispatch
     using OpHandler = void (ExpressionEvaluator::*)(uint64_t&, const std::vector<uint8_t>&);

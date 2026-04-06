@@ -52,6 +52,18 @@ std::string unsupportedOpMessage(uint8_t opcode, uint64_t offset) {
     return oss.str();
 }
 
+const char* vendorProfileOpcodeName(VendorExpressionProfile profile, uint8_t opcode) {
+    if (profile == VendorExpressionProfile::SYNTHETIC_V1) {
+        switch (opcode) {
+            case 0xf9: return "DW_OP_vendor_synthetic_constu";
+            case 0xfd: return "DW_OP_vendor_synthetic_plus_uconst";
+            case 0xfe: return "DW_OP_vendor_synthetic_deref_size";
+            default: break;
+        }
+    }
+    return nullptr;
+}
+
 const std::string& decodeErrorMessage() {
     return g_decode_error_message;
 }
@@ -927,6 +939,61 @@ SymbolicExpressionResult SymbolicExpressionEvaluator::evaluate(const std::vector
     return result;
 }
 
+std::optional<SymbolicExpressionResult> SymbolicExpressionEvaluator::handleVendorProfileOpcode(
+    uint8_t opcode,
+    const std::vector<uint8_t>& expr,
+    uint64_t& off) {
+    if (ctx_.vendor_expression_profile != VendorExpressionProfile::SYNTHETIC_V1) {
+        return std::nullopt;
+    }
+
+    switch (opcode) {
+        case 0xf9:
+            push(SymExpr::makeConst(readULEB(expr, off)), SymStackValueKind::VALUE);
+            return SymbolicExpressionResult{SymbolicExpressionResult::Type::VALUE, nullptr, {}, ""};
+        case 0xfd: {
+            uint64_t uconst = readULEB(expr, off);
+            if (hasDecodeError()) {
+                return SymbolicExpressionResult{SymbolicExpressionResult::Type::INVALID,
+                                                nullptr, {}, decodeErrorMessage()};
+            }
+            if (stack_.size() < 1) {
+                return SymbolicExpressionResult{SymbolicExpressionResult::Type::INVALID,
+                                                nullptr, {}, "stack underflow in vendor synthetic plus_uconst"};
+            }
+            auto kind = topKind();
+            auto raw = pop();
+            auto v = materializeForComputation(raw, kind);
+            auto result_kind = (kind == SymStackValueKind::ADDRESS)
+                                   ? SymStackValueKind::ADDRESS
+                                   : SymStackValueKind::VALUE;
+            push(SymExpr::makeBinary(SymExpr::Kind::ADD, v, SymExpr::makeConst(uconst)), result_kind);
+            return SymbolicExpressionResult{SymbolicExpressionResult::Type::VALUE, nullptr, {}, ""};
+        }
+        case 0xfe: {
+            if (off >= expr.size()) {
+                return SymbolicExpressionResult{SymbolicExpressionResult::Type::INVALID,
+                                                nullptr, {}, "truncated vendor synthetic deref_size"};
+            }
+            uint8_t size = static_cast<uint8_t>(readU8(expr, off));
+            if (hasDecodeError()) {
+                return SymbolicExpressionResult{SymbolicExpressionResult::Type::INVALID,
+                                                nullptr, {}, decodeErrorMessage()};
+            }
+            if (stack_.size() < 1) {
+                return SymbolicExpressionResult{SymbolicExpressionResult::Type::INVALID,
+                                                nullptr, {}, "stack underflow in vendor synthetic deref_size"};
+            }
+            auto kind = topKind();
+            auto addr = materializeForComputation(pop(), kind);
+            push(SymExpr::makeLoad(addr, size), SymStackValueKind::VALUE);
+            return SymbolicExpressionResult{SymbolicExpressionResult::Type::VALUE, nullptr, {}, ""};
+        }
+        default:
+            return std::nullopt;
+    }
+}
+
 SymbolicExpressionResult SymbolicExpressionEvaluator::evaluateFromOffset(const std::vector<uint8_t>& expr,
                                                                          uint64_t start_off) {
     DecodeStateScope decode_scope;
@@ -1550,11 +1617,13 @@ SymbolicExpressionResult SymbolicExpressionEvaluator::evaluateFromOffset(const s
                             base_ptr = regnum_opt ? regValueExpr(*regnum_opt)
                                                   : SymExpr::makeUnknown("implicit_pointer(reg?)");
                         } else {
-                            base_ptr = SymExpr::makeUnknown("implicit_pointer(no_referent)");
+                            base_ptr = SymExpr::makeUnknown("implicit_pointer(unsupported)");
                         }
                     } else {
                         base_ptr = SymExpr::makeUnknown("implicit_pointer(no_proc)");
                     }
+                } else {
+                    base_ptr = SymExpr::makeUnknown("implicit_pointer(no_resolver)");
                 }
 
                 push(SymExpr::makeBinary(SymExpr::Kind::ADD, base_ptr,
@@ -1734,8 +1803,8 @@ SymbolicExpressionResult SymbolicExpressionEvaluator::evaluateFromOffset(const s
                         break;
                     }
                     default:
-                        raw = SymExpr::makeConst(readAddressSized(expr, off, ctx_.address_size));
-                        break;
+                        return {SymbolicExpressionResult::Type::INVALID, nullptr, {},
+                                "DW_OP_GNU_encoded_addr unsupported encoding format"};
                 }
 
                 SymExprPtr addr = raw;
@@ -1758,8 +1827,8 @@ SymbolicExpressionResult SymbolicExpressionEvaluator::evaluateFromOffset(const s
                     case 0x50: // aligned
                         break;
                     default:
-                        // Other application modes require additional external base context.
-                        break;
+                        return {SymbolicExpressionResult::Type::INVALID, nullptr, {},
+                                "DW_OP_GNU_encoded_addr unsupported application mode"};
                 }
 
                 if ((encoding & kIndMask) != 0) {
@@ -1779,14 +1848,14 @@ SymbolicExpressionResult SymbolicExpressionEvaluator::evaluateFromOffset(const s
                 uint64_t abs_off = dwarfSectionOffsetBias(ctx_.cu_base_offset) + die_offset;
 
                 if (!ctx_.resolve_dwarf_procedure) {
-                    push(SymExpr::makeConst(abs_off));
+                    push(SymExpr::makeUnknown("gnu_parameter_ref(no_resolver)"));
                     setTopKind(SymStackValueKind::VALUE);
                     break;
                 }
 
                 auto sub = ctx_.resolve_dwarf_procedure(abs_off, pc_);
                 if (!sub) {
-                    push(SymExpr::makeConst(0));
+                    push(SymExpr::makeUnknown("gnu_parameter_ref(no_proc)"));
                     setTopKind(SymStackValueKind::VALUE);
                     break;
                 }
@@ -1801,19 +1870,12 @@ SymbolicExpressionResult SymbolicExpressionEvaluator::evaluateFromOffset(const s
                 sub_eval.branch_depth_ = branch_depth_;
                 SymbolicExpressionResult sr = sub_eval.evaluate(*sub, ctx_, pc_, regs_);
                 uninitialized_taint_ = uninitialized_taint_ || sr.uninitialized;
-                if (sr.type == SymbolicExpressionResult::Type::REGISTER) {
-                    auto regnum_opt = asConst(sr.expression);
-                    if (!regnum_opt) {
-                        push(SymExpr::makeConst(0));
-                    } else {
-                        push(regValueExpr(*regnum_opt));
-                    }
-                } else if (sr.type == SymbolicExpressionResult::Type::ADDRESS ||
-                           sr.type == SymbolicExpressionResult::Type::VALUE) {
-                    push(sr.expression ? sr.expression : SymExpr::makeUnknown("gnu_parameter_ref(empty)"));
-                } else {
-                    push(SymExpr::makeConst(0));
+                auto materialized = materializeResultAsValue(sr, regs_, "gnu_parameter_ref");
+                if (materialized.type == SymbolicExpressionResult::Type::INVALID) {
+                    return materialized;
                 }
+                push(materialized.expression ? materialized.expression
+                                             : SymExpr::makeUnknown("gnu_parameter_ref(empty)"));
                 setTopKind(SymStackValueKind::VALUE);
                 break;
             }
@@ -1846,7 +1908,7 @@ SymbolicExpressionResult SymbolicExpressionEvaluator::evaluateFromOffset(const s
                     std::string n = is_addr ? "addrx(" : "constx(";
                     n += std::to_string(idx);
                     n += ")";
-                    push(SymExpr::makeVar(n));
+                    push(SymExpr::makeUnknown(n));
                 }
                 setTopKind(is_addr ? SymStackValueKind::ADDRESS : SymStackValueKind::VALUE);
                 break;
@@ -1965,9 +2027,24 @@ SymbolicExpressionResult SymbolicExpressionEvaluator::evaluateFromOffset(const s
 
             default:
                 {
+                    if (auto handled = handleVendorProfileOpcode(static_cast<uint8_t>(op), expr, off)) {
+                        if (handled->type == SymbolicExpressionResult::Type::INVALID) {
+                            handled->uninitialized = handled->uninitialized || uninitialized_taint_;
+                            return *handled;
+                        }
+                        break;
+                    }
                     SymbolicExpressionResult r;
                     r.type = SymbolicExpressionResult::Type::INVALID;
                     r.error = unsupportedOpMessage(static_cast<uint8_t>(op), op_off);
+                    if (const char* profile_name = vendorProfileOpcodeName(ctx_.vendor_expression_profile,
+                                                                           static_cast<uint8_t>(op))) {
+                        std::ostringstream oss;
+                        oss << "unsupported op " << profile_name
+                            << " (opcode 0x" << std::hex << static_cast<unsigned>(static_cast<uint8_t>(op))
+                            << std::dec << ") at " << op_off;
+                        r.error = oss.str();
+                    }
                     r.unsupported_opcode = static_cast<uint8_t>(op);
                     r.unsupported_vendor_extension = static_cast<uint8_t>(op) >= 0xe0;
                     r.uninitialized = uninitialized_taint_;
@@ -2021,39 +2098,60 @@ SymbolicExpressionResult SymbolicExpressionEvaluator::evalEntryValueSubexpr(cons
     EvaluationContext ctx = ctx_;
     std::vector<uint64_t> regs = ctx_.entry_registers.empty() ? regs_ : ctx_.entry_registers;
     auto r = sub.evaluate(subexpr, ctx, pc_, regs);
-    if (r.type == SymbolicExpressionResult::Type::REGISTER) {
-        // REGISTER result is a location; interpret it as the value of that register at entry.
-        if (!r.expression) {
-            return {SymbolicExpressionResult::Type::INVALID, nullptr, {}, "entry_value register missing"};
+    return materializeResultAsValue(r, ctx_.entry_registers, "entry_value");
+}
+
+SymbolicExpressionResult SymbolicExpressionEvaluator::materializeResultAsValue(
+    const SymbolicExpressionResult& result,
+    const std::vector<uint64_t>& register_bank,
+    const char* op_name) const {
+    SymbolicExpressionResult out;
+    out.type = SymbolicExpressionResult::Type::VALUE;
+    out.uninitialized = result.uninitialized;
+    out.unsupported_opcode = result.unsupported_opcode;
+    out.unsupported_vendor_extension = result.unsupported_vendor_extension;
+
+    switch (result.type) {
+        case SymbolicExpressionResult::Type::VALUE:
+            out.expression = result.expression ? result.expression
+                                               : SymExpr::makeUnknown(std::string(op_name) + "(empty)");
+            return out;
+        case SymbolicExpressionResult::Type::REGISTER: {
+            if (!result.expression) {
+                return {SymbolicExpressionResult::Type::INVALID, nullptr, {},
+                        std::string(op_name) + " register missing", result.uninitialized,
+                        result.unsupported_opcode, result.unsupported_vendor_extension};
+            }
+            auto regnum_opt = asConst(result.expression);
+            if (!regnum_opt) {
+                return {SymbolicExpressionResult::Type::INVALID, nullptr, {},
+                        std::string(op_name) + " non-const regnum", result.uninitialized,
+                        result.unsupported_opcode, result.unsupported_vendor_extension};
+            }
+            if (!register_bank.empty() && *regnum_opt < register_bank.size()) {
+                out.expression = SymExpr::makeConst(register_bank[*regnum_opt]);
+            } else if (std::string(op_name) == "entry_value") {
+                out.expression = SymExpr::makeVar("entry_reg" + std::to_string(*regnum_opt));
+            } else {
+                out.expression = SymExpr::makeVar("reg" + std::to_string(*regnum_opt));
+            }
+            return out;
         }
-        // Expression for REGISTER is const(regnum).
-        auto regnum_opt = asConst(r.expression);
-        if (!regnum_opt) {
-            return {SymbolicExpressionResult::Type::INVALID, nullptr, {}, "entry_value non-const regnum"};
-        }
-        SymbolicExpressionResult out;
-        out.type = SymbolicExpressionResult::Type::VALUE;
-        if (!ctx_.entry_registers.empty() && *regnum_opt < ctx_.entry_registers.size()) {
-            out.expression = SymExpr::makeConst(ctx_.entry_registers[*regnum_opt]);
-        } else {
-            out.expression = SymExpr::makeVar("entry_reg" + std::to_string(*regnum_opt));
-        }
-        out.uninitialized = r.uninitialized;
-        return out;
+        case SymbolicExpressionResult::Type::ADDRESS:
+            if (ctx_.address_size != 4 && ctx_.address_size != 8) {
+                return {SymbolicExpressionResult::Type::INVALID, nullptr, {},
+                        std::string(op_name) + " invalid address_size", result.uninitialized,
+                        result.unsupported_opcode, result.unsupported_vendor_extension};
+            }
+            out.expression = SymExpr::makeLoad(result.expression ? result.expression
+                                                                 : SymExpr::makeUnknown(std::string(op_name) + "_addr"),
+                                               ctx_.address_size);
+            return out;
+        default:
+            return {SymbolicExpressionResult::Type::INVALID, nullptr, {},
+                    std::string(op_name) + " unsupported result", result.uninitialized,
+                    result.unsupported_opcode, result.unsupported_vendor_extension};
     }
-    if (r.type == SymbolicExpressionResult::Type::ADDRESS) {
-        // Treat as value by loading address-sized units.
-        SymbolicExpressionResult out;
-        out.type = SymbolicExpressionResult::Type::VALUE;
-        out.expression = SymExpr::makeLoad(r.expression ? r.expression : SymExpr::makeUnknown("entry_addr"),
-                                           ctx_.address_size);
-        out.uninitialized = r.uninitialized;
-        return out;
-    }
-    if (r.type == SymbolicExpressionResult::Type::VALUE) {
-        return r;
-    }
-    return {SymbolicExpressionResult::Type::INVALID, nullptr, {}, "unsupported entry_value result"};
 }
 
 bool SymbolicExpressionEvaluator::executeProcedureSubexprInPlace(const std::vector<uint8_t>& subexpr) {

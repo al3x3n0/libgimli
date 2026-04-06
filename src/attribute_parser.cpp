@@ -9,6 +9,69 @@
 
 namespace dwarf {
 
+namespace {
+
+bool isVendorExtensionForm(uint16_t form) {
+    return form > 0xffu;
+}
+
+bool usesLegacyOffsetSizedVendorFallback(uint16_t form) {
+    return (form & 0xff00u) == 0x1f00u;
+}
+
+bool isBoundedMirroredVendorLowByte(uint8_t low) {
+    switch (low) {
+        case 0x01:
+        case 0x03:
+        case 0x04:
+        case 0x05:
+        case 0x06:
+        case 0x07:
+        case 0x08:
+        case 0x09:
+        case 0x0a:
+        case 0x0b:
+        case 0x0c:
+        case 0x0d:
+        case 0x0e:
+        case 0x0f:
+        case 0x10:
+        case 0x11:
+        case 0x12:
+        case 0x13:
+        case 0x14:
+        case 0x15:
+        case 0x16:
+        case 0x17:
+        case 0x18:
+        case 0x19:
+        case 0x1a:
+        case 0x1b:
+        case 0x1c:
+        case 0x1d:
+        case 0x1e:
+        case 0x1f:
+        case 0x20:
+        case 0x21:
+        case 0x22:
+        case 0x23:
+        case 0x24:
+        case 0x25:
+        case 0x26:
+        case 0x27:
+        case 0x28:
+        case 0x29:
+        case 0x2a:
+        case 0x2b:
+        case 0x2c:
+            return true;
+        default:
+            return false;
+    }
+}
+
+} // namespace
+
 AttributeParser::AttributeParser(const std::vector<uint8_t>& debug_info,
                                const std::vector<uint8_t>& debug_abbrev,
                                const std::vector<uint8_t>& debug_str,
@@ -490,8 +553,9 @@ std::shared_ptr<AttributeValue> AttributeParser::parseAttribute(DwarfForm form, 
         case DwarfForm::DW_FORM_strx4:
             return parseFormStrx4(offset);
         default:
-            // Best-effort skip for unsupported forms so subsequent attributes in the
-            // same DIE can still be decoded.
+            // Preserve stream alignment for unsupported forms so later attributes in
+            // the same DIE can still be decoded. The attribute value itself remains
+            // unsupported and therefore returns nullptr.
             if (!debug_info_.empty()) {
                 const uint64_t form_payload_offset = offset;
                 DwarfUtils::SizeContext szctx;
@@ -500,76 +564,40 @@ std::shared_ptr<AttributeValue> AttributeParser::parseAttribute(DwarfForm form, 
                 szctx.ref_addr_uses_address_size = (dwarf_version_ == DwarfVersion::DWARF2);
                 const uint64_t end = currentDebugInfoEnd();
                 std::string skip_severity;
-                std::function<size_t(uint16_t, uint64_t, int)> mirroredVendorFormSize =
-                    [&](uint16_t vendor_form, uint64_t form_offset, int depth) -> size_t {
-                        if (depth <= 0) return 0;
-                        if ((vendor_form & 0xff00u) != 0x1f00u) {
-                            return DwarfUtils::getFormSize(static_cast<DwarfForm>(vendor_form),
-                                                           debug_info_.data(),
-                                                           static_cast<size_t>(form_offset),
-                                                           static_cast<size_t>(end),
-                                                           szctx);
-                        }
-
-                        const uint8_t low = static_cast<uint8_t>(vendor_form & 0xffu);
-                        if (low == 0x16) {
-                            uint64_t nested_off = form_offset;
-                            uint64_t nested = DwarfUtils::readULEB128(debug_info_.data(), nested_off, end);
-                            size_t head = static_cast<size_t>(nested_off - form_offset);
-                            if (head == 0) return 0;
-                            size_t tail = mirroredVendorFormSize(static_cast<uint16_t>(nested), nested_off, depth - 1);
-                            return head + tail;
-                        }
-
-                        switch (low) {
-                            case 0x01: // addr
-                            case 0x03: // block2
-                            case 0x04: // block4
-                            case 0x05: // data2
-                            case 0x06: // data4
-                            case 0x07: // data8
-                            case 0x08: // string
-                            case 0x09: // block
-                            case 0x0a: // block1
-                            case 0x0b: // data1
-                            case 0x0c: // flag
-                            case 0x0d: // sdata
-                            case 0x0e: // strp
-                            case 0x0f: // udata
-                            case 0x10: // ref_addr
-                            case 0x11: // ref1
-                            case 0x12: // ref2
-                            case 0x13: // ref4
-                            case 0x14: // ref8
-                            case 0x15: // ref_udata
-                            case 0x17: // sec_offset
-                            case 0x18: // exprloc
-                            case 0x19: // flag_present
-                            case 0x1a: // strx
-                            case 0x1b: // addrx
-                            case 0x1c: // ref_sup4
-                            case 0x1d: // strp_sup
-                            case 0x1e: // data16
-                            case 0x1f: // line_strp
-                            case 0x22: // loclistx
-                            case 0x23: // rnglistx
-                            case 0x24: // ref_sup8
-                            case 0x25: // strx1
-                            case 0x26: // strx2
-                            case 0x27: // strx3
-                            case 0x28: // strx4
-                            case 0x29: // addrx1
-                            case 0x2a: // addrx2
-                            case 0x2b: // addrx3
-                            case 0x2c: // addrx4
-                                return DwarfUtils::getFormSize(static_cast<DwarfForm>(low),
+                std::function<std::optional<size_t>(uint16_t, uint64_t, int)> mirroredVendorFormSize =
+                    [&](uint16_t vendor_form, uint64_t form_offset, int depth) -> std::optional<size_t> {
+                        if (depth <= 0) return std::nullopt;
+                        if (!isVendorExtensionForm(vendor_form)) {
+                            size_t n = DwarfUtils::getFormSize(static_cast<DwarfForm>(vendor_form),
                                                                debug_info_.data(),
                                                                static_cast<size_t>(form_offset),
                                                                static_cast<size_t>(end),
                                                                szctx);
-                            default:
-                                return 0;
+                            if (n == 0) return std::nullopt;
+                            return n;
                         }
+
+                        const uint8_t low = static_cast<uint8_t>(vendor_form & 0xffu);
+                        if (!isBoundedMirroredVendorLowByte(low)) {
+                            return std::nullopt;
+                        }
+                        if (low == 0x16) {
+                            uint64_t nested_off = form_offset;
+                            uint64_t nested = DwarfUtils::readULEB128(debug_info_.data(), nested_off, end);
+                            size_t head = static_cast<size_t>(nested_off - form_offset);
+                            if (head == 0) return std::nullopt;
+                            auto tail = mirroredVendorFormSize(static_cast<uint16_t>(nested), nested_off, depth - 1);
+                            if (!tail.has_value()) return std::nullopt;
+                            return head + *tail;
+                        }
+                        if (low == 0x21) return static_cast<size_t>(0);
+                        size_t n = DwarfUtils::getFormSize(static_cast<DwarfForm>(low),
+                                                           debug_info_.data(),
+                                                           static_cast<size_t>(form_offset),
+                                                           static_cast<size_t>(end),
+                                                           szctx);
+                        if (n == 0) return std::nullopt;
+                        return n;
                     };
                 size_t n = DwarfUtils::getFormSize(form,
                                                    debug_info_.data(),
@@ -578,19 +606,20 @@ std::shared_ptr<AttributeValue> AttributeParser::parseAttribute(DwarfForm form, 
                                                    szctx);
                 if (n == 0) {
                     uint16_t fv = static_cast<uint16_t>(form);
-                    if ((fv & 0xff00u) == 0x1f00u) {
-                        n = mirroredVendorFormSize(fv, offset, 4);
-                        if (n != 0) skip_severity = "known_shape";
+                    if (isVendorExtensionForm(fv)) {
+                        auto mirrored = mirroredVendorFormSize(fv, offset, 4);
+                        if (mirrored.has_value()) {
+                            n = *mirrored;
+                            skip_severity = "known_shape";
+                        }
                     }
-                    if (n == 0 && (fv & 0xff00u) == 0x1f00u) {
-                        // Conservative vendor-form fallback: many unknown forms in
-                        // the 0x1fxx space carry offset-sized payloads.
+                    if (n == 0 && usesLegacyOffsetSizedVendorFallback(fv)) {
                         n = (is_dwarf64_ ? 8u : 4u);
                         if (n != 0) skip_severity = "fallback_offset_sized";
                     }
                 }
                 const uint16_t fv = static_cast<uint16_t>(form);
-                if (n != 0 && ((fv & 0xff00u) == 0x1f00u)) {
+                if (n != 0 && isVendorExtensionForm(fv)) {
                     ++unsupported_vendor_form_skip_count_;
                     ++unsupported_vendor_form_skip_histogram_[fv];
                     ++unsupported_vendor_form_skip_severity_buckets_[skip_severity.empty() ? "unspecified" : skip_severity];
@@ -930,7 +959,7 @@ std::shared_ptr<AttributeValue> AttributeParser::parseLocationAttribute(DwarfAtt
                 std::static_pointer_cast<BlockAttributeValue>(parseBlockAttribute(form, offset))->getData());
         default:
             parseAttribute(form, offset);
-            if ((static_cast<uint16_t>(form) & 0xff00u) == 0x1f00u) {
+            if (isVendorExtensionForm(static_cast<uint16_t>(form))) {
                 return nullptr;
             }
             return std::make_shared<LocationAttributeValue>(
@@ -948,7 +977,7 @@ std::shared_ptr<AttributeValue> AttributeParser::parseRangeAttribute(DwarfAttrib
             return parseFormRnglistx(offset);
         default:
             parseAttribute(form, offset);
-            if ((static_cast<uint16_t>(form) & 0xff00u) == 0x1f00u) {
+            if (isVendorExtensionForm(static_cast<uint16_t>(form))) {
                 return nullptr;
             }
             return std::make_shared<RangeAttributeValue>(
@@ -963,7 +992,7 @@ std::shared_ptr<AttributeValue> AttributeParser::parseLineAttribute(DwarfAttribu
             return parseLineNumberProgramPointer(offset);
         default:
             parseAttribute(form, offset);
-            if ((static_cast<uint16_t>(form) & 0xff00u) == 0x1f00u) {
+            if (isVendorExtensionForm(static_cast<uint16_t>(form))) {
                 return nullptr;
             }
             return std::make_shared<LineAttributeValue>(
@@ -1002,7 +1031,7 @@ std::shared_ptr<AttributeValue> AttributeParser::parseTypeAttribute(DwarfAttribu
             return parseTypeSignature(offset);
         default:
             parseAttribute(form, offset);
-            if ((static_cast<uint16_t>(form) & 0xff00u) == 0x1f00u) {
+            if (isVendorExtensionForm(static_cast<uint16_t>(form))) {
                 return nullptr;
             }
             return std::make_shared<TypeAttributeValue>(0);
@@ -1015,7 +1044,7 @@ std::shared_ptr<AttributeValue> AttributeParser::parseConstValueAttribute(DwarfA
         return value;
     }
     auto raw = parseAttribute(form, offset);
-    if ((static_cast<uint16_t>(form) & 0xff00u) == 0x1f00u) {
+    if (isVendorExtensionForm(static_cast<uint16_t>(form))) {
         return raw;
     }
     return nullptr;
@@ -1030,7 +1059,7 @@ std::shared_ptr<AttributeValue> AttributeParser::parseReferenceMetadataAttribute
         return value;
     }
     auto raw = parseAttribute(form, offset);
-    if ((static_cast<uint16_t>(form) & 0xff00u) == 0x1f00u) {
+    if (isVendorExtensionForm(static_cast<uint16_t>(form))) {
         return raw;
     }
     return nullptr;
@@ -1045,7 +1074,7 @@ std::shared_ptr<AttributeValue> AttributeParser::parseAddressMetadataAttribute(D
         return value;
     }
     auto raw = parseAttribute(form, offset);
-    if ((static_cast<uint16_t>(form) & 0xff00u) == 0x1f00u) {
+    if (isVendorExtensionForm(static_cast<uint16_t>(form))) {
         return raw;
     }
     return nullptr;
@@ -1065,7 +1094,7 @@ std::shared_ptr<AttributeValue> AttributeParser::parseHighPCAttribute(DwarfAttri
         return parseFormImplicitConst(offset);
     }
     auto raw = parseAttribute(form, offset);
-    if ((static_cast<uint16_t>(form) & 0xff00u) == 0x1f00u) {
+    if (isVendorExtensionForm(static_cast<uint16_t>(form))) {
         return raw;
     }
     return nullptr;
@@ -1083,7 +1112,7 @@ std::shared_ptr<AttributeValue> AttributeParser::parseScalarMetadataAttribute(Dw
         return parseFormImplicitConst(offset);
     }
     auto raw = parseAttribute(form, offset);
-    if ((static_cast<uint16_t>(form) & 0xff00u) == 0x1f00u) {
+    if (isVendorExtensionForm(static_cast<uint16_t>(form))) {
         return raw;
     }
     return nullptr;
@@ -1103,7 +1132,7 @@ std::shared_ptr<AttributeValue> AttributeParser::parseOffsetScalarMetadataAttrib
         return value;
     }
     auto raw = parseAttribute(form, offset);
-    if ((static_cast<uint16_t>(form) & 0xff00u) == 0x1f00u) {
+    if (isVendorExtensionForm(static_cast<uint16_t>(form))) {
         return raw;
     }
     return nullptr;
@@ -1118,7 +1147,7 @@ std::shared_ptr<AttributeValue> AttributeParser::parseStringMetadataAttribute(Dw
         return value;
     }
     auto raw = parseAttribute(form, offset);
-    if ((static_cast<uint16_t>(form) & 0xff00u) == 0x1f00u) {
+    if (isVendorExtensionForm(static_cast<uint16_t>(form))) {
         return raw;
     }
     return nullptr;
@@ -1133,7 +1162,7 @@ std::shared_ptr<AttributeValue> AttributeParser::parseFlagMetadataAttribute(Dwar
         return value;
     }
     auto raw = parseAttribute(form, offset);
-    if ((static_cast<uint16_t>(form) & 0xff00u) == 0x1f00u) {
+    if (isVendorExtensionForm(static_cast<uint16_t>(form))) {
         return raw;
     }
     return nullptr;
@@ -1150,7 +1179,7 @@ std::shared_ptr<AttributeValue> AttributeParser::parseExpressionBlockMetadataAtt
         return block;
     }
     auto raw = parseAttribute(form, offset);
-    if ((static_cast<uint16_t>(form) & 0xff00u) == 0x1f00u) {
+    if (isVendorExtensionForm(static_cast<uint16_t>(form))) {
         return raw;
     }
     return nullptr;
@@ -1173,7 +1202,7 @@ std::shared_ptr<AttributeValue> AttributeParser::parseConstantReferenceExpressio
         return ref;
     }
     auto raw = parseAttribute(form, offset);
-    if ((static_cast<uint16_t>(form) & 0xff00u) == 0x1f00u) {
+    if (isVendorExtensionForm(static_cast<uint16_t>(form))) {
         return raw;
     }
     return nullptr;
@@ -1495,7 +1524,7 @@ std::shared_ptr<AttributeValue> AttributeParser::parseFormStrx(uint64_t& offset)
         }
     }
 
-    return std::make_shared<StringAttributeValue>("<strx:" + std::to_string(index) + ">");
+    return nullptr;
 }
 
 std::shared_ptr<AttributeValue> AttributeParser::parseFormAddrx(uint64_t& offset) const {
@@ -1512,7 +1541,7 @@ std::shared_ptr<AttributeValue> AttributeParser::parseFormAddrx(uint64_t& offset
         return std::make_shared<AddressAttributeValue>(addr);
     }
 
-    return std::make_shared<AddressAttributeValue>(index);
+    return nullptr;
 }
 
 std::shared_ptr<AttributeValue> AttributeParser::parseFormData16(uint64_t& offset) const {
@@ -1565,8 +1594,7 @@ std::shared_ptr<AttributeValue> AttributeParser::parseFormRnglistx(uint64_t& off
         }
     }
 
-    // Fallback: return the index if parsing fails
-    return std::make_shared<UnsignedAttributeValue>(index);
+    return nullptr;
 }
 
 std::shared_ptr<AttributeValue> AttributeParser::parseFormLoclistx(uint64_t& offset) const {
@@ -1604,8 +1632,7 @@ std::shared_ptr<AttributeValue> AttributeParser::parseFormLoclistx(uint64_t& off
         }
     }
 
-    // Fallback: return the index if parsing fails
-    return std::make_shared<UnsignedAttributeValue>(index);
+    return nullptr;
 }
 
 std::shared_ptr<AttributeValue> AttributeParser::parseFormAddrx1(uint64_t& offset) const {
@@ -1624,7 +1651,7 @@ std::shared_ptr<AttributeValue> AttributeParser::parseFormAddrx1(uint64_t& offse
         }
         return std::make_shared<AddressAttributeValue>(addr);
     }
-    return std::make_shared<AddressAttributeValue>(index);
+    return nullptr;
 }
 
 std::shared_ptr<AttributeValue> AttributeParser::parseFormAddrx2(uint64_t& offset) const {
@@ -1642,7 +1669,7 @@ std::shared_ptr<AttributeValue> AttributeParser::parseFormAddrx2(uint64_t& offse
         }
         return std::make_shared<AddressAttributeValue>(addr);
     }
-    return std::make_shared<AddressAttributeValue>(index);
+    return nullptr;
 }
 
 std::shared_ptr<AttributeValue> AttributeParser::parseFormAddrx3(uint64_t& offset) const {
@@ -1661,7 +1688,7 @@ std::shared_ptr<AttributeValue> AttributeParser::parseFormAddrx3(uint64_t& offse
         }
         return std::make_shared<AddressAttributeValue>(addr);
     }
-    return std::make_shared<AddressAttributeValue>(index);
+    return nullptr;
 }
 
 std::shared_ptr<AttributeValue> AttributeParser::parseFormAddrx4(uint64_t& offset) const {
@@ -1679,7 +1706,7 @@ std::shared_ptr<AttributeValue> AttributeParser::parseFormAddrx4(uint64_t& offse
         }
         return std::make_shared<AddressAttributeValue>(addr);
     }
-    return std::make_shared<AddressAttributeValue>(index);
+    return nullptr;
 }
 
 std::shared_ptr<AttributeValue> AttributeParser::parseFormStrx1(uint64_t& offset) const {
@@ -1695,7 +1722,7 @@ std::shared_ptr<AttributeValue> AttributeParser::parseFormStrx1(uint64_t& offset
             return std::make_shared<StringAttributeValue>(getString(str_offset));
         }
     }
-    return std::make_shared<StringAttributeValue>("<strx1:" + std::to_string(index) + ">");
+    return nullptr;
 }
 
 std::shared_ptr<AttributeValue> AttributeParser::parseFormStrx2(uint64_t& offset) const {
@@ -1711,7 +1738,7 @@ std::shared_ptr<AttributeValue> AttributeParser::parseFormStrx2(uint64_t& offset
             return std::make_shared<StringAttributeValue>(getString(str_offset));
         }
     }
-    return std::make_shared<StringAttributeValue>("<strx2:" + std::to_string(index) + ">");
+    return nullptr;
 }
 
 std::shared_ptr<AttributeValue> AttributeParser::parseFormStrx3(uint64_t& offset) const {
@@ -1728,7 +1755,7 @@ std::shared_ptr<AttributeValue> AttributeParser::parseFormStrx3(uint64_t& offset
             return std::make_shared<StringAttributeValue>(getString(str_offset));
         }
     }
-    return std::make_shared<StringAttributeValue>("<strx3:" + std::to_string(index) + ">");
+    return nullptr;
 }
 
 std::shared_ptr<AttributeValue> AttributeParser::parseFormStrx4(uint64_t& offset) const {
@@ -1744,7 +1771,7 @@ std::shared_ptr<AttributeValue> AttributeParser::parseFormStrx4(uint64_t& offset
             return std::make_shared<StringAttributeValue>(getString(str_offset));
         }
     }
-    return std::make_shared<StringAttributeValue>("<strx4:" + std::to_string(index) + ">");
+    return nullptr;
 }
 
 // Complex attribute parsers

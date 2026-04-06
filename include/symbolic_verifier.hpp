@@ -31,6 +31,13 @@ struct ExpressionVerificationResult {
 
     Verdict verdict = Verdict::UNKNOWN;
     std::string reason;
+    std::string reason_class;
+    std::string isolation_kind;
+    bool normalization_applied = false;
+    bool normalization_equal = false;
+    std::string normalization_kind;
+    std::string lhs_normalized_summary;
+    std::string rhs_normalized_summary;
     std::string lhs_summary;
     std::string rhs_summary;
     std::string verifier_backend;

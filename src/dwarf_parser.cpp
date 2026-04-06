@@ -1617,10 +1617,12 @@ VariableLocation DwarfParser::getVariableLocation(const std::shared_ptr<DIE>& va
         };
 
         ctx.resolve_base_type = [this](uint64_t type_die_offset) -> std::optional<EvaluationContext::BaseTypeInfo> {
-            // Typed ops reference a base type, but in practice producers may hand us typedefs,
-            // qualifiers, etc. Follow DW_AT_type chains best-effort.
+            // Typed ops may reference typedefs/qualifiers rather than a direct base type.
+            // Resolve those chains deterministically and fail closed on cycles or missing links.
             uint64_t cur = type_die_offset;
+            std::unordered_set<uint64_t> seen;
             for (int depth = 0; depth < 16; ++depth) {
+                if (!seen.insert(cur).second) return std::nullopt;
                 auto die = findDIEByOffset(cur);
                 if (!die) return std::nullopt;
 
@@ -1631,6 +1633,14 @@ VariableLocation DwarfParser::getVariableLocation(const std::shared_ptr<DIE>& va
                     if (auto sz = std::dynamic_pointer_cast<UnsignedAttributeValue>(size_attr)) {
                         info.byte_size = sz->getValue();
                     }
+                    auto bit_size_attr = die->getAttribute(DwarfAttribute::DW_AT_bit_size);
+                    if (auto bsz = std::dynamic_pointer_cast<UnsignedAttributeValue>(bit_size_attr)) {
+                        info.bit_size = bsz->getValue();
+                    }
+                    auto endian_attr = die->getAttribute(DwarfAttribute::DW_AT_endianity);
+                    if (auto ev = std::dynamic_pointer_cast<UnsignedAttributeValue>(endian_attr)) {
+                        info.endianity = ev->getValue();
+                    }
 
                     auto enc_attr = die->getAttribute(DwarfAttribute::DW_AT_encoding);
                     auto enc = std::dynamic_pointer_cast<UnsignedAttributeValue>(enc_attr);
@@ -1638,6 +1648,16 @@ VariableLocation DwarfParser::getVariableLocation(const std::shared_ptr<DIE>& va
                         DW_ATE ate = static_cast<DW_ATE>(static_cast<uint8_t>(enc->getValue() & 0xff));
                         info.encoding = ate;
                         switch (ate) {
+                            case DW_ATE::DW_ATE_boolean:
+                                info.is_integer = true;
+                                info.is_boolean = true;
+                                info.is_signed = false;
+                                break;
+                            case DW_ATE::DW_ATE_address:
+                                info.is_integer = true;
+                                info.is_address = true;
+                                info.is_signed = false;
+                                break;
                             case DW_ATE::DW_ATE_signed:
                             case DW_ATE::DW_ATE_signed_char:
                             case DW_ATE::DW_ATE_signed_fixed:
@@ -1647,8 +1667,6 @@ VariableLocation DwarfParser::getVariableLocation(const std::shared_ptr<DIE>& va
                             case DW_ATE::DW_ATE_unsigned:
                             case DW_ATE::DW_ATE_unsigned_char:
                             case DW_ATE::DW_ATE_unsigned_fixed:
-                            case DW_ATE::DW_ATE_boolean:
-                            case DW_ATE::DW_ATE_address:
                                 info.is_integer = true;
                                 info.is_signed = false;
                                 break;
@@ -1656,6 +1674,7 @@ VariableLocation DwarfParser::getVariableLocation(const std::shared_ptr<DIE>& va
                             case DW_ATE::DW_ATE_complex_float:
                             case DW_ATE::DW_ATE_imaginary_float:
                             case DW_ATE::DW_ATE_decimal_float:
+                                info.is_float = true;
                                 info.is_integer = false;
                                 info.is_signed = false;
                                 break;

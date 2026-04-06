@@ -6,6 +6,7 @@
 #include <limits>
 #include <memory>
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -34,6 +35,7 @@ struct CrossBinaryCompareOptions {
     std::vector<uint64_t> lhs_registers;
     std::vector<uint64_t> rhs_registers;
     ExpressionVerificationOptions verification_options;
+    VendorExpressionProfile vendor_expression_profile = VendorExpressionProfile::NONE;
     // Optional extension checks (disabled by default to preserve existing behavior).
     bool enable_relocation_checks = false;
     bool enable_location_semantic_normalization = false;
@@ -47,6 +49,14 @@ struct LocationRangeSegmentVerdict {
     bool lhs_present = false;
     bool rhs_present = false;
     std::string reason;
+    std::string reason_class;
+    std::string isolation_kind;
+    std::string solver_result;
+    std::string diagnosis_origin;
+    std::optional<uint8_t> lhs_unsupported_opcode;
+    std::optional<uint8_t> rhs_unsupported_opcode;
+    bool lhs_unsupported_vendor_extension = false;
+    bool rhs_unsupported_vendor_extension = false;
 };
 
 struct NamedExpressionComparison {
@@ -63,6 +73,8 @@ struct NamedExpressionComparison {
     uint64_t coverage_different = 0;
     uint64_t coverage_unknown = 0;
     uint64_t coverage_uncovered = 0;
+    uint64_t coverage_unsupported = 0;
+    size_t unsupported_segment_count = 0;
     std::vector<std::string> relocation_issues;
     std::vector<LocationRangeSegmentVerdict> range_segments;
 };
@@ -79,10 +91,19 @@ struct CrossBinaryComparisonSummary {
     uint64_t coverage_different = 0;
     uint64_t coverage_unknown = 0;
     uint64_t coverage_uncovered = 0;
+    uint64_t coverage_unsupported = 0;
+    size_t normalized_equal = 0;
+    size_t unsupported_isolated_rows = 0;
+    size_t unsupported_row_count = 0;
+    size_t unsupported_segment_count = 0;
     std::map<std::string, size_t> unknown_reason_counts;
+    std::map<std::string, size_t> unknown_reason_class_counts;
     std::map<std::string, size_t> unknown_solver_result_counts;
     std::map<std::string, size_t> unknown_lhs_attribute_kind_counts;
     std::map<std::string, size_t> unknown_rhs_attribute_kind_counts;
+    std::map<std::string, size_t> unsupported_opcode_counts;
+    std::map<std::string, size_t> unsupported_isolation_kind_counts;
+    std::map<std::string, size_t> normalization_kind_counts;
 };
 
 struct CrossBinaryGateOptions {

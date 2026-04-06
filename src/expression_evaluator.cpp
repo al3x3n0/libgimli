@@ -83,6 +83,19 @@ static std::vector<uint8_t> encodeU64ToBytes(uint64_t v, size_t n, bool little_e
     return out;
 }
 
+static uint64_t decodeResultValueFromBytes(const std::vector<uint8_t>& bytes) {
+    if (bytes.empty()) return 0;
+    return decodeU64FromBytes(bytes.data(),
+                              std::min<size_t>(bytes.size(), 8),
+                              DwarfUtils::objectIsLittleEndian());
+}
+
+static std::vector<uint8_t> lowBytesForResultValue(uint64_t v, uint64_t byte_size) {
+    return encodeU64ToBytes(v,
+                            static_cast<size_t>(std::min<uint64_t>(byte_size, 8)),
+                            DwarfUtils::objectIsLittleEndian());
+}
+
 static std::string unsupportedOpMessage(uint8_t opcode, uint64_t offset, bool subexpression) {
     std::ostringstream oss;
     oss << (subexpression ? "Unsupported operation in subexpression: " : "Unsupported operation: ")
@@ -93,6 +106,18 @@ static std::string unsupportedOpMessage(uint8_t opcode, uint64_t offset, bool su
     }
     oss << " at offset " << offset;
     return oss.str();
+}
+
+static const char* vendorProfileOpcodeName(VendorExpressionProfile profile, uint8_t opcode) {
+    if (profile == VendorExpressionProfile::SYNTHETIC_V1) {
+        switch (opcode) {
+            case 0xf9: return "DW_OP_vendor_synthetic_constu";
+            case 0xfd: return "DW_OP_vendor_synthetic_plus_uconst";
+            case 0xfe: return "DW_OP_vendor_synthetic_deref_size";
+            default: break;
+        }
+    }
+    return nullptr;
 }
 
 ExpressionEvaluator::ExpressionEvaluator(std::shared_ptr<MemoryContext> memory_context) 
@@ -160,10 +185,23 @@ ExpressionResult ExpressionEvaluator::evaluate(const std::vector<uint8_t>& expre
                 r.uninitialized = uninitialized_taint_;
                 return r;
             }
+        } else if (handleVendorProfileOpcode(opcode, offset, expression)) {
+            if (execution_error_) {
+                ExpressionResult r(ExpressionResult::INVALID, 0,
+                                   execution_error_message_ + " at offset " + std::to_string(op_off));
+                r.uninitialized = uninitialized_taint_;
+                return r;
+            }
         } else {
-            ExpressionResult r(ExpressionResult::INVALID, 0,
-                               unsupportedOpMessage(opcode, op_off, /*subexpression=*/false) +
-                                   diagnosticContextSuffix());
+            std::string msg = unsupportedOpMessage(opcode, op_off, /*subexpression=*/false);
+            if (const char* profile_name = vendorProfileOpcodeName(context_.vendor_expression_profile, opcode)) {
+                std::ostringstream oss;
+                oss << "Unsupported operation: " << profile_name
+                    << " (opcode 0x" << std::hex << static_cast<unsigned>(opcode) << std::dec << ")"
+                    << " at offset " << op_off;
+                msg = oss.str();
+            }
+            ExpressionResult r(ExpressionResult::INVALID, 0, msg + diagnosticContextSuffix());
             r.uninitialized = uninitialized_taint_;
             r.unsupported_opcode = opcode;
             r.unsupported_vendor_extension = opcode >= 0xe0;
@@ -200,6 +238,9 @@ ExpressionResult ExpressionEvaluator::evaluate(const std::vector<uint8_t>& expre
         ExpressionResult r(ExpressionResult::VALUE, result,
                            "Value: " + std::to_string(result));
         r.uninitialized = uninitialized_taint_;
+        if (pending_implicit_bytes_) {
+            r.raw_value_bytes = *pending_implicit_bytes_;
+        }
         if (r.uninitialized) r.description += " [uninitialized]";
         return r;
     }
@@ -243,6 +284,11 @@ bool ExpressionEvaluator::executeInPlace(const std::vector<uint8_t>& expression)
                 ok = false;
                 break;
             }
+        } else if (handleVendorProfileOpcode(opcode, offset, expression)) {
+            if (execution_error_) {
+                ok = false;
+                break;
+            }
         } else {
             setExecutionError(unsupportedOpMessage(opcode, offset - 1, /*subexpression=*/true));
             ok = false;
@@ -252,6 +298,82 @@ bool ExpressionEvaluator::executeInPlace(const std::vector<uint8_t>& expression)
 
     --call_depth_;
     return ok;
+}
+
+bool ExpressionEvaluator::handleVendorProfileOpcode(uint8_t opcode,
+                                                    uint64_t& offset,
+                                                    const std::vector<uint8_t>& expression) {
+    if (context_.vendor_expression_profile != VendorExpressionProfile::SYNTHETIC_V1) {
+        return false;
+    }
+
+    switch (opcode) {
+        case 0xf9:
+            push(readULEB128(offset, expression));
+            return true;
+        case 0xfd: {
+            uint64_t uconst = readULEB128(offset, expression);
+            if (!requireStack(1, "DW_OP_vendor_synthetic_plus_uconst")) return true;
+            uint64_t val = pop();
+            push(val + uconst);
+            return true;
+        }
+        case 0xfe: {
+            uint8_t size = readU8(offset, expression);
+            if (!requireStack(1, "DW_OP_vendor_synthetic_deref_size")) return true;
+            uint64_t addr = pop();
+            if (memory_context_) {
+                std::vector<uint8_t> buf(size);
+                if (memory_context_->readMemory(addr, size, buf.data())) {
+                    push(decodeU64FromBytes(buf.data(), size, DwarfUtils::objectIsLittleEndian()));
+                    pending_implicit_bytes_ = std::move(buf);
+                } else {
+                    setExecutionError("DW_OP_vendor_synthetic_deref_size memory read failed");
+                }
+            } else {
+                setExecutionError("DW_OP_vendor_synthetic_deref_size requires memory context");
+            }
+            return true;
+        }
+        default:
+            return false;
+    }
+}
+
+bool ExpressionEvaluator::materializeResultAsValue(const ExpressionResult& result,
+                                                   const std::vector<uint64_t>& register_bank,
+                                                   const char* op_name,
+                                                   uint64_t& out_value,
+                                                   std::optional<std::vector<uint8_t>>& out_bytes) {
+    out_bytes.reset();
+    switch (result.type) {
+        case ExpressionResult::VALUE:
+            out_value = result.value;
+            if (!result.raw_value_bytes.empty()) out_bytes = result.raw_value_bytes;
+            return true;
+        case ExpressionResult::REGISTER:
+            if (result.value < register_bank.size()) {
+                out_value = register_bank[static_cast<size_t>(result.value)];
+                return true;
+            }
+            setExecutionError(std::string(op_name) + " register unavailable in register context");
+            return false;
+        case ExpressionResult::ADDRESS: {
+            size_t n = pointerByteSize(op_name);
+            if (execution_error_) return false;
+            std::vector<uint8_t> buf(n);
+            if (memory_context_ && memory_context_->readMemory(result.value, n, buf.data())) {
+                out_value = decodeU64FromBytes(buf.data(), n, DwarfUtils::objectIsLittleEndian());
+                out_bytes = std::move(buf);
+                return true;
+            }
+            setExecutionError(std::string(op_name) + " memory read failed");
+            return false;
+        }
+        default:
+            setExecutionError(std::string(op_name) + " referent produced unsupported result");
+            return false;
+    }
 }
 
 void ExpressionEvaluator::push(uint64_t value) {
@@ -543,10 +665,10 @@ void ExpressionEvaluator::handleDeref(uint64_t& offset, const std::vector<uint8_
         if (memory_context_->readMemory(addr, n, buf.data())) {
             push(decodeU64FromBytes(buf.data(), n, DwarfUtils::objectIsLittleEndian()));
         } else {
-            push(addr); // Fallback to address if read fails
+            setExecutionError("DW_OP_deref memory read failed");
         }
     } else {
-        push(addr); // No memory context available
+        setExecutionError("DW_OP_deref requires memory context");
     }
 }
 
@@ -685,10 +807,10 @@ void ExpressionEvaluator::handleXderef(uint64_t& offset, const std::vector<uint8
         if (memory_context_->readMemory(addr, n, buf.data())) {
             push(decodeU64FromBytes(buf.data(), n, DwarfUtils::objectIsLittleEndian()));
         } else {
-            push(addr); // Fallback to address if read fails
+            setExecutionError("DW_OP_xderef memory read failed");
         }
     } else {
-        push(addr); // No memory context available
+        setExecutionError("DW_OP_xderef requires memory context");
     }
 }
 
@@ -982,18 +1104,15 @@ void ExpressionEvaluator::handlePiece(uint64_t& offset, const std::vector<uint8_
                 // DW_OP_piece describes the size of this piece; trim or pad accordingly.
                 if (piece.implicit_value.size() > byte_size) {
                     piece.implicit_value.resize(byte_size);
-                } else if (piece.implicit_value.size() < byte_size) {
-                    piece.implicit_value.resize(byte_size, 0);
                 }
             } else {
-                piece.implicit_value = encodeU64ToBytes(v,
-                                                       static_cast<size_t>(std::min<uint64_t>(byte_size, 8)),
-                                                       DwarfUtils::objectIsLittleEndian());
-                // If the requested piece is larger than 8 bytes but we don't have explicit bytes,
-                // best-effort: pad with zeros.
-                if (piece.implicit_value.size() < byte_size) {
-                    piece.implicit_value.resize(byte_size, 0);
+                if (byte_size > 8) {
+                    setExecutionError("DW_OP_piece requires explicit bytes for values wider than 8 bytes");
+                    return;
                 }
+                piece.implicit_value = encodeU64ToBytes(v,
+                                                       static_cast<size_t>(byte_size),
+                                                       DwarfUtils::objectIsLittleEndian());
             }
         } else if (is_register_location_) {
             piece.kind = PieceDescriptor::REGISTER;
@@ -1018,17 +1137,16 @@ void ExpressionEvaluator::handleDerefSize(uint64_t& offset, const std::vector<ui
     if (!requireStack(1, "DW_OP_deref_size")) return;
     uint64_t addr = pop();
     
-    // In a real implementation, this would dereference memory with the given size
-    // For now, we simulate by checking if we have a memory context
     if (memory_context_) {
         std::vector<uint8_t> buf(size);
         if (memory_context_->readMemory(addr, size, buf.data())) {
             push(decodeU64FromBytes(buf.data(), size, DwarfUtils::objectIsLittleEndian()));
+            pending_implicit_bytes_ = std::move(buf);
         } else {
-            push(addr); // Fallback to address if read fails
+            setExecutionError("DW_OP_deref_size memory read failed");
         }
     } else {
-        push(addr); // No memory context available
+        setExecutionError("DW_OP_deref_size requires memory context");
     }
 }
 
@@ -1039,17 +1157,16 @@ void ExpressionEvaluator::handleXderefSize(uint64_t& offset, const std::vector<u
     uint64_t space = pop();
     DWARF_UNUSED(space);
     
-    // In a real implementation, this would dereference memory in the given address space
-    // For now, we simulate by checking if we have a memory context
     if (memory_context_) {
         std::vector<uint8_t> buf(size);
         if (memory_context_->readMemory(addr, size, buf.data())) {
             push(decodeU64FromBytes(buf.data(), size, DwarfUtils::objectIsLittleEndian()));
+            pending_implicit_bytes_ = std::move(buf);
         } else {
-            push(addr); // Fallback to address if read fails
+            setExecutionError("DW_OP_xderef_size memory read failed");
         }
     } else {
-        push(addr); // No memory context available
+        setExecutionError("DW_OP_xderef_size requires memory context");
     }
 }
 
@@ -1090,16 +1207,15 @@ void ExpressionEvaluator::handleBitPiece(uint64_t& offset, const std::vector<uin
                 piece.implicit_value = *pending_implicit_bytes_;
                 if (piece.implicit_value.size() > piece.byte_size) {
                     piece.implicit_value.resize(piece.byte_size);
-                } else if (piece.implicit_value.size() < piece.byte_size) {
-                    piece.implicit_value.resize(piece.byte_size, 0);
                 }
             } else {
-                piece.implicit_value = encodeU64ToBytes(v,
-                                                       static_cast<size_t>(std::min<uint64_t>(piece.byte_size, 8)),
-                                                       DwarfUtils::objectIsLittleEndian());
-                if (piece.implicit_value.size() < piece.byte_size) {
-                    piece.implicit_value.resize(piece.byte_size, 0);
+                if (piece.byte_size > 8) {
+                    setExecutionError("DW_OP_bit_piece requires explicit bytes for values wider than 8 bytes");
+                    return;
                 }
+                piece.implicit_value = encodeU64ToBytes(v,
+                                                       static_cast<size_t>(piece.byte_size),
+                                                       DwarfUtils::objectIsLittleEndian());
             }
         } else if (is_register_location_) {
             piece.kind = PieceDescriptor::REGISTER;
@@ -1183,14 +1299,13 @@ void ExpressionEvaluator::handleImplicitPointer(uint64_t& offset, const std::vec
     uint64_t abs_die_offset = dwarfSectionOffsetBias(context_.cu_base_offset) + die_offset;
 
     if (!context_.resolve_dwarf_procedure) {
-        // Best-effort fallback: push the referenced DIE offset (as a "pointer") plus offset.
-        push(addSignedOffset(abs_die_offset, offset_val));
+        setExecutionError("DW_OP_implicit_pointer requires DIE resolver");
         return;
     }
 
     auto proc = context_.resolve_dwarf_procedure(abs_die_offset, pc_);
     if (!proc) {
-        push(0);
+        setExecutionError("DW_OP_implicit_pointer referent not found");
         return;
     }
 
@@ -1203,20 +1318,21 @@ void ExpressionEvaluator::handleImplicitPointer(uint64_t& offset, const std::vec
         case ExpressionResult::ADDRESS:
         case ExpressionResult::VALUE:
             push(addSignedOffset(r.value, offset_val));
+            pending_implicit_bytes_.reset();
             return;
         case ExpressionResult::REGISTER:
             if (r.value < registers_.size()) {
                 push(addSignedOffset(registers_[static_cast<size_t>(r.value)], offset_val));
+                pending_implicit_bytes_.reset();
             } else {
-                push(0);
+                setExecutionError("DW_OP_implicit_pointer register referent out of range");
             }
             return;
         default:
             break;
     }
 
-    // If we can't derive any referent value, return 0 as an "unknown pointer".
-    push(0);
+    setExecutionError("DW_OP_implicit_pointer referent has unsupported result type");
 }
 
 void ExpressionEvaluator::handleAddrx(uint64_t& offset, const std::vector<uint8_t>& expression) {
@@ -1227,8 +1343,7 @@ void ExpressionEvaluator::handleAddrx(uint64_t& offset, const std::vector<uint8_
         uint64_t address = (*context_.debug_addr_table)[index];
         push(address);
     } else {
-        // Fallback: use index as offset from addr_base
-        push(context_.addr_base + (index * context_.address_size));
+        setExecutionError("DW_OP_addrx index out of range or debug_addr unavailable");
     }
 }
 
@@ -1241,7 +1356,7 @@ void ExpressionEvaluator::handleConstx(uint64_t& offset, const std::vector<uint8
         uint64_t constant = (*context_.debug_addr_table)[index];
         push(constant);
     } else {
-        push(index);  // Fallback
+        setExecutionError("DW_OP_constx index out of range or debug_addr unavailable");
     }
 }
 
@@ -1267,35 +1382,15 @@ void ExpressionEvaluator::handleEntryValue(uint64_t& offset, const std::vector<u
     auto result = sub_evaluator.evaluate(sub_expr, context_, pc_, context_.entry_registers);
     uninitialized_taint_ = uninitialized_taint_ || result.uninitialized;
 
-    switch (result.type) {
-        case ExpressionResult::VALUE:
-            push(result.value);
-            return;
-        case ExpressionResult::REGISTER:
-            if (!context_.entry_registers.empty() && result.value < context_.entry_registers.size()) {
-                push(context_.entry_registers[static_cast<size_t>(result.value)]);
-            } else {
-                push(0);
-            }
-            return;
-        case ExpressionResult::ADDRESS:
-            if (memory_context_) {
-                size_t n = pointerByteSize("DW_OP_entry_value");
-                if (execution_error_) return;
-                std::vector<uint8_t> buf(n);
-                if (memory_context_->readMemory(result.value, n, buf.data())) {
-                    push(decodeU64FromBytes(buf.data(), n, DwarfUtils::objectIsLittleEndian()));
-                } else {
-                    push(0);
-                }
-            } else {
-                push(0);
-            }
-            return;
-        default:
-            push(0);  // Fallback
-            return;
+    uint64_t value = 0;
+    std::optional<std::vector<uint8_t>> materialized_bytes;
+    if (!materializeResultAsValue(result, context_.entry_registers, "DW_OP_entry_value",
+                                  value, materialized_bytes)) {
+        return;
     }
+    push(value);
+    is_implicit_value_ = true;
+    pending_implicit_bytes_ = std::move(materialized_bytes);
 }
 
 void ExpressionEvaluator::handleConstType(uint64_t& offset, const std::vector<uint8_t>& expression) {
@@ -1316,35 +1411,31 @@ void ExpressionEvaluator::handleConstType(uint64_t& offset, const std::vector<ui
     std::vector<uint8_t> bytes(expression.begin() + offset, expression.begin() + offset + size);
     offset += size;
 
-    uint64_t value = 0;
-    if (size == 0) {
-        value = 0;
-    } else if (size <= 8) {
-        value = decodeU64FromBytes(bytes.data(), size, DwarfUtils::objectIsLittleEndian());
-    } else {
-        // Best-effort: keep the low 8 bytes as the stack value.
-        if (DwarfUtils::objectIsLittleEndian()) {
-            value = decodeU64FromBytes(bytes.data(), 8, /*little_endian=*/true);
-        } else {
-            value = decodeU64FromBytes(bytes.data() + (size - 8), 8, /*little_endian=*/false);
-        }
-    }
+    uint64_t value = decodeResultValueFromBytes(bytes);
 
-    // Best-effort type-aware normalization for integer base types.
     if (context_.resolve_base_type) {
         auto ti = context_.resolve_base_type(abs_type_offset);
-        if (ti && ti->byte_size > 0 && ti->byte_size <= 8) {
-            if (ti->is_integer) {
+        if (type_offset != 0 && !ti) {
+            setExecutionError("DW_OP_const_type could not resolve referenced base type");
+            return;
+        }
+        if (ti && ti->byte_size > 0) {
+            if (ti->byte_size > 8) {
+                pending_implicit_bytes_ = bytes;
+                push(value);
+                return;
+            }
+            if (ti->is_integer || ti->is_boolean || ti->is_address) {
                 value = ti->is_signed ? signExtendBytes(value, ti->byte_size)
                                       : maskToBytes(value, ti->byte_size);
             } else {
                 value = maskToBytes(value, ti->byte_size);
             }
+            bytes = lowBytesForResultValue(value, ti->byte_size);
         }
     }
 
     push(value);
-    // Preserve the raw bytes so stack_value + piece can emit correct IMPLICIT pieces.
     pending_implicit_bytes_ = std::move(bytes);
 }
 
@@ -1362,13 +1453,22 @@ void ExpressionEvaluator::handleRegvalType(uint64_t& offset, const std::vector<u
 
     if (context_.resolve_base_type) {
         auto ti = context_.resolve_base_type(abs_type_offset);
-        if (ti && ti->byte_size > 0 && ti->byte_size <= 8) {
-            if (ti->is_integer) {
+        if (type_offset != 0 && !ti) {
+            setExecutionError("DW_OP_regval_type could not resolve referenced base type");
+            return;
+        }
+        if (ti && ti->byte_size > 0) {
+            if (ti->byte_size > 8) {
+                setExecutionError("DW_OP_regval_type does not support base types wider than 8 bytes");
+                return;
+            }
+            if (ti->is_integer || ti->is_boolean || ti->is_address) {
                 value = ti->is_signed ? signExtendBytes(value, ti->byte_size)
                                       : maskToBytes(value, ti->byte_size);
             } else {
                 value = maskToBytes(value, ti->byte_size);
             }
+            pending_implicit_bytes_ = lowBytesForResultValue(value, ti->byte_size);
         }
     }
 
@@ -1392,21 +1492,31 @@ void ExpressionEvaluator::handleDerefType(uint64_t& offset, const std::vector<ui
             uint64_t value = decodeU64FromBytes(buf.data(), size, DwarfUtils::objectIsLittleEndian());
             if (context_.resolve_base_type) {
                 auto ti = context_.resolve_base_type(abs_type_offset);
-                if (ti && ti->byte_size > 0 && ti->byte_size <= 8) {
-                    if (ti->is_integer) {
+                if (type_offset != 0 && !ti) {
+                    setExecutionError("DW_OP_deref_type could not resolve referenced base type");
+                    return;
+                }
+                if (ti && ti->byte_size > 0) {
+                    if (ti->byte_size > 8) {
+                        setExecutionError("DW_OP_deref_type does not support base types wider than 8 bytes");
+                        return;
+                    }
+                    if (ti->is_integer || ti->is_boolean || ti->is_address) {
                         value = ti->is_signed ? signExtendBytes(value, ti->byte_size)
                                               : maskToBytes(value, ti->byte_size);
                     } else {
                         value = maskToBytes(value, ti->byte_size);
                     }
+                    buf = lowBytesForResultValue(value, ti->byte_size);
                 }
             }
             push(value);
+            pending_implicit_bytes_ = std::move(buf);
         } else {
-            push(addr);  // Fallback
+            setExecutionError("DW_OP_deref_type memory read failed");
         }
     } else {
-        push(addr);
+        setExecutionError("DW_OP_deref_type requires memory context");
     }
 }
 
@@ -1428,21 +1538,31 @@ void ExpressionEvaluator::handleXderefType(uint64_t& offset, const std::vector<u
             uint64_t value = decodeU64FromBytes(buf.data(), size, DwarfUtils::objectIsLittleEndian());
             if (context_.resolve_base_type) {
                 auto ti = context_.resolve_base_type(abs_type_offset);
-                if (ti && ti->byte_size > 0 && ti->byte_size <= 8) {
-                    if (ti->is_integer) {
+                if (type_offset != 0 && !ti) {
+                    setExecutionError("DW_OP_xderef_type could not resolve referenced base type");
+                    return;
+                }
+                if (ti && ti->byte_size > 0) {
+                    if (ti->byte_size > 8) {
+                        setExecutionError("DW_OP_xderef_type does not support base types wider than 8 bytes");
+                        return;
+                    }
+                    if (ti->is_integer || ti->is_boolean || ti->is_address) {
                         value = ti->is_signed ? signExtendBytes(value, ti->byte_size)
                                               : maskToBytes(value, ti->byte_size);
                     } else {
                         value = maskToBytes(value, ti->byte_size);
                     }
+                    buf = lowBytesForResultValue(value, ti->byte_size);
                 }
             }
             push(value);
+            pending_implicit_bytes_ = std::move(buf);
         } else {
-            push(addr);
+            setExecutionError("DW_OP_xderef_type memory read failed");
         }
     } else {
-        push(addr);
+        setExecutionError("DW_OP_xderef_type requires memory context");
     }
 }
 
@@ -1453,18 +1573,24 @@ void ExpressionEvaluator::handleConvert(uint64_t& offset, const std::vector<uint
     if (!requireStack(1, "DW_OP_convert")) return;
     uint64_t value = pop();
 
-    // type_offset of 0 means convert to generic type (untyped)
-    // In a full implementation, we would look up the type and apply conversions
-    // For now, just push the value back (no conversion without type info)
     if (type_offset != 0 && context_.resolve_base_type) {
         auto ti = context_.resolve_base_type(abs_type_offset);
-        if (ti && ti->byte_size > 0 && ti->byte_size <= 8) {
-            if (ti->is_integer) {
+        if (!ti) {
+            setExecutionError("DW_OP_convert could not resolve referenced base type");
+            return;
+        }
+        if (ti->byte_size > 0) {
+            if (ti->byte_size > 8) {
+                setExecutionError("DW_OP_convert does not support base types wider than 8 bytes");
+                return;
+            }
+            if (ti->is_integer || ti->is_boolean || ti->is_address) {
                 value = ti->is_signed ? signExtendBytes(value, ti->byte_size)
                                       : maskToBytes(value, ti->byte_size);
             } else {
                 value = maskToBytes(value, ti->byte_size);
             }
+            pending_implicit_bytes_ = lowBytesForResultValue(value, ti->byte_size);
         }
     }
     push(value);
@@ -1477,13 +1603,19 @@ void ExpressionEvaluator::handleReinterpret(uint64_t& offset, const std::vector<
     if (!requireStack(1, "DW_OP_reinterpret")) return;
     uint64_t value = pop();
 
-    // Reinterpret: same bits, different type interpretation
-    // Unlike convert, this doesn't change the bit representation
-    // Just push the value as-is (the type info is metadata)
     if (type_offset != 0 && context_.resolve_base_type) {
         auto ti = context_.resolve_base_type(abs_type_offset);
-        if (ti && ti->byte_size > 0 && ti->byte_size <= 8) {
+        if (!ti) {
+            setExecutionError("DW_OP_reinterpret could not resolve referenced base type");
+            return;
+        }
+        if (ti->byte_size > 0) {
+            if (ti->byte_size > 8) {
+                setExecutionError("DW_OP_reinterpret does not support base types wider than 8 bytes");
+                return;
+            }
             value = maskToBytes(value, ti->byte_size);
+            pending_implicit_bytes_ = lowBytesForResultValue(value, ti->byte_size);
         }
     }
     push(value);
@@ -1584,11 +1716,6 @@ void ExpressionEvaluator::handleGnuEncodedAddr(uint64_t& offset, const std::vect
     }
     uint8_t encoding = readU8(offset, expression);
 
-    // Encoding follows the DW_EH_PE_* scheme (as used by GCC).
-    // We implement the common subset needed in practice:
-    // - formats: absptr/udata{2,4,8}/sdata{2,4,8}/uleb128/sleb128
-    // - application: absolute/pcrel
-    // - indirect: ignored (best-effort)
     constexpr uint8_t kFmtMask = 0x0f;
     constexpr uint8_t kAppMask = 0x70;
     constexpr uint8_t kIndMask = 0x80;
@@ -1627,8 +1754,8 @@ void ExpressionEvaluator::handleGnuEncodedAddr(uint64_t& offset, const std::vect
                 return static_cast<uint64_t>(v);
             }
             default:
-                // Unknown/unsupported, best-effort: treat as absptr.
-                return readAddressSized(offset, expression);
+                setExecutionError("DW_OP_GNU_encoded_addr uses unsupported encoding format");
+                return 0;
         }
     };
 
@@ -1655,18 +1782,23 @@ void ExpressionEvaluator::handleGnuEncodedAddr(uint64_t& offset, const std::vect
         case 0x50: // aligned
             break;
         default:
-            // Other bases need more stream/section context than the evaluator has.
-            break;
+            setExecutionError("DW_OP_GNU_encoded_addr uses unsupported application mode");
+            return;
     }
 
-    // If indirect is set, the value is the address of the address.
-    // Without a stronger memory model, we best-effort dereference pointer-sized.
-    if ((encoding & kIndMask) && memory_context_) {
+    if ((encoding & kIndMask) != 0) {
+        if (!memory_context_) {
+            setExecutionError("DW_OP_GNU_encoded_addr indirect requires memory context");
+            return;
+        }
         size_t n = pointerByteSize("DW_OP_GNU_encoded_addr");
         if (execution_error_) return;
         std::vector<uint8_t> buf(n);
         if (memory_context_->readMemory(addr, n, buf.data())) {
             addr = decodeU64FromBytes(buf.data(), n, DwarfUtils::objectIsLittleEndian());
+        } else {
+            setExecutionError("DW_OP_GNU_encoded_addr indirect memory read failed");
+            return;
         }
     }
 
@@ -1721,14 +1853,13 @@ void ExpressionEvaluator::handleGnuParameterRef(uint64_t& offset, const std::vec
     uint64_t abs_die_offset = dwarfSectionOffsetBias(context_.cu_base_offset) + die_offset;
 
     if (!context_.resolve_dwarf_procedure) {
-        // Best-effort fallback: push the referenced DIE offset as a stand-in.
-        push(abs_die_offset);
+        setExecutionError("DW_OP_GNU_parameter_ref requires DIE resolver");
         return;
     }
 
     auto proc = context_.resolve_dwarf_procedure(abs_die_offset, pc_);
     if (!proc) {
-        push(0);
+        setExecutionError("DW_OP_GNU_parameter_ref referent not found");
         return;
     }
 
@@ -1739,22 +1870,15 @@ void ExpressionEvaluator::handleGnuParameterRef(uint64_t& offset, const std::vec
     ExpressionResult r = sub.evaluate(*proc, context_, pc_, registers_);
     uninitialized_taint_ = uninitialized_taint_ || r.uninitialized;
 
-    switch (r.type) {
-        case ExpressionResult::ADDRESS:
-        case ExpressionResult::VALUE:
-            push(r.value);
-            return;
-        case ExpressionResult::REGISTER:
-            if (r.value < registers_.size()) {
-                push(registers_[static_cast<size_t>(r.value)]);
-            } else {
-                push(0);
-            }
-            return;
-        default:
-            push(0);
-            return;
+    uint64_t value = 0;
+    std::optional<std::vector<uint8_t>> materialized_bytes;
+    if (!materializeResultAsValue(r, registers_, "DW_OP_GNU_parameter_ref",
+                                  value, materialized_bytes)) {
+        return;
     }
+    push(value);
+    is_implicit_value_ = true;
+    pending_implicit_bytes_ = std::move(materialized_bytes);
 }
 
 void ExpressionEvaluator::handleGnuAddrIndex(uint64_t& offset, const std::vector<uint8_t>& expression) {

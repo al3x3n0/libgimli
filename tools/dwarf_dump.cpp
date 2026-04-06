@@ -23,6 +23,7 @@
 #include <set>
 #include <fstream>
 #include <array>
+#include <optional>
 
 using namespace dwarf;
 
@@ -42,6 +43,432 @@ static std::string formatCompactU32HexList(const std::vector<uint32_t>& values) 
         oss << "0x" << std::hex << values[i] << std::dec;
     }
     return oss.str();
+}
+
+struct ExpressionGapTelemetry {
+    size_t expression_site_count = 0;
+    size_t expression_op_count = 0;
+    size_t unknown_opcode_sites = 0;
+    size_t unknown_vendor_opcode_sites = 0;
+    std::map<uint8_t, uint64_t> unknown_opcode_histogram;
+    std::map<std::string, uint64_t> unknown_opcode_attribute_histogram;
+};
+
+struct VendorOpcodeAggregate {
+    uint8_t opcode = 0;
+    uint64_t total_occurrences = 0;
+    uint64_t expression_sites = 0;
+    uint64_t standalone_expression_sites = 0;
+    std::set<std::string> sample_files;
+    std::set<std::string> producers;
+    std::map<std::string, uint64_t> attribute_histogram;
+    std::map<std::string, uint64_t> pattern_histogram;
+    std::string selection_blocker;
+};
+
+struct VendorOpcodeTriageReport {
+    size_t input_files = 0;
+    size_t loaded_files = 0;
+    size_t failed_files = 0;
+    size_t expression_site_count = 0;
+    size_t vendor_expression_site_count = 0;
+    size_t vendor_opcode_occurrences = 0;
+    std::vector<std::string> load_errors;
+    std::map<uint8_t, VendorOpcodeAggregate> aggregates;
+    bool has_selection = false;
+    uint8_t selected_opcode = 0;
+    std::string selected_profile_name;
+    std::string selection_status = "no_safe_family_selected";
+    std::string selection_reason = "no_vendor_opcodes_observed";
+};
+
+static bool isUnknownExpressionOpcode(uint8_t opcode);
+
+static bool isUnknownVendorExpressionOpcode(uint8_t opcode) {
+    return opcode >= 0xe0 && isUnknownExpressionOpcode(opcode);
+}
+
+static std::string formatCompactHexByte(uint8_t value) {
+    std::ostringstream oss;
+    oss << "0x" << std::hex << std::setfill('0') << std::setw(2)
+        << static_cast<unsigned>(value) << std::dec;
+    return oss.str();
+}
+
+static std::string getDIECUProducer(const std::shared_ptr<DIE>& cu) {
+    if (!cu) return {};
+    auto attr = cu->getAttribute(DwarfAttribute::DW_AT_producer);
+    auto s = std::dynamic_pointer_cast<StringAttributeValue>(attr);
+    return s ? s->getValue() : std::string();
+}
+
+static std::string summarizeTopStringHistogram(const std::map<std::string, uint64_t>& hist,
+                                               size_t limit) {
+    std::vector<std::pair<std::string, uint64_t>> items(hist.begin(), hist.end());
+    std::sort(items.begin(), items.end(),
+              [](const auto& a, const auto& b) {
+                  if (a.second != b.second) return a.second > b.second;
+                  return a.first < b.first;
+              });
+    std::ostringstream oss;
+    const size_t count = std::min<size_t>(items.size(), limit);
+    for (size_t i = 0; i < count; ++i) {
+        if (i != 0) oss << ";";
+        oss << items[i].first << ":" << items[i].second;
+    }
+    return oss.str();
+}
+
+static std::vector<std::pair<uint8_t, VendorOpcodeAggregate*>> rankedVendorOpcodeAggregates(
+    VendorOpcodeTriageReport& report) {
+    std::vector<std::pair<uint8_t, VendorOpcodeAggregate*>> ranked;
+    ranked.reserve(report.aggregates.size());
+    for (auto& kv : report.aggregates) {
+        ranked.push_back({kv.first, &kv.second});
+    }
+    std::sort(ranked.begin(), ranked.end(),
+              [](const auto& a, const auto& b) {
+                  if (a.second->total_occurrences != b.second->total_occurrences) {
+                      return a.second->total_occurrences > b.second->total_occurrences;
+                  }
+                  if (a.second->expression_sites != b.second->expression_sites) {
+                      return a.second->expression_sites > b.second->expression_sites;
+                  }
+                  return a.first < b.first;
+              });
+    return ranked;
+}
+
+static void scanExpressionForVendorTriage(const std::vector<uint8_t>& expr,
+                                          const std::string& attr_name,
+                                          const std::string& file_path,
+                                          const std::string& producer,
+                                          VendorOpcodeTriageReport& out) {
+    if (expr.empty()) return;
+    ++out.expression_site_count;
+
+    size_t off = 0;
+    size_t vendor_unknown_in_expr = 0;
+    std::map<uint8_t, uint64_t> occurrences_by_opcode;
+    while (off < expr.size()) {
+        uint8_t opcode = expr[off++];
+        if (isUnknownVendorExpressionOpcode(opcode)) {
+            ++vendor_unknown_in_expr;
+            occurrences_by_opcode[opcode] += 1;
+        }
+        const size_t opsz = DwarfUtils::getOperationSize(static_cast<DwarfOp>(opcode),
+                                                         expr.data(),
+                                                         off,
+                                                         expr.size());
+        off += std::min(opsz, expr.size() - off);
+    }
+
+    if (occurrences_by_opcode.empty()) return;
+
+    ++out.vendor_expression_site_count;
+    out.vendor_opcode_occurrences += vendor_unknown_in_expr;
+    const std::string expr_hex = formatCompactHexBytes(expr);
+    const std::string producer_name = producer.empty() ? "<unknown>" : producer;
+
+    for (const auto& kv : occurrences_by_opcode) {
+        VendorOpcodeAggregate& agg = out.aggregates[kv.first];
+        agg.opcode = kv.first;
+        agg.total_occurrences += kv.second;
+        agg.expression_sites += 1;
+        if (vendor_unknown_in_expr == 1) {
+            agg.standalone_expression_sites += 1;
+        }
+        agg.sample_files.insert(file_path);
+        agg.producers.insert(producer_name);
+        agg.attribute_histogram[attr_name] += 1;
+        agg.pattern_histogram[expr_hex] += 1;
+    }
+}
+
+static void collectVendorOpcodeTriageFromDIE(const std::shared_ptr<DIE>& die,
+                                             const std::string& file_path,
+                                             const std::string& producer,
+                                             VendorOpcodeTriageReport& out) {
+    if (!die) return;
+    for (const auto& kv : die->getAttributes()) {
+        const auto attr = kv.first;
+        const auto& value = kv.second;
+        const std::string attr_name = DwarfUtils::attributeToString(attr);
+        if (auto loc = std::dynamic_pointer_cast<LocationAttributeValue>(value)) {
+            if (loc->getLocationType() == LocationAttributeValue::LocationType::EXPRESSION) {
+                scanExpressionForVendorTriage(loc->getData(), attr_name, file_path, producer, out);
+            } else if (loc->getLocationType() == LocationAttributeValue::LocationType::LIST) {
+                for (const auto& entry : loc->getEntries()) {
+                    scanExpressionForVendorTriage(entry.expression, attr_name, file_path, producer, out);
+                }
+            }
+        } else if (auto expr = std::dynamic_pointer_cast<ExpressionAttributeValue>(value)) {
+            scanExpressionForVendorTriage(expr->getExpression(), attr_name, file_path, producer, out);
+        } else if (auto preserved = DwarfUtils::decodePreservedPayloadAttribute(attr, value)) {
+            scanExpressionForVendorTriage(preserved->bytes, attr_name, file_path, producer, out);
+        }
+    }
+    for (const auto& child : die->getChildren()) {
+        collectVendorOpcodeTriageFromDIE(child, file_path, producer, out);
+    }
+}
+
+static VendorOpcodeTriageReport collectVendorOpcodeTriage(const std::vector<std::string>& input_files,
+                                                          bool verbose) {
+    VendorOpcodeTriageReport report;
+    report.input_files = input_files.size();
+    for (const auto& path : input_files) {
+        DwarfParser parser(path);
+        parser.setVerbose(verbose);
+        if (!parser.load()) {
+            ++report.failed_files;
+            report.load_errors.push_back(path);
+            continue;
+        }
+        ++report.loaded_files;
+        for (const auto& cu : parser.getCompilationUnits()) {
+            collectVendorOpcodeTriageFromDIE(cu, path, getDIECUProducer(cu), report);
+        }
+    }
+
+    if (report.aggregates.empty()) {
+        report.selection_status = "no_safe_family_selected";
+        report.selection_reason = report.loaded_files == 0
+            ? "no_loadable_inputs"
+            : "no_vendor_opcodes_observed";
+        return report;
+    }
+
+    auto ranked = rankedVendorOpcodeAggregates(report);
+    for (auto& ranked_item : ranked) {
+        VendorOpcodeAggregate& agg = *ranked_item.second;
+        if (agg.sample_files.size() < 2) {
+            agg.selection_blocker = "insufficient_independent_samples";
+            continue;
+        }
+        agg.selection_blocker = "no_profiled_semantics_mapping";
+    }
+
+    report.selection_status = "no_safe_family_selected";
+    report.selection_reason = ranked.front().second->selection_blocker.empty()
+        ? "no_vendor_opcodes_observed"
+        : ranked.front().second->selection_blocker;
+    return report;
+}
+
+static std::string renderVendorOpcodeTriageText(VendorOpcodeTriageReport& report) {
+    std::ostringstream out;
+    out << "Vendor Expression Opcode Triage\n";
+    out << "kind=vendor_expression_triage\n";
+    out << "schema_version=1\n";
+    out << "input_files=" << report.input_files << "\n";
+    out << "loaded_files=" << report.loaded_files << "\n";
+    out << "failed_files=" << report.failed_files << "\n";
+    out << "expression_site_count=" << report.expression_site_count << "\n";
+    out << "vendor_expression_site_count=" << report.vendor_expression_site_count << "\n";
+    out << "vendor_opcode_occurrences=" << report.vendor_opcode_occurrences << "\n";
+    out << "selection_status=" << report.selection_status << "\n";
+    out << "selection_reason=" << report.selection_reason << "\n";
+    if (report.has_selection) {
+        out << "selected_profile=" << report.selected_profile_name << "\n";
+        out << "selected_opcode=" << formatCompactHexByte(report.selected_opcode) << "\n";
+    } else {
+        out << "selected_profile=\n";
+        out << "selected_opcode=\n";
+    }
+    if (!report.load_errors.empty()) {
+        out << "load_errors=";
+        for (size_t i = 0; i < report.load_errors.size(); ++i) {
+            if (i != 0) out << ";";
+            out << report.load_errors[i];
+        }
+        out << "\n";
+    }
+    auto ranked = rankedVendorOpcodeAggregates(report);
+    for (const auto& ranked_item : ranked) {
+        const VendorOpcodeAggregate& agg = *ranked_item.second;
+        std::map<std::string, uint64_t> sample_files_hist;
+        for (const auto& file : agg.sample_files) sample_files_hist[file] = 1;
+        std::map<std::string, uint64_t> producers_hist;
+        for (const auto& producer : agg.producers) producers_hist[producer] = 1;
+        out << "opcode=" << formatCompactHexByte(agg.opcode)
+            << " total_occurrences=" << agg.total_occurrences
+            << " expression_sites=" << agg.expression_sites
+            << " independent_sample_count=" << agg.sample_files.size()
+            << " producer_count=" << agg.producers.size()
+            << " standalone_expression_sites=" << agg.standalone_expression_sites
+            << " top_attributes=" << summarizeTopStringHistogram(agg.attribute_histogram, 4)
+            << " top_patterns=" << summarizeTopStringHistogram(agg.pattern_histogram, 3)
+            << " sample_files=" << summarizeTopStringHistogram(sample_files_hist, 4)
+            << " producers=" << summarizeTopStringHistogram(producers_hist, 4)
+            << " selection_blocker=" << agg.selection_blocker
+            << "\n";
+    }
+    return out.str();
+}
+
+static std::string renderVendorOpcodeTriageJson(VendorOpcodeTriageReport& report, int schema_version) {
+    auto esc = [](const std::string& s) {
+        std::string out;
+        out.reserve(s.size() + 8);
+        for (char c : s) {
+            switch (c) {
+                case '\\': out += "\\\\"; break;
+                case '"': out += "\\\""; break;
+                case '\n': out += "\\n"; break;
+                case '\r': out += "\\r"; break;
+                case '\t': out += "\\t"; break;
+                default: out += c; break;
+            }
+        }
+        return out;
+    };
+
+    auto renderStringArray = [&](const std::set<std::string>& values) {
+        std::ostringstream out;
+        out << "[";
+        size_t index = 0;
+        for (const auto& value : values) {
+            if (index++ != 0) out << ",";
+            out << "\"" << esc(value) << "\"";
+        }
+        out << "]";
+        return out.str();
+    };
+
+    auto renderStringHistogram = [&](const std::map<std::string, uint64_t>& hist) {
+        std::vector<std::pair<std::string, uint64_t>> items(hist.begin(), hist.end());
+        std::sort(items.begin(), items.end(),
+                  [](const auto& a, const auto& b) {
+                      if (a.second != b.second) return a.second > b.second;
+                      return a.first < b.first;
+                  });
+        std::ostringstream out;
+        out << "[";
+        for (size_t i = 0; i < items.size(); ++i) {
+            if (i != 0) out << ",";
+            out << "{"
+                << "\"name\":\"" << esc(items[i].first) << "\","
+                << "\"count\":" << items[i].second
+                << "}";
+        }
+        out << "]";
+        return out.str();
+    };
+
+    std::ostringstream out;
+    out << "{";
+    out << "\"kind\":\"vendor_expression_triage\",";
+    out << "\"schema_version\":" << schema_version << ",";
+    out << "\"input_files\":" << report.input_files << ",";
+    out << "\"loaded_files\":" << report.loaded_files << ",";
+    out << "\"failed_files\":" << report.failed_files << ",";
+    out << "\"expression_site_count\":" << report.expression_site_count << ",";
+    out << "\"vendor_expression_site_count\":" << report.vendor_expression_site_count << ",";
+    out << "\"vendor_opcode_occurrences\":" << report.vendor_opcode_occurrences << ",";
+    out << "\"selection_status\":\"" << esc(report.selection_status) << "\",";
+    out << "\"selection_reason\":\"" << esc(report.selection_reason) << "\",";
+    if (report.has_selection) {
+        out << "\"selected_profile\":\"" << esc(report.selected_profile_name) << "\",";
+        out << "\"selected_opcode\":" << static_cast<uint64_t>(report.selected_opcode) << ",";
+    } else {
+        out << "\"selected_profile\":null,";
+        out << "\"selected_opcode\":null,";
+    }
+    out << "\"load_errors\":[";
+    for (size_t i = 0; i < report.load_errors.size(); ++i) {
+        if (i != 0) out << ",";
+        out << "\"" << esc(report.load_errors[i]) << "\"";
+    }
+    out << "],";
+    out << "\"ranked_vendor_opcodes\":[";
+    auto ranked = rankedVendorOpcodeAggregates(report);
+    for (size_t i = 0; i < ranked.size(); ++i) {
+        if (i != 0) out << ",";
+        const VendorOpcodeAggregate& agg = *ranked[i].second;
+        out << "{"
+            << "\"opcode\":" << static_cast<uint64_t>(agg.opcode) << ","
+            << "\"total_occurrences\":" << agg.total_occurrences << ","
+            << "\"expression_sites\":" << agg.expression_sites << ","
+            << "\"independent_sample_count\":" << agg.sample_files.size() << ","
+            << "\"producer_count\":" << agg.producers.size() << ","
+            << "\"standalone_expression_sites\":" << agg.standalone_expression_sites << ","
+            << "\"selection_blocker\":\"" << esc(agg.selection_blocker) << "\","
+            << "\"sample_files\":" << renderStringArray(agg.sample_files) << ","
+            << "\"producers\":" << renderStringArray(agg.producers) << ","
+            << "\"attribute_histogram\":" << renderStringHistogram(agg.attribute_histogram) << ","
+            << "\"pattern_histogram\":" << renderStringHistogram(agg.pattern_histogram)
+            << "}";
+    }
+    out << "]";
+    out << "}";
+    return out.str();
+}
+
+static bool isUnknownExpressionOpcode(uint8_t opcode) {
+    const std::string name = DwarfUtils::operationToString(static_cast<DwarfOp>(opcode));
+    return name.rfind("DW_OP_unknown_", 0) == 0;
+}
+
+static void scanExpressionForTelemetry(const std::vector<uint8_t>& expr,
+                                       const std::string& attr_name,
+                                       ExpressionGapTelemetry& out) {
+    if (expr.empty()) return;
+    ++out.expression_site_count;
+    bool site_has_unknown = false;
+    bool site_has_unknown_vendor = false;
+    size_t off = 0;
+    while (off < expr.size()) {
+        uint8_t opcode = expr[off++];
+        ++out.expression_op_count;
+        if (isUnknownExpressionOpcode(opcode)) {
+            site_has_unknown = true;
+            if (opcode >= 0xe0) site_has_unknown_vendor = true;
+            out.unknown_opcode_histogram[opcode] += 1;
+            out.unknown_opcode_attribute_histogram[attr_name] += 1;
+        }
+        const size_t opsz = DwarfUtils::getOperationSize(static_cast<DwarfOp>(opcode),
+                                                         expr.data(),
+                                                         off,
+                                                         expr.size());
+        off += std::min(opsz, expr.size() - off);
+    }
+    if (site_has_unknown) ++out.unknown_opcode_sites;
+    if (site_has_unknown_vendor) ++out.unknown_vendor_opcode_sites;
+}
+
+static void collectExpressionGapTelemetryFromDIE(const std::shared_ptr<DIE>& die,
+                                                 ExpressionGapTelemetry& out) {
+    if (!die) return;
+    for (const auto& kv : die->getAttributes()) {
+        const auto attr = kv.first;
+        const auto& value = kv.second;
+        const std::string attr_name = DwarfUtils::attributeToString(attr);
+        if (auto loc = std::dynamic_pointer_cast<LocationAttributeValue>(value)) {
+            if (loc->getLocationType() == LocationAttributeValue::LocationType::EXPRESSION) {
+                scanExpressionForTelemetry(loc->getData(), attr_name, out);
+            } else if (loc->getLocationType() == LocationAttributeValue::LocationType::LIST) {
+                for (const auto& entry : loc->getEntries()) {
+                    scanExpressionForTelemetry(entry.expression, attr_name, out);
+                }
+            }
+        } else if (auto expr = std::dynamic_pointer_cast<ExpressionAttributeValue>(value)) {
+            scanExpressionForTelemetry(expr->getExpression(), attr_name, out);
+        } else if (auto preserved = DwarfUtils::decodePreservedPayloadAttribute(attr, value)) {
+            scanExpressionForTelemetry(preserved->bytes, attr_name, out);
+        }
+    }
+    for (const auto& child : die->getChildren()) {
+        collectExpressionGapTelemetryFromDIE(child, out);
+    }
+}
+
+static ExpressionGapTelemetry collectExpressionGapTelemetry(const DwarfParser& parser) {
+    ExpressionGapTelemetry out;
+    for (const auto& cu : parser.getCompilationUnits()) {
+        collectExpressionGapTelemetryFromDIE(cu, out);
+    }
+    return out;
 }
 
 static std::optional<DwarfUtils::DecodedPayloadSemantics> decodeSemanticAttributeForDump(
@@ -105,6 +532,8 @@ void printUsage(const char* prog) {
               << "    Compare unwind/CFI semantics across two binaries.\n"
               << "  " << prog << " verify-reloc <elf> [options]\n"
               << "    Verify relocation/index integrity of DWARF references.\n"
+              << "  " << prog << " triage-vendor-ops <elf> [<elf> ...] [options]\n"
+              << "    Rank unsupported non-GNU vendor expression opcodes across a local corpus.\n"
               << "\n"
               << "Section Options:\n"
               << "  -i, --debug-info      Dump .debug_info section\n"
@@ -138,7 +567,8 @@ void printUsage(const char* prog) {
               << "  " << prog << " --find=main program # Find 'main' function\n"
               << "  " << prog << " -A program          # Dump everything\n"
               << "  " << prog << " compare-expr a b --format=json --max-different=0\n"
-              << "  " << prog << " verify-reloc program --format=json\n";
+              << "  " << prog << " verify-reloc program --format=json\n"
+              << "  " << prog << " triage-vendor-ops a.o b.o --format=json\n";
 }
 
 void printCompareExprUsage(const char* prog) {
@@ -153,8 +583,9 @@ void printCompareExprUsage(const char* prog) {
               << "  --key-mode=<name|linkage>        Match key mode (default: name)\n"
               << "  --strict-attr-present            Compare only pairs where attr exists on both sides\n"
               << "  --reloc-check                    Enable relocation/index sanity checks (optional)\n"
-              << "  --normalize-loc                  Canonicalize location-list entries before compare\n"
+              << "  --normalize-loc                  Apply semantic normalization before compare and coalesce equivalent location-list entries\n"
               << "  --range-aware                    Compare location lists over PC ranges/coverage\n"
+              << "  --vendor-op-profile=<P>          Non-GNU vendor opcode profile: none|synthetic-v1 (default: none)\n"
               << "  --verify-features=<LIST>         Enable compare checks: section-reloc,loc-normalize,range-aware (special: all,none)\n"
               << "  --emit-profile-only              Emit only active verification/gate profile\n"
               << "  --emit-solver-summary-only       Emit only solver/backend bucket summary\n"
@@ -323,6 +754,24 @@ void printVerifyRelocUsage(const char* prog) {
               << "  --max-warnings=<N>               Gate threshold for warning issues (default: unlimited)\n"
               << "  --strict                         Equivalent to --max-errors=0 --max-warnings=0\n"
               << "  --report-only                    Do not enforce gate thresholds\n";
+}
+
+void printTriageVendorOpsUsage(const char* prog) {
+    std::cerr << "Usage: " << prog << " triage-vendor-ops <elf> [<elf> ...] [options]\n\n"
+              << "Options:\n"
+              << "  --format=<text|json>             Report format (default: text)\n"
+              << "  --schema-version=<N>             JSON schema version (currently supports 1)\n"
+              << "  --output=<PATH>                  Write report to file instead of stdout\n"
+              << "  -v, --verbose                    Enable verbose parser loading\n"
+              << "  --help                           Show this help message\n\n"
+              << "Selection Rule:\n"
+              << "  Rank unsupported non-GNU vendor expression opcodes by observed corpus frequency.\n"
+              << "  A family is selectable only if it appears in at least two independent samples and\n"
+              << "  has an explicitly modeled bounded semantics mapping. Otherwise the report stays\n"
+              << "  fail-closed and emits selection_status=no_safe_family_selected.\n\n"
+              << "Examples:\n"
+              << "  " << prog << " triage-vendor-ops a.o b.o\n"
+              << "  " << prog << " triage-vendor-ops a.o b.o --format=json --output=vendor_triage.json\n";
 }
 
 static bool isValidRelocSectionFilter(const std::string& s) {
@@ -665,6 +1114,7 @@ void printSupportMatrix(const DwarfParser* parser = nullptr,
     if (parser) {
         const auto& s = parser->getSplitDwarfStats();
         const auto& t = parser->getSupportTelemetry();
+        const ExpressionGapTelemetry expr_t = collectExpressionGapTelemetry(*parser);
         auto pushBool = [&](const char* key, bool v) {
             runtime_fields.push_back({key, v ? "yes" : "no", v ? "true" : "false"});
         };
@@ -752,6 +1202,42 @@ void printSupportMatrix(const DwarfParser* parser = nullptr,
             severity_ss << severities[i].first << ":" << severities[i].second;
         }
         pushString("vendor_form_skip_severity_buckets", severity_ss.str());
+
+        pushInt("expression_site_count", static_cast<uint64_t>(expr_t.expression_site_count));
+        pushInt("expression_op_count", static_cast<uint64_t>(expr_t.expression_op_count));
+        pushInt("unknown_expression_opcode_sites", static_cast<uint64_t>(expr_t.unknown_opcode_sites));
+        pushInt("unknown_vendor_expression_opcode_sites",
+                static_cast<uint64_t>(expr_t.unknown_vendor_opcode_sites));
+
+        std::vector<std::pair<uint8_t, uint64_t>> unknown_ops(expr_t.unknown_opcode_histogram.begin(),
+                                                              expr_t.unknown_opcode_histogram.end());
+        std::sort(unknown_ops.begin(), unknown_ops.end(),
+                  [](const auto& a, const auto& b) {
+                      if (a.second != b.second) return a.second > b.second;
+                      return a.first < b.first;
+                  });
+        std::ostringstream unknown_ops_ss;
+        const size_t unknown_ops_limit = std::min<size_t>(unknown_ops.size(), 8);
+        for (size_t i = 0; i < unknown_ops_limit; ++i) {
+            if (i != 0) unknown_ops_ss << ";";
+            unknown_ops_ss << "0x" << std::hex << static_cast<unsigned>(unknown_ops[i].first)
+                           << std::dec << ":" << unknown_ops[i].second;
+        }
+        pushString("unknown_expression_opcode_histogram", unknown_ops_ss.str());
+
+        std::vector<std::pair<std::string, uint64_t>> unknown_attrs(expr_t.unknown_opcode_attribute_histogram.begin(),
+                                                                     expr_t.unknown_opcode_attribute_histogram.end());
+        std::sort(unknown_attrs.begin(), unknown_attrs.end(),
+                  [](const auto& a, const auto& b) {
+                      if (a.second != b.second) return a.second > b.second;
+                      return a.first < b.first;
+                  });
+        std::ostringstream unknown_attrs_ss;
+        for (size_t i = 0; i < unknown_attrs.size(); ++i) {
+            if (i != 0) unknown_attrs_ss << ";";
+            unknown_attrs_ss << unknown_attrs[i].first << ":" << unknown_attrs[i].second;
+        }
+        pushString("unknown_expression_opcode_attributes", unknown_attrs_ss.str());
     }
 
     if (format == "json") {
@@ -862,6 +1348,41 @@ void printSupportMatrix(const DwarfParser* parser = nullptr,
                         << "}";
                 }
                 out << "]";
+
+                const ExpressionGapTelemetry expr_t = collectExpressionGapTelemetry(*parser);
+                std::vector<std::pair<uint8_t, uint64_t>> unknown_ops(expr_t.unknown_opcode_histogram.begin(),
+                                                                      expr_t.unknown_opcode_histogram.end());
+                std::sort(unknown_ops.begin(), unknown_ops.end(),
+                          [](const auto& a, const auto& b) {
+                              if (a.second != b.second) return a.second > b.second;
+                              return a.first < b.first;
+                          });
+                out << ",\"unknown_expression_opcode_histogram_structured\":[";
+                for (size_t i = 0; i < unknown_ops.size(); ++i) {
+                    if (i > 0) out << ",";
+                    out << "{"
+                        << "\"opcode\":" << static_cast<uint64_t>(unknown_ops[i].first) << ","
+                        << "\"count\":" << unknown_ops[i].second
+                        << "}";
+                }
+                out << "]";
+
+                std::vector<std::pair<std::string, uint64_t>> unknown_attrs(expr_t.unknown_opcode_attribute_histogram.begin(),
+                                                                             expr_t.unknown_opcode_attribute_histogram.end());
+                std::sort(unknown_attrs.begin(), unknown_attrs.end(),
+                          [](const auto& a, const auto& b) {
+                              if (a.second != b.second) return a.second > b.second;
+                              return a.first < b.first;
+                          });
+                out << ",\"unknown_expression_opcode_attributes_structured\":[";
+                for (size_t i = 0; i < unknown_attrs.size(); ++i) {
+                    if (i > 0) out << ",";
+                    out << "{"
+                        << "\"attribute\":\"" << esc(unknown_attrs[i].first) << "\","
+                        << "\"count\":" << unknown_attrs[i].second
+                        << "}";
+                }
+                out << "]";
             }
             out << "}";
         }
@@ -891,6 +1412,18 @@ static bool parseTag(const std::string& s, DwarfTag& out) {
     }
     if (s == "subprogram") {
         out = DwarfTag::DW_TAG_subprogram;
+        return true;
+    }
+    return false;
+}
+
+static bool parseVendorExpressionProfile(const std::string& s, VendorExpressionProfile& out) {
+    if (s == "none") {
+        out = VendorExpressionProfile::NONE;
+        return true;
+    }
+    if (s == "synthetic-v1") {
+        out = VendorExpressionProfile::SYNTHETIC_V1;
         return true;
     }
     return false;
@@ -2357,6 +2890,106 @@ static int runVerifyReloc(int argc, char* argv[]) {
     return 0;
 }
 
+static int runTriageVendorOps(int argc, char* argv[]) {
+    for (int i = 2; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--help" || arg == "-h") {
+            printTriageVendorOpsUsage(argv[0]);
+            return 0;
+        }
+    }
+    if (argc < 3) {
+        printTriageVendorOpsUsage(argv[0]);
+        return 1;
+    }
+
+    std::vector<std::string> input_files;
+    std::string format = "text";
+    std::string output_path;
+    int schema_version = 1;
+    bool verbose = false;
+
+    for (int i = 2; i < argc; ++i) {
+        std::string arg = argv[i];
+        auto split = arg.find('=');
+        auto key = (split == std::string::npos) ? arg : arg.substr(0, split);
+        auto val = (split == std::string::npos) ? std::string() : arg.substr(split + 1);
+
+        if (key == "-v" || key == "--verbose") {
+            verbose = true;
+            continue;
+        }
+        if (key == "--format") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            if (val != "text" && val != "json") {
+                std::cerr << "Error: invalid --format value '" << val << "'\n";
+                return 1;
+            }
+            format = val;
+            continue;
+        }
+        if (key == "--schema-version") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            uint64_t parsed = 0;
+            if (!parseUIntOption(val, parsed)) {
+                std::cerr << "Error: invalid --schema-version value '" << val << "'\n";
+                return 1;
+            }
+            schema_version = static_cast<int>(parsed);
+            continue;
+        }
+        if (key == "--output") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            if (val.empty()) {
+                std::cerr << "Error: invalid --output value (empty)\n";
+                return 1;
+            }
+            output_path = val;
+            continue;
+        }
+        if (key == "--help" || key == "-h") {
+            continue;
+        }
+        if (!arg.empty() && arg[0] == '-') {
+            std::cerr << "Error: unknown triage-vendor-ops option '" << arg << "'\n";
+            return 1;
+        }
+        input_files.push_back(arg);
+    }
+
+    if (input_files.empty()) {
+        std::cerr << "Error: triage-vendor-ops requires at least one input file\n";
+        return 1;
+    }
+    if (format != "json" && schema_version != 1) {
+        std::cerr << "Error: --schema-version requires --format=json\n";
+        return 1;
+    }
+    if (schema_version != 1) {
+        std::cerr << "Error: unsupported schema version " << schema_version
+                  << " for triage-vendor-ops (supported: 1)\n";
+        return 1;
+    }
+
+    VendorOpcodeTriageReport report = collectVendorOpcodeTriage(input_files, verbose);
+    const std::string rendered = (format == "json")
+        ? renderVendorOpcodeTriageJson(report, schema_version)
+        : renderVendorOpcodeTriageText(report);
+
+    if (!output_path.empty()) {
+        std::ofstream file(output_path);
+        if (!file) {
+            std::cerr << "Error: cannot open output file '" << output_path << "'\n";
+            return 1;
+        }
+        file << rendered;
+    } else {
+        std::cout << rendered;
+    }
+
+    return report.failed_files == report.input_files ? 1 : 0;
+}
+
 static bool resolveFunctionPC(const DwarfParser& parser,
                               const std::string& name,
                               uint64_t& out_pc,
@@ -2542,6 +3175,15 @@ static int runCompareExpr(int argc, char* argv[]) {
         }
         if (key == "--range-aware") {
             cmp_opts.enable_range_aware_location_compare = true;
+            continue;
+        }
+        if (key == "--vendor-op-profile") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            if (!parseVendorExpressionProfile(val, cmp_opts.vendor_expression_profile)) {
+                std::cerr << "Error: invalid --vendor-op-profile value '" << val
+                          << "' (expected none|synthetic-v1)\n";
+                return 1;
+            }
             continue;
         }
         if (key == "--verify-features") {
@@ -3593,6 +4235,9 @@ int main(int argc, char* argv[]) {
     }
     if (argc >= 2 && std::string(argv[1]) == "verify-reloc") {
         return runVerifyReloc(argc, argv);
+    }
+    if (argc >= 2 && std::string(argv[1]) == "triage-vendor-ops") {
+        return runTriageVendorOps(argc, argv);
     }
 
     Options opts;

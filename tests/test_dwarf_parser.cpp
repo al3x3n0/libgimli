@@ -838,7 +838,10 @@ void testKnownGNUOperationsClosedSetSupport() {
     ctx.resolve_dwarf_procedure = [](uint64_t die_offset, uint64_t pc) -> std::optional<std::vector<uint8_t>> {
         (void)pc;
         if (die_offset == 0x1234) {
-            return std::vector<uint8_t>{static_cast<uint8_t>(DwarfOp::DW_OP_lit7)};
+            return std::vector<uint8_t>{
+                static_cast<uint8_t>(DwarfOp::DW_OP_lit7),
+                static_cast<uint8_t>(DwarfOp::DW_OP_stack_value)
+            };
         }
         return std::nullopt;
     };
@@ -884,6 +887,94 @@ void testKnownGNUOperationsClosedSetSupport() {
     std::cout << "Known GNU extension opcode closed-set support tests passed!" << std::endl;
 }
 
+void testSyntheticVendorExpressionProfile() {
+    std::cout << "Testing synthetic vendor expression profile..." << std::endl;
+
+    class VendorProfileMemory final : public MemoryContext {
+    public:
+        bool readMemory(uint64_t address, size_t size, void* buffer) const override {
+            auto it = mem_.find(address);
+            if (it == mem_.end() || !buffer || it->second.size() < size) return false;
+            std::memcpy(buffer, it->second.data(), size);
+            return true;
+        }
+
+        bool writeMemory(uint64_t, size_t, const void*) override { return false; }
+
+        void setBytes(uint64_t address, std::vector<uint8_t> bytes) {
+            mem_[address] = std::move(bytes);
+        }
+
+    private:
+        std::unordered_map<uint64_t, std::vector<uint8_t>> mem_;
+    };
+
+    auto mem = std::make_shared<VendorProfileMemory>();
+    mem->setBytes(0x2000, {0x34, 0x12});
+
+    EvaluationContext ctx;
+    ctx.address_size = 8;
+    ctx.offset_size = 4;
+
+    ExpressionEvaluator concrete(mem);
+    SymbolicExpressionEvaluator symbolic;
+
+    std::vector<uint8_t> vendor_expr = {0xf9, 0x09, 0xfd, 0x05, static_cast<uint8_t>(DwarfOp::DW_OP_stack_value)};
+    auto unsupported_concrete = concrete.evaluate(vendor_expr, ctx);
+    assert(unsupported_concrete.type == ExpressionResult::INVALID);
+    assert(unsupported_concrete.unsupported_opcode.has_value());
+    assert(*unsupported_concrete.unsupported_opcode == 0xf9);
+
+    auto unsupported_symbolic = symbolic.evaluate(vendor_expr, ctx);
+    assert(unsupported_symbolic.type == SymbolicExpressionResult::Type::INVALID);
+    assert(unsupported_symbolic.unsupported_opcode.has_value());
+    assert(*unsupported_symbolic.unsupported_opcode == 0xf9);
+
+    ctx.vendor_expression_profile = VendorExpressionProfile::SYNTHETIC_V1;
+
+    auto supported_concrete = concrete.evaluate(vendor_expr, ctx);
+    assert(supported_concrete.type == ExpressionResult::VALUE);
+    assert(supported_concrete.value == 14);
+    assert(!supported_concrete.unsupported_opcode.has_value());
+
+    auto supported_symbolic = symbolic.evaluate(vendor_expr, ctx);
+    assert(supported_symbolic.type == SymbolicExpressionResult::Type::VALUE);
+    assert(supported_symbolic.expression);
+    assert(supported_symbolic.expression->toString() == "0xe");
+    assert(!supported_symbolic.unsupported_opcode.has_value());
+
+    std::vector<uint8_t> vendor_deref = {
+        static_cast<uint8_t>(DwarfOp::DW_OP_addr),
+        0x00, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0xfe, 0x02,
+        static_cast<uint8_t>(DwarfOp::DW_OP_stack_value)
+    };
+    auto deref_concrete = concrete.evaluate(vendor_deref, ctx);
+    assert(deref_concrete.type == ExpressionResult::VALUE);
+    assert(deref_concrete.value == 0x1234);
+    assert(deref_concrete.raw_value_bytes.size() == 2);
+    assert(deref_concrete.raw_value_bytes[0] == 0x34);
+    assert(deref_concrete.raw_value_bytes[1] == 0x12);
+
+    auto deref_symbolic = symbolic.evaluate(vendor_deref, ctx);
+    assert(deref_symbolic.type == SymbolicExpressionResult::Type::VALUE);
+    assert(deref_symbolic.expression);
+    assert(deref_symbolic.expression->toString() == "load(0x2000,2)");
+
+    std::vector<uint8_t> still_unsupported = {0xff};
+    auto still_unsupported_concrete = concrete.evaluate(still_unsupported, ctx);
+    assert(still_unsupported_concrete.type == ExpressionResult::INVALID);
+    assert(still_unsupported_concrete.unsupported_opcode.has_value());
+    assert(*still_unsupported_concrete.unsupported_opcode == 0xff);
+
+    auto still_unsupported_symbolic = symbolic.evaluate(still_unsupported, ctx);
+    assert(still_unsupported_symbolic.type == SymbolicExpressionResult::Type::INVALID);
+    assert(still_unsupported_symbolic.unsupported_opcode.has_value());
+    assert(*still_unsupported_symbolic.unsupported_opcode == 0xff);
+
+    std::cout << "Synthetic vendor expression profile tests passed!" << std::endl;
+}
+
 void testSupportMatrixSemanticRows() {
     std::cout << "Testing support matrix semantic rows..." << std::endl;
 
@@ -916,6 +1007,7 @@ void testSupportMatrixGNUExpressionRows() {
     const auto& rows = getSupportMatrixRows();
     bool saw_known_gnu_row = false;
     bool saw_unknown_vendor_row = false;
+    bool saw_runtime_gap_row = false;
     for (const auto& row : rows) {
         if (row.area == "expr" &&
             row.feature == "GNU extensions" &&
@@ -928,10 +1020,18 @@ void testSupportMatrixGNUExpressionRows() {
             row.status == "unsupported") {
             saw_unknown_vendor_row = true;
             assert(row.notes.find("unsupported_opcode") != std::string::npos);
+            assert(row.notes.find("unsupported_isolated") != std::string::npos);
+        }
+        if (row.area == "expr" &&
+            row.feature == "runtime expression gap telemetry" &&
+            row.status == "supported") {
+            saw_runtime_gap_row = true;
+            assert(row.notes.find("--show-support") != std::string::npos);
         }
     }
     assert(saw_known_gnu_row);
     assert(saw_unknown_vendor_row);
+    assert(saw_runtime_gap_row);
 
     std::cout << "Support matrix GNU expression row tests passed!" << std::endl;
 }
@@ -1689,13 +1789,14 @@ void testExpressionEvaluator() {
         return std::nullopt;
     };
 
+    mem->setU32(0x2000, 0x87654321);
     expression = {
         static_cast<uint8_t>(DwarfOp::DW_OP_GNU_parameter_ref),
         0x00, 0x12, 0x00, 0x00, // section offset 0x1200
     };
-    result = evaluator.evaluate(expression, param_ctx);
-    assert(result.type == ExpressionResult::ADDRESS);
-    assert(result.value == 0x2000);
+    result = eval_mem.evaluate(expression, param_ctx);
+    assert(result.type == ExpressionResult::VALUE);
+    assert(result.value == 0x87654321);
 
     // If referenced expression yields a register location, we push the register value.
     registers.assign(32, 0);
@@ -2006,6 +2107,11 @@ void testExpressionEvaluatorTypedOpsMaskNonIntegerTypes() {
     auto r = evaluator.evaluate(expr, ctx);
     assert(r.type == ExpressionResult::VALUE);
     assert(r.value == 0x55667788);
+    assert(r.raw_value_bytes.size() == 4);
+    assert(r.raw_value_bytes[0] == 0x88);
+    assert(r.raw_value_bytes[1] == 0x77);
+    assert(r.raw_value_bytes[2] == 0x66);
+    assert(r.raw_value_bytes[3] == 0x55);
 
     // Same input, convert(float32) => also masked best-effort.
     expr = {
@@ -2018,6 +2124,11 @@ void testExpressionEvaluatorTypedOpsMaskNonIntegerTypes() {
     r = evaluator.evaluate(expr, ctx);
     assert(r.type == ExpressionResult::VALUE);
     assert(r.value == 0x55667788);
+    assert(r.raw_value_bytes.size() == 4);
+    assert(r.raw_value_bytes[0] == 0x88);
+    assert(r.raw_value_bytes[1] == 0x77);
+    assert(r.raw_value_bytes[2] == 0x66);
+    assert(r.raw_value_bytes[3] == 0x55);
 
     std::cout << "ExpressionEvaluator typed ops non-integer mask tests passed!" << std::endl;
 }
@@ -2304,7 +2415,7 @@ void testExpressionEvaluatorGnuEncodedAddr() {
         assert(r.value == 0x1122334455667788ULL);
     }
 
-    // Unknown/unsupported format should fall back to absptr-sized decoding.
+    // Unknown/unsupported format should fail closed.
     {
         ExpressionEvaluator ev;
         EvaluationContext ctx;
@@ -2316,8 +2427,8 @@ void testExpressionEvaluatorGnuEncodedAddr() {
             static_cast<uint8_t>(DwarfOp::DW_OP_stack_value),
         };
         auto r = ev.evaluate(expr, ctx, /*pc=*/0, /*registers=*/{});
-        assert(r.type == ExpressionResult::VALUE);
-        assert(r.value == 0x0102030405060708ULL);
+        assert(r.type == ExpressionResult::INVALID);
+        assert(r.description.find("unsupported encoding format") != std::string::npos);
     }
 
     // Truncated encoding byte should be invalid.
@@ -2513,6 +2624,16 @@ void testExpressionEvaluatorCallRefUsesSectionOffsetNotCUOffset() {
 void testExpressionEvaluatorGnuParameterRefRespectsOffsetSize64() {
     std::cout << "Testing ExpressionEvaluator DW_OP_GNU_parameter_ref respects offset_size=8..." << std::endl;
 
+    struct ParamRef64Memory : public MemoryContext {
+        bool readMemory(uint64_t address, size_t size, void* buffer) const override {
+            if (address != 0xABCDEF0012345678ULL || size != 8 || !buffer) return false;
+            const uint8_t bytes[8] = {0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01};
+            std::memcpy(buffer, bytes, sizeof(bytes));
+            return true;
+        }
+        bool writeMemory(uint64_t, size_t, const void*) override { return false; }
+    };
+
     EvaluationContext ctx;
     ctx.address_size = 8;
     ctx.offset_size = 8;
@@ -2529,10 +2650,10 @@ void testExpressionEvaluatorGnuParameterRefRespectsOffsetSize64() {
     expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_GNU_parameter_ref));
     appendU64(expr, 0x1200); // 8-byte DIE ref
 
-    ExpressionEvaluator ev;
+    ExpressionEvaluator ev(std::make_shared<ParamRef64Memory>());
     auto r = ev.evaluate(expr, ctx, /*pc=*/0, /*registers=*/{});
-    assert(r.type == ExpressionResult::ADDRESS);
-    assert(r.value == 0xABCDEF0012345678ULL);
+    assert(r.type == ExpressionResult::VALUE);
+    assert(r.value == 0x0102030405060708ULL);
 
     std::cout << "ExpressionEvaluator DW_OP_GNU_parameter_ref offset_size=8 tests passed!" << std::endl;
 }
@@ -2596,6 +2717,15 @@ void testExpressionEvaluatorSectionRelativeOpsPreserveDWOBias() {
 
     // 3) DW_OP_GNU_parameter_ref: operand is section offset; should resolve to (bias + die_off).
     {
+        struct DWOBiasParamMemory final : public MemoryContext {
+            bool readMemory(uint64_t address, size_t size, void* buffer) const override {
+                if (!buffer || size != sizeof(uint64_t) || address != 0xABCDEF0012345678ULL) return false;
+                const uint64_t value = 0x1122334455667788ULL;
+                std::memcpy(buffer, &value, sizeof(value));
+                return true;
+            }
+            bool writeMemory(uint64_t, size_t, const void*) override { return false; }
+        };
         EvaluationContext ctx;
         ctx.address_size = 8;
         ctx.offset_size = 4;
@@ -2612,10 +2742,10 @@ void testExpressionEvaluatorSectionRelativeOpsPreserveDWOBias() {
         expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_GNU_parameter_ref));
         appendU32(expr, 0x3000);
 
-        ExpressionEvaluator ev;
+        ExpressionEvaluator ev(std::make_shared<DWOBiasParamMemory>());
         auto r = ev.evaluate(expr, ctx, /*pc=*/0, /*registers=*/{});
-        assert(r.type == ExpressionResult::ADDRESS);
-        assert(r.value == 0xABCDEF0012345678ULL);
+        assert(r.type == ExpressionResult::VALUE);
+        assert(r.value == 0x1122334455667788ULL);
     }
 
     std::cout << "ExpressionEvaluator DWO bias preservation tests passed!" << std::endl;
@@ -2679,6 +2809,15 @@ void testExpressionEvaluatorSectionRelativeOpsPreserveSupplementaryBias() {
 
     // DW_OP_GNU_parameter_ref should resolve to (bias + die_off).
     {
+        struct SupplementaryBiasParamMemory final : public MemoryContext {
+            bool readMemory(uint64_t address, size_t size, void* buffer) const override {
+                if (!buffer || size != sizeof(uint64_t) || address != 0x0505050506060606ULL) return false;
+                const uint64_t value = 0xA1A2A3A4A5A6A7A8ULL;
+                std::memcpy(buffer, &value, sizeof(value));
+                return true;
+            }
+            bool writeMemory(uint64_t, size_t, const void*) override { return false; }
+        };
         EvaluationContext ctx;
         ctx.address_size = 8;
         ctx.offset_size = 4;
@@ -2695,10 +2834,10 @@ void testExpressionEvaluatorSectionRelativeOpsPreserveSupplementaryBias() {
         expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_GNU_parameter_ref));
         appendU32(expr, 0x6666);
 
-        ExpressionEvaluator ev;
+        ExpressionEvaluator ev(std::make_shared<SupplementaryBiasParamMemory>());
         auto r = ev.evaluate(expr, ctx, /*pc=*/0, /*registers=*/{});
-        assert(r.type == ExpressionResult::ADDRESS);
-        assert(r.value == 0x0505050506060606ULL);
+        assert(r.type == ExpressionResult::VALUE);
+        assert(r.value == 0xA1A2A3A4A5A6A7A8ULL);
     }
 
     std::cout << "ExpressionEvaluator supplementary bias preservation tests passed!" << std::endl;
@@ -2758,9 +2897,18 @@ void testExpressionEvaluatorMixedSectionRelativeOpsUnderDWOBias() {
     expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_plus));
     expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_plus));
 
-    ExpressionEvaluator ev;
+    struct MixedBiasMemory final : public MemoryContext {
+        bool readMemory(uint64_t address, size_t size, void* buffer) const override {
+            if (!buffer || size != sizeof(uint64_t) || address != 0x1000) return false;
+            const uint64_t value = 0x1000;
+            std::memcpy(buffer, &value, sizeof(value));
+            return true;
+        }
+        bool writeMemory(uint64_t, size_t, const void*) override { return false; }
+    };
+    ExpressionEvaluator ev(std::make_shared<MixedBiasMemory>());
     auto r = ev.evaluate(expr, ctx, /*pc=*/0, /*registers=*/{});
-    assert(r.type == ExpressionResult::ADDRESS);
+    assert(r.type == ExpressionResult::VALUE);
     assert(r.value == 0x302E);
 
     std::cout << "ExpressionEvaluator mixed DWO-bias tests passed!" << std::endl;
@@ -2774,6 +2922,15 @@ void testExpressionEvaluatorSectionRelativeOpsIgnoreHighBitsWhenUnbiased() {
 
     // 1) DW_OP_call_ref should resolve to die_offset directly (not cu_base + die_offset).
     {
+        struct UnbiasedParamMemory final : public MemoryContext {
+            bool readMemory(uint64_t address, size_t size, void* buffer) const override {
+                if (!buffer || size != sizeof(uint64_t) || address != 0x5555) return false;
+                const uint64_t value = 0x6666;
+                std::memcpy(buffer, &value, sizeof(value));
+                return true;
+            }
+            bool writeMemory(uint64_t, size_t, const void*) override { return false; }
+        };
         EvaluationContext ctx;
         ctx.address_size = 8;
         ctx.offset_size = 4;
@@ -2823,6 +2980,15 @@ void testExpressionEvaluatorSectionRelativeOpsIgnoreHighBitsWhenUnbiased() {
 
     // 3) DW_OP_GNU_parameter_ref should resolve to die_offset directly.
     {
+        struct UnbiasedParamMemory final : public MemoryContext {
+            bool readMemory(uint64_t address, size_t size, void* buffer) const override {
+                if (!buffer || size != sizeof(uint64_t) || address != 0x5555) return false;
+                const uint64_t value = 0x6666;
+                std::memcpy(buffer, &value, sizeof(value));
+                return true;
+            }
+            bool writeMemory(uint64_t, size_t, const void*) override { return false; }
+        };
         EvaluationContext ctx;
         ctx.address_size = 8;
         ctx.offset_size = 4;
@@ -2839,10 +3005,10 @@ void testExpressionEvaluatorSectionRelativeOpsIgnoreHighBitsWhenUnbiased() {
         expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_GNU_parameter_ref));
         appendU32(expr, 0x3000);
 
-        ExpressionEvaluator ev;
+        ExpressionEvaluator ev(std::make_shared<UnbiasedParamMemory>());
         auto r = ev.evaluate(expr, ctx, /*pc=*/0, /*registers=*/{});
-        assert(r.type == ExpressionResult::ADDRESS);
-        assert(r.value == 0x5555);
+        assert(r.type == ExpressionResult::VALUE);
+        assert(r.value == 0x6666);
     }
 
     std::cout << "ExpressionEvaluator unbiased high-bits tests passed!" << std::endl;
@@ -3411,7 +3577,7 @@ void testSymbolicExpressionEvaluatorAddrxConstx() {
         appendULEB(expr, 7);
         auto r = se.evaluate(expr, ctx2);
         assert(r.type == SymbolicExpressionResult::Type::ADDRESS);
-        assert(r.expression && r.expression->toString() == "addrx(7)");
+        assert(r.expression && r.expression->toString() == "unknown(addrx(7))");
     }
 
     std::cout << "SymbolicExpressionEvaluator addrx/constx tests passed!" << std::endl;
@@ -3932,7 +4098,7 @@ void testSymbolicExpressionEvaluatorImplicitPointer() {
     auto r = se.evaluate(expr, ctx);
     assert(r.type == SymbolicExpressionResult::Type::VALUE);
     assert(r.expression);
-    assert(r.expression->toString() == "0x12345670");
+    assert(r.expression->toString().find("implicit_pointer(no_resolver)") != std::string::npos);
 
     // Resolver path with section-bias and GNU alias.
     EvaluationContext ctx2 = ctx;
@@ -5384,7 +5550,31 @@ void testSymbolicExpressionEvaluatorGnuTypedAndParameterOps() {
         assert(r.expression && r.expression->toString() == "0xabc");
     }
 
-    // GNU_parameter_ref fallback without resolver: push absolute referenced DIE offset.
+    // GNU_parameter_ref should materialize address referents as loaded parameter values.
+    {
+        EvaluationContext pctx = ctx;
+        pctx.address_size = 8;
+        pctx.cu_base_offset = (1ULL << 63) | 0x100;
+        pctx.resolve_dwarf_procedure = [](uint64_t off, uint64_t /*pc*/) -> std::optional<std::vector<uint8_t>> {
+            if (off == ((1ULL << 63) + 0x66)) {
+                std::vector<uint8_t> expr;
+                expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_addr));
+                appendU64(expr, 0x1234);
+                return expr;
+            }
+            return std::nullopt;
+        };
+
+        std::vector<uint8_t> expr;
+        expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_GNU_parameter_ref));
+        appendU32(expr, 0x66);
+
+        auto r = se.evaluate(expr, pctx);
+        assert(r.type == SymbolicExpressionResult::Type::VALUE);
+        assert(r.expression && r.expression->toString() == "load(0x1234,8)");
+    }
+
+    // GNU_parameter_ref without resolver should produce an unknown value.
     {
         EvaluationContext pctx = ctx;
         pctx.cu_base_offset = (1ULL << 63) | 0x100;
@@ -5396,10 +5586,10 @@ void testSymbolicExpressionEvaluatorGnuTypedAndParameterOps() {
 
         auto r = se.evaluate(expr, pctx);
         assert(r.type == SymbolicExpressionResult::Type::VALUE);
-        assert(r.expression && r.expression->toString() == "0x8000000000000055");
+        assert(r.expression && r.expression->toString() == "unknown(gnu_parameter_ref(no_resolver))");
     }
 
-    // GNU_parameter_ref resolver miss should push zero (concrete-evaluator-compatible fallback).
+    // GNU_parameter_ref resolver miss should produce an unknown value.
     {
         EvaluationContext pctx = ctx;
         pctx.cu_base_offset = (1ULL << 63) | 0x100;
@@ -5413,7 +5603,7 @@ void testSymbolicExpressionEvaluatorGnuTypedAndParameterOps() {
 
         auto r = se.evaluate(expr, pctx);
         assert(r.type == SymbolicExpressionResult::Type::VALUE);
-        assert(r.expression && r.expression->toString() == "0x0");
+        assert(r.expression && r.expression->toString() == "unknown(gnu_parameter_ref(no_proc))");
     }
 
     // GNU_uninit should preserve uninitialized taint.
@@ -5493,7 +5683,7 @@ void testSymbolicExpressionEvaluatorGnuTypedAndParameterOps() {
         assert(r.expression && r.expression->toString() == "0x1122334455667788");
     }
 
-    // Unknown/unsupported format should follow the concrete evaluator's absptr fallback.
+    // Unknown/unsupported format should fail closed.
     {
         std::vector<uint8_t> expr;
         expr.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_GNU_encoded_addr));
@@ -5501,8 +5691,8 @@ void testSymbolicExpressionEvaluatorGnuTypedAndParameterOps() {
         appendU64(expr, 0x0102030405060708ULL);
 
         auto r = se.evaluate(expr, ctx, 0x1000);
-        assert(r.type == SymbolicExpressionResult::Type::ADDRESS);
-        assert(r.expression && r.expression->toString() == "0x102030405060708");
+        assert(r.type == SymbolicExpressionResult::Type::INVALID);
+        assert(r.error.find("unsupported encoding format") != std::string::npos);
     }
 
     std::cout << "SymbolicExpressionEvaluator GNU typed/parameter tests passed!" << std::endl;
@@ -5785,6 +5975,36 @@ void testExpressionVerifier() {
         assert(r.verifier_backend == "solver-unavailable");
         assert(r.solver_result == "solver_unavailable");
 #endif
+    }
+
+    // entry_value(address) should compare equal to an explicit dereference of the same address.
+    {
+        std::vector<uint8_t> lhs;
+        lhs.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_entry_value));
+        lhs.push_back(0x09);
+        lhs.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_addr));
+        appendU64(lhs, 0x1234);
+        lhs.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_stack_value));
+
+        std::vector<uint8_t> rhs;
+        rhs.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_addr));
+        appendU64(rhs, 0x1234);
+        rhs.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_deref));
+        rhs.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_stack_value));
+
+        EvaluationContext lhs_ctx = ctx;
+        lhs_ctx.address_size = 8;
+        lhs_ctx.entry_registers = std::vector<uint64_t>(16, 0);
+        EvaluationContext rhs_ctx = lhs_ctx;
+
+        auto r = verifier.verifyWithContexts(lhs, lhs_ctx, 0, {}, rhs, rhs_ctx, 0, {});
+        assert(r.verdict ==
+#if DWARF_HAS_Z3
+               ExpressionVerificationResult::Verdict::EQUIVALENT
+#else
+               ExpressionVerificationResult::Verdict::UNKNOWN
+#endif
+        );
     }
 
     // Wide implicit byte values should remain solver-visible through the public verifier.
@@ -6356,7 +6576,9 @@ void testSMTExpressionVerifierBehavior() {
                ExpressionVerificationResult::Verdict::UNKNOWN
 #endif
         );
-        assert(r.solver_result == "precheck_no_symbolic_piece");
+        assert(r.solver_result == "precheck_no_symbolic_piece" ||
+               r.solver_result == "precheck_piece_structural_equal" ||
+               r.solver_result == "unsat");
     }
 
     // Composite wide-byte piece locations should compare deterministically without encoding_error.
@@ -6495,7 +6717,7 @@ void testSMTExpressionVerifierBehavior() {
 
         auto r = smt.verify(lhs, rhs);
         assert(r.verdict == ExpressionVerificationResult::Verdict::DIFFERENT);
-        assert(r.solver_result == "precheck_piece_metadata_mismatch");
+        assert(r.solver_result == "precheck_piece_coverage_mismatch");
     }
 
     // Composite location presence mismatch should also fail before solver invocation.
@@ -6518,7 +6740,99 @@ void testSMTExpressionVerifierBehavior() {
 
         auto r = smt.verify(lhs, rhs);
         assert(r.verdict == ExpressionVerificationResult::Verdict::DIFFERENT);
-        assert(r.solver_result == "precheck_piece_location_presence_mismatch");
+        assert(r.solver_result == "precheck_piece_segment_value_missing");
+    }
+
+    // Composite normalization should allow semantically equal layouts with different piece counts.
+    {
+        SymbolicExpressionResult lhs;
+        lhs.type = SymbolicExpressionResult::Type::COMPOSITE;
+        lhs.pieces.push_back({SymPiece::Kind::IMPLICIT, nullptr, 2, 0, 0, {0xaa, 0xbb}});
+
+        SymbolicExpressionResult rhs;
+        rhs.type = SymbolicExpressionResult::Type::COMPOSITE;
+        rhs.pieces.push_back({SymPiece::Kind::IMPLICIT, nullptr, 1, 0, 0, {0xaa}});
+        rhs.pieces.push_back({SymPiece::Kind::IMPLICIT, nullptr, 1, 0, 0, {0xbb}});
+
+        auto r = smt.verify(lhs, rhs);
+        assert(r.verdict == ExpressionVerificationResult::Verdict::EQUIVALENT);
+        assert(r.solver_result == "precheck_no_symbolic_piece" ||
+               r.solver_result == "precheck_piece_structural_equal" ||
+               r.solver_result == "unsat");
+    }
+
+    // Register and implicit pieces should compare by value semantics after normalization.
+    {
+        SymbolicExpressionResult lhs;
+        lhs.type = SymbolicExpressionResult::Type::COMPOSITE;
+        lhs.pieces.push_back({SymPiece::Kind::REGISTER, SymExpr::makeConst(5), 8, 0, 0, {}});
+
+        SymbolicExpressionResult rhs;
+        rhs.type = SymbolicExpressionResult::Type::COMPOSITE;
+        rhs.pieces.push_back({SymPiece::Kind::IMPLICIT, SymExpr::makeVar("reg5"), 8, 0, 0, {}});
+
+        auto r = smt.verify(lhs, rhs);
+        assert(r.verdict ==
+#if DWARF_HAS_Z3
+               ExpressionVerificationResult::Verdict::EQUIVALENT
+#else
+               ExpressionVerificationResult::Verdict::UNKNOWN
+#endif
+        );
+    }
+
+    // Memory pieces should compare equal to equivalent implicit load values after normalization.
+    {
+        SymbolicExpressionResult lhs;
+        lhs.type = SymbolicExpressionResult::Type::COMPOSITE;
+        lhs.pieces.push_back({SymPiece::Kind::MEMORY, SymExpr::makeConst(0x1000), 2, 0, 0, {}});
+
+        SymbolicExpressionResult rhs;
+        rhs.type = SymbolicExpressionResult::Type::COMPOSITE;
+        rhs.pieces.push_back({SymPiece::Kind::IMPLICIT,
+                              SymExpr::makeLoad(SymExpr::makeConst(0x1000), 2),
+                              2, 0, 0, {}});
+
+        auto r = smt.verify(lhs, rhs);
+        assert(r.verdict ==
+#if DWARF_HAS_Z3
+               ExpressionVerificationResult::Verdict::EQUIVALENT
+#else
+               ExpressionVerificationResult::Verdict::UNKNOWN
+#endif
+        );
+    }
+
+    // Unavailable coverage should compare semantically, not by raw piece count.
+    {
+        SymbolicExpressionResult lhs;
+        lhs.type = SymbolicExpressionResult::Type::COMPOSITE;
+        lhs.pieces.push_back({SymPiece::Kind::EMPTY, nullptr, 2, 0, 0, {}});
+
+        SymbolicExpressionResult rhs;
+        rhs.type = SymbolicExpressionResult::Type::COMPOSITE;
+        rhs.pieces.push_back({SymPiece::Kind::EMPTY, nullptr, 1, 0, 0, {}});
+        rhs.pieces.push_back({SymPiece::Kind::EMPTY, nullptr, 1, 0, 0, {}});
+
+        auto r = smt.verify(lhs, rhs);
+        assert(r.verdict == ExpressionVerificationResult::Verdict::EQUIVALENT);
+        assert(r.solver_result == "precheck_piece_unavailable_equal");
+    }
+
+    // Present versus unavailable coverage should fail deterministically under normalized compare.
+    {
+        SymbolicExpressionResult lhs;
+        lhs.type = SymbolicExpressionResult::Type::COMPOSITE;
+        lhs.pieces.push_back({SymPiece::Kind::EMPTY, nullptr, 2, 0, 0, {}});
+
+        SymbolicExpressionResult rhs;
+        rhs.type = SymbolicExpressionResult::Type::COMPOSITE;
+        rhs.pieces.push_back({SymPiece::Kind::EMPTY, nullptr, 1, 0, 0, {}});
+        rhs.pieces.push_back({SymPiece::Kind::IMPLICIT, SymExpr::makeConst(0x11), 1, 0, 0, {}});
+
+        auto r = smt.verify(lhs, rhs);
+        assert(r.verdict == ExpressionVerificationResult::Verdict::DIFFERENT);
+        assert(r.solver_result == "precheck_piece_unavailable_mismatch");
     }
 
     {
@@ -6748,12 +7062,38 @@ void testCrossBinaryExpressionComparator() {
         static_cast<uint8_t>(DwarfOp::DW_OP_reg3),
         static_cast<uint8_t>(DwarfOp::DW_OP_stack_value)
     };
+    std::vector<uint8_t> c_lhs = {
+        static_cast<uint8_t>(DwarfOp::DW_OP_implicit_value), 0x02, 0xaa, 0xbb,
+        static_cast<uint8_t>(DwarfOp::DW_OP_piece), 0x02
+    };
+    std::vector<uint8_t> c_rhs = {
+        static_cast<uint8_t>(DwarfOp::DW_OP_implicit_value), 0x01, 0xaa,
+        static_cast<uint8_t>(DwarfOp::DW_OP_piece), 0x01,
+        static_cast<uint8_t>(DwarfOp::DW_OP_implicit_value), 0x01, 0xbb,
+        static_cast<uint8_t>(DwarfOp::DW_OP_piece), 0x01
+    };
 
     lhs_cu->addChild(makeVar("x", x_lhs, 0x110));
     lhs_cu->addChild(makeVar("y", y_lhs, 0x120));
     lhs_cu->addChild(makeVar("z", z_lhs, 0x130));
+    lhs_cu->addChild(makeVar("c", c_lhs, 0x140));
+    std::vector<uint8_t> ev_addr_lhs = {
+        static_cast<uint8_t>(DwarfOp::DW_OP_entry_value), 0x09,
+        static_cast<uint8_t>(DwarfOp::DW_OP_addr),
+        0x00, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        static_cast<uint8_t>(DwarfOp::DW_OP_stack_value)
+    };
+    std::vector<uint8_t> ev_addr_rhs = {
+        static_cast<uint8_t>(DwarfOp::DW_OP_addr),
+        0x00, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        static_cast<uint8_t>(DwarfOp::DW_OP_deref),
+        static_cast<uint8_t>(DwarfOp::DW_OP_stack_value)
+    };
+    lhs_cu->addChild(makeVar("ev_addr", ev_addr_lhs, 0x150));
     rhs_cu->addChild(makeVar("x", x_rhs, 0x210));
     rhs_cu->addChild(makeVar("y", y_rhs, 0x220));
+    rhs_cu->addChild(makeVar("c", c_rhs, 0x230));
+    rhs_cu->addChild(makeVar("ev_addr", ev_addr_rhs, 0x240));
 
     CrossBinaryExpressionComparator cmp;
     CrossBinaryCompareOptions opts;
@@ -6762,7 +7102,7 @@ void testCrossBinaryExpressionComparator() {
     opts.include_missing = true;
 
     auto results = cmp.compareDIEListsByName({lhs_cu}, {rhs_cu}, opts);
-    assert(results.size() == 3);
+    assert(results.size() == 5);
 
     auto findByName = [&](const std::string& n) -> const NamedExpressionComparison* {
         for (const auto& r : results) {
@@ -6774,7 +7114,9 @@ void testCrossBinaryExpressionComparator() {
     const auto* rx = findByName("x");
     const auto* ry = findByName("y");
     const auto* rz = findByName("z");
-    assert(rx && ry && rz);
+    const auto* rc = findByName("c");
+    const auto* rev = findByName("ev_addr");
+    assert(rx && ry && rz && rc && rev);
     assert(rx->verification.verdict ==
 #if DWARF_HAS_Z3
            ExpressionVerificationResult::Verdict::EQUIVALENT
@@ -6791,10 +7133,24 @@ void testCrossBinaryExpressionComparator() {
     );
     assert(rz->verification.verdict == ExpressionVerificationResult::Verdict::UNKNOWN);
     assert(rz->lhs_present && !rz->rhs_present);
-    auto summary = cmp.summarize(results);
-    assert(summary.total == 3);
+    assert(rc->verification.verdict ==
 #if DWARF_HAS_Z3
-    assert(summary.equivalent == 1);
+           ExpressionVerificationResult::Verdict::EQUIVALENT
+#else
+           ExpressionVerificationResult::Verdict::UNKNOWN
+#endif
+    );
+    assert(rev->verification.verdict ==
+#if DWARF_HAS_Z3
+           ExpressionVerificationResult::Verdict::EQUIVALENT
+#else
+           ExpressionVerificationResult::Verdict::UNKNOWN
+#endif
+    );
+    auto summary = cmp.summarize(results);
+    assert(summary.total == 5);
+#if DWARF_HAS_Z3
+    assert(summary.equivalent == 3);
     assert(summary.different == 1);
 #else
     assert(summary.equivalent == 0);
@@ -6821,6 +7177,11 @@ void testCrossBinaryExpressionComparator() {
         assert(unknown_solver_total == summary.unknown);
     }
     {
+        size_t unknown_reason_class_total = 0;
+        for (const auto& kv : summary.unknown_reason_class_counts) unknown_reason_class_total += kv.second;
+        assert(unknown_reason_class_total == summary.unknown);
+    }
+    {
         size_t unknown_rhs_kind_total = 0;
         for (const auto& kv : summary.unknown_rhs_attribute_kind_counts) unknown_rhs_kind_total += kv.second;
         assert(unknown_rhs_kind_total == summary.unknown);
@@ -6832,10 +7193,16 @@ void testCrossBinaryExpressionComparator() {
     }
 
     std::string text_report = cmp.renderTextReport(results);
-    assert(text_report.find("summary total=3") != std::string::npos);
+    assert(text_report.find("summary total=5") != std::string::npos);
     assert(text_report.find("unknown_reason_counts=") != std::string::npos);
+    assert(text_report.find("unknown_reason_class_counts=") != std::string::npos);
+    assert(text_report.find("unsupported_opcode_counts=") != std::string::npos);
+    assert(text_report.find("unsupported_rows=") != std::string::npos);
+    assert(text_report.find("unsupported_isolated_rows=") != std::string::npos);
     assert(text_report.find("unknown_lhs_attribute_kind_counts=") != std::string::npos);
     assert(text_report.find("x|DW_TAG_variable|1|1|") != std::string::npos);
+    assert(text_report.find("reason_class") != std::string::npos);
+    assert(text_report.find("isolation_kind") != std::string::npos);
     assert(text_report.find("lhs_unsupported_opcode") != std::string::npos);
     assert(text_report.find("lhs_attribute_kind") != std::string::npos);
     assert(text_report.find("rhs_attribute_detail") != std::string::npos);
@@ -6848,7 +7215,7 @@ void testCrossBinaryExpressionComparator() {
     );
 
     std::string json_report = cmp.renderJsonReport(results);
-    assert(json_report.find("\"total\":3") != std::string::npos);
+    assert(json_report.find("\"total\":5") != std::string::npos);
     assert(json_report.find(
 #if DWARF_HAS_Z3
            "\"different\":1"
@@ -6858,10 +7225,55 @@ void testCrossBinaryExpressionComparator() {
     ) != std::string::npos);
     assert(json_report.find("\"name\":\"x\"") != std::string::npos);
     assert(json_report.find("\"lhs_unsupported_opcode\"") != std::string::npos);
+    assert(json_report.find("\"reason_class\"") != std::string::npos);
+    assert(json_report.find("\"isolation_kind\"") != std::string::npos);
+    assert(json_report.find("\"normalization_applied\"") != std::string::npos);
+    assert(json_report.find("\"normalization_kind_counts\"") != std::string::npos);
     assert(json_report.find("\"lhs_attribute_kind\"") != std::string::npos);
     assert(json_report.find("\"rhs_attribute_detail\"") != std::string::npos);
     assert(json_report.find("\"unknown_reason_counts\"") != std::string::npos);
+    assert(json_report.find("\"unknown_reason_class_counts\"") != std::string::npos);
+    assert(json_report.find("\"unsupported_opcode_counts\"") != std::string::npos);
+    assert(json_report.find("\"unsupported_rows\"") != std::string::npos);
+    assert(json_report.find("\"unsupported_isolated_rows\"") != std::string::npos);
     assert(json_report.find("\"unknown_rhs_attribute_kind_counts\"") != std::string::npos);
+
+    {
+        CrossBinaryCompareOptions normalized_opts = opts;
+        normalized_opts.enable_location_semantic_normalization = true;
+        auto normalized_results = cmp.compareDIEListsByName({lhs_cu}, {rhs_cu}, normalized_opts);
+        const NamedExpressionComparison* normalized_x = nullptr;
+        for (const auto& row : normalized_results) {
+            if (row.name == "x") {
+                normalized_x = &row;
+                break;
+            }
+        }
+        assert(normalized_x);
+        assert(normalized_x->verification.normalization_applied);
+        assert(normalized_x->verification.normalization_kind == "symbolic_canonical");
+        assert(!normalized_x->verification.lhs_normalized_summary.empty());
+        assert(!normalized_x->verification.rhs_normalized_summary.empty());
+        assert(normalized_x->verification.normalization_equal);
+        assert(normalized_x->verification.verdict == ExpressionVerificationResult::Verdict::EQUIVALENT);
+        assert(normalized_x->verification.solver_result == "normalized_equal");
+
+        auto normalized_summary = cmp.summarize(normalized_results);
+        assert(normalized_summary.normalized_equal >= 1);
+        assert(normalized_summary.normalization_kind_counts["symbolic_canonical"] >= 1);
+
+        std::string normalized_text = cmp.renderTextReport(normalized_results);
+        assert(normalized_text.find("normalization_applied") != std::string::npos);
+        assert(normalized_text.find("normalized_equal=") != std::string::npos);
+        assert(normalized_text.find("normalization_kind_counts=") != std::string::npos);
+
+        std::string normalized_json = cmp.renderJsonReport(normalized_results);
+        assert(normalized_json.find("\"normalization_applied\":true") != std::string::npos);
+        assert(normalized_json.find("\"normalization_equal\":true") != std::string::npos);
+        assert(normalized_json.find("\"normalization_kind\":\"symbolic_canonical\"") != std::string::npos);
+        assert(normalized_json.find("\"normalized_equal\":") != std::string::npos);
+        assert(normalized_json.find("\"normalization_kind_counts\"") != std::string::npos);
+    }
 
     CrossBinaryGateOptions gate_default;
     auto gate_fail = cmp.evaluateGate(results, gate_default);
@@ -7185,6 +7597,99 @@ void testCrossBinaryExpressionComparator() {
         assert(range_gate.trigger_detail == "16");
     }
 
+    // Range-aware compare should preserve unsupported-op isolation at the segment and row levels.
+    {
+        auto lcu = std::make_shared<DIE>(DwarfTag::DW_TAG_compile_unit, 0xf00, 0);
+        auto rcu = std::make_shared<DIE>(DwarfTag::DW_TAG_compile_unit, 0x1000, 0);
+
+        auto makeListVar = [](const std::string& name,
+                              const std::vector<LocationAttributeValue::LocationEntry>& entries,
+                              uint64_t off) {
+            auto die = std::make_shared<DIE>(DwarfTag::DW_TAG_variable, off, 0);
+            die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>(name));
+            die->addAttribute(DwarfAttribute::DW_AT_location,
+                              std::make_shared<LocationAttributeValue>(entries));
+            return die;
+        };
+
+        std::vector<uint8_t> bad = {0xff};
+        std::vector<uint8_t> lit4 = {
+            static_cast<uint8_t>(DwarfOp::DW_OP_lit4),
+            static_cast<uint8_t>(DwarfOp::DW_OP_stack_value)
+        };
+
+        std::vector<LocationAttributeValue::LocationEntry> lhs_entries;
+        lhs_entries.emplace_back(0x10, 0x20, bad, false);
+        lhs_entries.emplace_back(0x20, 0x30, lit4, false);
+
+        std::vector<LocationAttributeValue::LocationEntry> rhs_entries = lhs_entries;
+
+        lcu->addChild(makeListVar("range_bad", lhs_entries, 0xf10));
+        rcu->addChild(makeListVar("range_bad", rhs_entries, 0x1010));
+
+        CrossBinaryCompareOptions range_bad_opts;
+        range_bad_opts.tag = DwarfTag::DW_TAG_variable;
+        range_bad_opts.attribute = DwarfAttribute::DW_AT_location;
+        range_bad_opts.enable_range_aware_location_compare = true;
+
+        auto rows = cmp.compareDIEListsByName({lcu}, {rcu}, range_bad_opts);
+        assert(rows.size() == 1);
+        const auto& row = rows.front();
+        assert(row.range_aware);
+        assert(row.coverage_total == 0x20);
+        assert(row.coverage_unsupported == 0x10);
+        assert(row.unsupported_segment_count == 1);
+        assert(row.range_segments.size() == 2);
+        assert(row.range_segments[0].reason_class == "unsupported_isolated");
+        assert(row.range_segments[0].isolation_kind == "unsupported_opcode");
+        assert(row.range_segments[0].solver_result == "unsupported_opcode");
+        assert(row.range_segments[0].diagnosis_origin == "range_segment");
+        assert(row.range_segments[0].lhs_unsupported_opcode.has_value() &&
+               *row.range_segments[0].lhs_unsupported_opcode == 0xff);
+        assert(row.range_segments[0].rhs_unsupported_opcode.has_value() &&
+               *row.range_segments[0].rhs_unsupported_opcode == 0xff);
+        assert(row.range_segments[0].lhs_unsupported_vendor_extension);
+        assert(row.range_segments[0].rhs_unsupported_vendor_extension);
+        assert(row.verification.reason.find("unsupported=16") != std::string::npos);
+        assert(row.verification.reason.find("unsupported_segments=1") != std::string::npos);
+#if DWARF_HAS_Z3
+        assert(row.verification.verdict == ExpressionVerificationResult::Verdict::UNKNOWN);
+        assert(row.verification.reason_class == "unsupported_isolated");
+        assert(row.verification.isolation_kind == "unsupported_opcode");
+        assert(row.verification.solver_result == "unsupported_opcode");
+        assert(row.coverage_equivalent == 0x10);
+        assert(row.coverage_unknown == 0x10);
+#else
+        assert(row.verification.verdict == ExpressionVerificationResult::Verdict::UNKNOWN);
+        assert(row.verification.reason_class == "unsupported_isolated");
+        assert(row.verification.isolation_kind == "unsupported_opcode");
+        assert(row.verification.solver_result == "unsupported_opcode");
+        assert(row.coverage_equivalent == 0);
+        assert(row.coverage_unknown == 0x20);
+#endif
+        assert(row.verification.lhs_attribute_kind == "location_list_segment");
+        assert(row.verification.rhs_attribute_kind == "location_list_segment");
+
+        auto summary = cmp.summarize(rows);
+        assert(summary.unsupported_row_count == 1);
+        assert(summary.unsupported_isolated_rows == 1);
+        assert(summary.unsupported_segment_count == 1);
+        assert(summary.coverage_unsupported == 0x10);
+        assert(summary.unsupported_opcode_counts["lhs:0xff"] == 1);
+        assert(summary.unsupported_opcode_counts["rhs:0xff"] == 1);
+
+        std::string text = cmp.renderTextReport(rows);
+        assert(text.find("coverage_unsupported=") != std::string::npos);
+        assert(text.find("unsupported_rows=1") != std::string::npos);
+        assert(text.find("unsupported_segments=1") != std::string::npos);
+
+        std::string json = cmp.renderJsonReport(rows);
+        assert(json.find("\"coverage_unsupported\":16") != std::string::npos);
+        assert(json.find("\"unsupported_rows\":1") != std::string::npos);
+        assert(json.find("\"unsupported_segments\":1") != std::string::npos);
+        assert(json.find("\"diagnosis_origin\":\"range_segment\"") != std::string::npos);
+    }
+
     // Location semantic normalization should merge adjacent equivalent ranges before segmentation.
     {
         auto lcu = std::make_shared<DIE>(DwarfTag::DW_TAG_compile_unit, 0xd00, 0);
@@ -7264,6 +7769,58 @@ void testCrossBinaryExpressionComparator() {
     }
 
     std::cout << "CrossBinaryExpressionComparator tests passed!" << std::endl;
+}
+
+void testCrossBinaryExpressionComparatorVendorProfile() {
+    std::cout << "Testing CrossBinaryExpressionComparator vendor profile..." << std::endl;
+
+    auto lhs_cu = std::make_shared<DIE>(DwarfTag::DW_TAG_compile_unit, 0x900, 0);
+    auto rhs_cu = std::make_shared<DIE>(DwarfTag::DW_TAG_compile_unit, 0xa00, 0);
+    auto makeVar = [](const std::string& name, const std::vector<uint8_t>& expr, uint64_t off) {
+        auto die = std::make_shared<DIE>(DwarfTag::DW_TAG_variable, off, 0);
+        die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>(name));
+        die->addAttribute(DwarfAttribute::DW_AT_location,
+                          std::make_shared<LocationAttributeValue>(LocationAttributeValue::LocationType::EXPRESSION, expr));
+        return die;
+    };
+
+    std::vector<uint8_t> vendor_expr = {0xf9, 0x09, 0xfd, 0x05, static_cast<uint8_t>(DwarfOp::DW_OP_stack_value)};
+    std::vector<uint8_t> standard_expr = {
+        static_cast<uint8_t>(DwarfOp::DW_OP_constu), 0x09,
+        static_cast<uint8_t>(DwarfOp::DW_OP_plus_uconst), 0x05,
+        static_cast<uint8_t>(DwarfOp::DW_OP_stack_value)
+    };
+    lhs_cu->addChild(makeVar("vendor_norm", vendor_expr, 0x910));
+    rhs_cu->addChild(makeVar("vendor_norm", standard_expr, 0xa10));
+
+    CrossBinaryExpressionComparator cmp;
+
+    CrossBinaryCompareOptions raw_opts;
+    raw_opts.tag = DwarfTag::DW_TAG_variable;
+    raw_opts.attribute = DwarfAttribute::DW_AT_location;
+    auto raw_rows = cmp.compareDIEListsByName({lhs_cu}, {rhs_cu}, raw_opts);
+    assert(raw_rows.size() == 1);
+    assert(raw_rows[0].verification.verdict == ExpressionVerificationResult::Verdict::UNKNOWN);
+    assert(raw_rows[0].verification.reason_class == "unsupported_isolated");
+    assert(raw_rows[0].verification.isolation_kind == "unsupported_opcode");
+    assert(raw_rows[0].verification.lhs_unsupported_opcode.has_value());
+    assert(*raw_rows[0].verification.lhs_unsupported_opcode == 0xf9);
+
+    CrossBinaryCompareOptions profiled_opts = raw_opts;
+    profiled_opts.vendor_expression_profile = VendorExpressionProfile::SYNTHETIC_V1;
+    auto profiled_rows = cmp.compareDIEListsByName({lhs_cu}, {rhs_cu}, profiled_opts);
+    assert(profiled_rows.size() == 1);
+    assert(profiled_rows[0].verification.verdict ==
+#if DWARF_HAS_Z3
+           ExpressionVerificationResult::Verdict::EQUIVALENT
+#else
+           ExpressionVerificationResult::Verdict::UNKNOWN
+#endif
+    );
+    assert(!profiled_rows[0].verification.lhs_unsupported_opcode.has_value());
+    assert(!profiled_rows[0].verification.rhs_unsupported_opcode.has_value());
+
+    std::cout << "CrossBinaryExpressionComparator vendor profile tests passed!" << std::endl;
 }
 
 void testStrpSup() {
@@ -7617,6 +8174,11 @@ void testDIEParserUnknownVendorFormSkip() {
             /*payload=*/std::vector<uint8_t>{0xef, 0xbe, 0xad, 0xde},
             /*expected_name=*/"seco");
 
+    // Unknown non-0x1fxx vendor form mirroring DW_FORM_strp.
+    runCase(/*vendor_form=*/0x7f0e,
+            /*payload=*/std::vector<uint8_t>{0x04, 0x03, 0x02, 0x01},
+            /*expected_name=*/"xstrp");
+
     // Unknown vendor forms mirroring indexed operand families.
     runCase(/*vendor_form=*/0x1f1a,
             /*payload=*/std::vector<uint8_t>{0x81, 0x01},
@@ -7644,6 +8206,43 @@ void testDIEParserUnknownVendorFormSkip() {
     runCase(/*vendor_form=*/0x1f16,
             /*payload=*/nested_vendor_indirect_strp,
             /*expected_name=*/"vind2");
+
+    // Unknown vendor form with nested indirect -> mirrored ref_sig8-sized payload family.
+    std::vector<uint8_t> nested_vendor_indirect_refsig8;
+    appendULEB(nested_vendor_indirect_refsig8, 0x1f20);
+    nested_vendor_indirect_refsig8.push_back(0x88);
+    nested_vendor_indirect_refsig8.push_back(0x77);
+    nested_vendor_indirect_refsig8.push_back(0x66);
+    nested_vendor_indirect_refsig8.push_back(0x55);
+    nested_vendor_indirect_refsig8.push_back(0x44);
+    nested_vendor_indirect_refsig8.push_back(0x33);
+    nested_vendor_indirect_refsig8.push_back(0x22);
+    nested_vendor_indirect_refsig8.push_back(0x11);
+    runCase(/*vendor_form=*/0x1f16,
+            /*payload=*/nested_vendor_indirect_refsig8,
+            /*expected_name=*/"vind3");
+
+    // Unknown vendor form with nested indirect -> mirrored implicit-const family (zero info payload).
+    std::vector<uint8_t> nested_vendor_indirect_implicit_const;
+    appendULEB(nested_vendor_indirect_implicit_const, 0x1f21);
+    runCase(/*vendor_form=*/0x1f16,
+            /*payload=*/nested_vendor_indirect_implicit_const,
+            /*expected_name=*/"vind4");
+
+    // Unknown non-0x1fxx vendor form with nested indirect -> mirrored ref_sig8-sized payload family.
+    std::vector<uint8_t> nested_non_1f_indirect_refsig8;
+    appendULEB(nested_non_1f_indirect_refsig8, 0x7f20);
+    nested_non_1f_indirect_refsig8.push_back(0x88);
+    nested_non_1f_indirect_refsig8.push_back(0x77);
+    nested_non_1f_indirect_refsig8.push_back(0x66);
+    nested_non_1f_indirect_refsig8.push_back(0x55);
+    nested_non_1f_indirect_refsig8.push_back(0x44);
+    nested_non_1f_indirect_refsig8.push_back(0x33);
+    nested_non_1f_indirect_refsig8.push_back(0x22);
+    nested_non_1f_indirect_refsig8.push_back(0x11);
+    runCase(/*vendor_form=*/0x7f16,
+            /*payload=*/nested_non_1f_indirect_refsig8,
+            /*expected_name=*/"xind");
 
     std::cout << "DIEParser unknown vendor form skip tests passed!" << std::endl;
 }
@@ -13102,7 +13701,6 @@ void testStrxContributionBoundsWhenBasePointsToTableStart() {
     }
 
     // Index 1 is out of bounds for contrib1 and must NOT read contrib2's header/entries.
-    // Current fallback returns "<strx:index>" when table read fails.
     {
         std::vector<uint8_t> debug_info = {0x01}; // ULEB128 index=1
         AttributeParser ap(debug_info, empty, debug_str,
@@ -13119,9 +13717,7 @@ void testStrxContributionBoundsWhenBasePointsToTableStart() {
 
         uint64_t off = 0;
         auto v = ap.parseAttribute(DwarfForm::DW_FORM_strx, off);
-        auto s = std::dynamic_pointer_cast<StringAttributeValue>(v);
-        assert(s);
-        assert(s->getValue() == "<strx:1>");
+        assert(!v);
     }
 
     std::cout << "DW_FORM_strx contribution bounds tests passed!" << std::endl;
@@ -13241,7 +13837,6 @@ void testAddrxContributionBoundsWhenBasePointsToTableStart() {
     }
 
     // Index 1 is out of bounds for contrib1 and must NOT read contrib2's header/entries.
-    // The current fallback returns AddressAttributeValue(index) when the table read fails.
     {
         std::vector<uint8_t> debug_info = {0x01}; // ULEB128 index=1
         AttributeParser ap(debug_info, empty, debug_str,
@@ -13258,9 +13853,7 @@ void testAddrxContributionBoundsWhenBasePointsToTableStart() {
 
         uint64_t off = 0;
         auto v = ap.parseAttribute(DwarfForm::DW_FORM_addrx, off);
-        auto a = std::dynamic_pointer_cast<AddressAttributeValue>(v);
-        assert(a);
-        assert(a->getAddress() == 1);
+        assert(!v);
     }
 
     std::cout << "DW_FORM_addrx contribution bounds tests passed!" << std::endl;
@@ -13469,7 +14062,7 @@ void testRnglistxContributionBoundsWhenBasePointsToTableStart() {
         assert(ranges[0].end == 0x2000);
     }
 
-    // Index 1 is out of bounds (offset_entry_count=1) and must fall back to returning the index.
+    // Index 1 is out of bounds (offset_entry_count=1) and must fail closed.
     {
         std::vector<uint8_t> debug_info = {0x01}; // ULEB index=1
         AttributeParser ap(debug_info, empty, /*debug_str=*/empty,
@@ -13486,9 +14079,7 @@ void testRnglistxContributionBoundsWhenBasePointsToTableStart() {
 
         uint64_t off = 0;
         auto v = ap.parseAttribute(DwarfForm::DW_FORM_rnglistx, off);
-        auto u = std::dynamic_pointer_cast<UnsignedAttributeValue>(v);
-        assert(u);
-        assert(u->getValue() == 1);
+        assert(!v);
     }
 
     std::cout << "DW_FORM_rnglistx contribution bounds tests passed!" << std::endl;
@@ -13557,7 +14148,7 @@ void testLoclistxContributionBoundsWhenBasePointsToTableStart() {
         assert(entries[0].expression[0] == static_cast<uint8_t>(DwarfOp::DW_OP_reg0));
     }
 
-    // Index 1 is out of bounds (offset_entry_count=1) and must fall back to returning the index.
+    // Index 1 is out of bounds (offset_entry_count=1) and must fail closed.
     {
         std::vector<uint8_t> debug_info = {0x01}; // ULEB index=1
         AttributeParser ap(debug_info, empty, /*debug_str=*/empty,
@@ -13574,9 +14165,7 @@ void testLoclistxContributionBoundsWhenBasePointsToTableStart() {
 
         uint64_t off = 0;
         auto v = ap.parseAttribute(DwarfForm::DW_FORM_loclistx, off);
-        auto u = std::dynamic_pointer_cast<UnsignedAttributeValue>(v);
-        assert(u);
-        assert(u->getValue() == 1);
+        assert(!v);
     }
 
     std::cout << "DW_FORM_loclistx contribution bounds tests passed!" << std::endl;
@@ -19954,6 +20543,7 @@ int main() {
 	    testDwarfUtils();
     testDwarfAttributeInventory();
     testKnownGNUOperationsClosedSetSupport();
+    testSyntheticVendorExpressionProfile();
     testSupportMatrixSemanticRows();
     testSupportMatrixGNUExpressionRows();
     testSupportMatrixDWPUnknownSectionRows();
@@ -20023,7 +20613,8 @@ int main() {
 	    testSymbolicExpressionEvaluatorGnuTypedAndParameterOps();
 	    testExpressionVerifier();
 	    testSMTExpressionVerifierBehavior();
-	    testCrossBinaryExpressionComparator();
+    testCrossBinaryExpressionComparator();
+    testCrossBinaryExpressionComparatorVendorProfile();
 	    testAttributeParserBoundedStringsAndBlocks();
 	    testStrpSup();
 	    testGnuAltForms();

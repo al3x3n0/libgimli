@@ -6,11 +6,11 @@ This matrix documents current coverage for DWARF v5 forms/opcodes and split-DWAR
 
 | Form family | Status | Notes |
 |---|---|---|
-| `DW_FORM_strx`, `DW_FORM_strx1..4` | Supported | Resolves through `.debug_str_offsets` with contribution bounds. |
-| `DW_FORM_addrx`, `DW_FORM_addrx1..4` | Supported | Resolves through `.debug_addr` with contribution bounds and segment-selector stride handling. |
+| `DW_FORM_strx`, `DW_FORM_strx1..4` | Supported | Resolves through `.debug_str_offsets` with contribution bounds and fails closed when the indexed entry cannot be resolved. |
+| `DW_FORM_addrx`, `DW_FORM_addrx1..4` | Supported | Resolves through `.debug_addr` with contribution bounds and segment-selector stride handling; unresolved indexed entries fail closed. |
 | GNU indexed predecessors (`DW_FORM_GNU_str_index`, `DW_FORM_GNU_addr_index`) | Supported | Parsed as aliases of `strx`/`addrx` semantics. |
-| `DW_FORM_loclistx` | Supported | Resolves via `.debug_loclists` index tables. |
-| `DW_FORM_rnglistx` | Supported | Resolves via `.debug_rnglists` index tables. |
+| `DW_FORM_loclistx` | Supported | Resolves via `.debug_loclists` index tables and fails closed when the indexed entry is out of contribution bounds or otherwise unresolved. |
+| `DW_FORM_rnglistx` | Supported | Resolves via `.debug_rnglists` index tables and fails closed when the indexed entry is out of contribution bounds or otherwise unresolved. |
 | `DW_FORM_line_strp` | Supported | Uses `.debug_line_str`. |
 | `DW_FORM_strp_sup` | Supported | Uses supplementary debug string section. |
 | `DW_FORM_ref_sup4`, `DW_FORM_ref_sup8` | Supported | Supplementary references are parsed and biased for lookups. |
@@ -33,8 +33,8 @@ This matrix documents current coverage for DWARF v5 forms/opcodes and split-DWAR
 | TLS ops (`DW_OP_form_tls_address`, GNU variant) | Supported | Produces TLS-flavored symbolic/evaluated values. |
 | Entry/call ops (`DW_OP_entry_value`, `DW_OP_call2/4/call_ref`) | Supported | Call/ref resolution uses DIE cache and section-relative semantics; `entry_value` now materializes register-location subexpressions as entry-time register values and address-location subexpressions as entry-time loads in both evaluators. |
 | WebAssembly extension (`DW_OP_WASM_location`) | Supported | Utility decode/tokenization includes kind/index annotations, and both concrete and symbolic evaluators now preserve WASM locations as synthetic register-location identifiers rather than downgrading them to plain values. |
-| GNU extensions (`DW_OP_GNU_*`) | Supported | The enumerated GNU predecessor opcode set is implemented in utility decoding plus concrete and symbolic evaluators, including `push_tls_address`, `uninit`, `encoded_addr`, `implicit_pointer`, `entry_value`, typed predecessors, `parameter_ref`, and `*_index`. `DW_OP_GNU_encoded_addr` handles `absptr`, `pcrel`, `textrel`, `datarel`, `funcrel`, and `aligned` application modes with the same best-effort unknown-format `absptr` fallback in both evaluators. |
-| Unknown vendor/extension opcodes | Unsupported | Opcodes outside the known GNU set remain rejected by design while preserving structured unsupported metadata (`unsupported_opcode`, `unsupported_vendor_extension`) in evaluator and CLI diagnostics. |
+| GNU extensions (`DW_OP_GNU_*`) | Supported | The enumerated GNU predecessor opcode set is implemented in utility decoding plus concrete and symbolic evaluators, including `push_tls_address`, `uninit`, `encoded_addr`, `implicit_pointer`, `entry_value`, typed predecessors, `parameter_ref`, and `*_index`. `DW_OP_GNU_encoded_addr` handles `absptr`, `pcrel`, `textrel`, `datarel`, `funcrel`, and `aligned` application modes; unsupported encoding formats or application modes now fail closed in both evaluators instead of falling back to `absptr` decoding. |
+| Unknown vendor/extension opcodes | Unsupported | Opcodes outside the known GNU set remain rejected by design while preserving structured unsupported metadata (`unsupported_opcode`, `unsupported_vendor_extension`) plus `compare-expr` isolation/reporting (`reason_class=unsupported_isolated`, opcode histograms, range-segment attribution). An opt-in synthetic vendor profile (`--vendor-op-profile=synthetic-v1`) exists only to exercise the end-to-end vendor-op execution path; non-profiled vendor ops remain unsupported. Use `dwarf_dump triage-vendor-ops <elf>...` to rank unsupported non-GNU vendor opcodes across a local corpus before choosing any real profile. The checked-in repository summary remains `no_safe_family_selected` in [test_data/vendor_expression_triage_summary.json](../test_data/vendor_expression_triage_summary.json). |
 
 ## Split DWARF
 
@@ -55,7 +55,7 @@ This matrix documents current coverage for DWARF v5 forms/opcodes and split-DWAR
 
 ## Runtime Support Fields (`dwarf_dump --show-support`)
 
-`dwarf_dump --show-support` rows are emitted from a canonical in-tree table (`include/dwarf_support_matrix.hpp` + `src/dwarf_support_matrix.cpp`) so text/json output stays synchronized across CLI code paths.
+`dwarf_dump --show-support` rows are emitted from a canonical in-tree table (`include/dwarf_support_matrix.hpp` + `src/dwarf_support_matrix.cpp`) so text/json output stays synchronized across CLI code paths. For loaded files with unsupported expression opcodes, these runtime fields complement `compare-expr` row/segment diagnostics rather than replacing them.
 
 When a file path is provided, runtime output includes split-DWARF observability fields:
 
@@ -83,6 +83,8 @@ When a file path is provided, runtime output includes split-DWARF observability 
 22. `vendor_form_skip_severity_buckets`: compact text severity counts (`known_shape:N;fallback_offset_sized:M;...`) distinguishing recovery strength.
 23. `vendor_form_skip_severity_buckets_structured` (JSON schema v2): structured array of `{severity,count}` entries.
 
+For local corpus work beyond `--show-support`, use `dwarf_dump triage-vendor-ops <elf>...` to aggregate unsupported non-GNU vendor expression opcodes by opcode, attribute, producer, sample file, and recurring expression pattern. The triage report stays fail-closed unless a family is observed in at least two independent samples and has an explicit bounded semantics mapping.
+
 ## Split-DWARF Troubleshooting
 
 `fallback reason=no_cu_index`:
@@ -105,25 +107,28 @@ When a file path is provided, runtime output includes split-DWARF observability 
 1. Added real compiler-produced split-DWARF fixture coverage for relocatable `.o` + `.dwo` loading.
 2. Added hybrid `.dwp` coverage that packages real `.dwo` payload sections behind a CU index and verifies package-only resolution.
 3. Expanded vendor-form recovery to handle nested vendor-mirrored indirect payloads.
-4. Broadened known-shape vendor-form recovery across mirrored string-pointer, offset, indexed, supplementary-reference, and fixed-width payload families instead of treating them as generic offset-sized fallbacks.
+4. Broadened known-shape vendor-form recovery across mirrored string-pointer, offset, indexed, signature-reference, supplementary-reference, zero-payload implicit-const, and fixed-width payload families instead of treating them as generic offset-sized fallbacks.
 5. Added reusable text/JSON schema-v2 test helpers for `--show-support` vendor-form telemetry.
 6. Added evaluator support and regression coverage for `DW_OP_GNU_encoded_addr` text/data/function-relative application modes.
 7. Added evaluator and utility-tokenization support for `DW_OP_GNU_encoded_addr` aligned payload decoding.
-8. Expanded `DW_OP_GNU_implicit_pointer` evaluation to preserve value/register referents instead of collapsing non-address referents.
-9. Preserved `DW_OP_GNU_uninit` as an explicit uninitialized-result taint in concrete and symbolic evaluation.
-10. SMT verification now treats symbolic `unknown(...)` leaves as opaque solver variables instead of failing encoding immediately, reducing `UNKNOWN` outcomes for normalized branch/piece expressions.
-11. SMT verification now treats `uninitialized` taint as part of semantic equivalence, rejecting matches where value expressions agree but taint differs.
-12. SMT verification now handles top-level wide byte literals deterministically with prechecks instead of dropping to `encoding_error` for `BYTES` values larger than 64 bits.
-13. SMT verification now applies the same deterministic prechecks to composite piece locations carrying wide implicit-byte expressions, avoiding `encoding_error` for large merged implicit pieces.
-14. SMT verification now short-circuits exact structural matches for unsupported symbolic shapes (for example, identical `load(..., 9)` expressions), reducing `UNKNOWN` outcomes when both sides normalize to the same non-encodable form.
-15. SMT verification now models oversized symbolic loads as opaque solver-visible values keyed by their symbolic form, so mismatches like `load(..., 9)` versus a constant can produce real counterexamples instead of generic `encoding_error`.
-16. SMT verification now treats wide concrete `BYTES` literals as opaque solver-visible values when compared against non-byte symbolic forms, so wide implicit values can also produce real `sat` mismatches.
-17. `compare-expr` CLI coverage now includes solver-visible wide-byte and oversized-load mismatches end to end, including JSON/text row output and `fail-on-solver-result=sat` gate behavior.
-18. SMT verification now treats malformed/internal symbolic shapes with invalid node arity as deterministic precheck outcomes instead of generic `encoding_error`, both for top-level values and composite piece locations.
-19. SMT verification now treats zero-byte symbolic loads and invalid symbolic kind discriminants as deterministic precheck outcomes instead of generic `encoding_error`, both for top-level values and composite piece locations.
-20. SMT encoding now falls back to opaque solver-visible terms for malformed/invalid symbolic nodes that somehow bypass verifier prechecks, so residual `encoding_error` is reserved for verifier/backend failures rather than symbolic-expression content.
-21. SMT symbolic verification no longer reports `encoding_error` for symbolic-expression content paths; any future occurrence should be treated as a backend or verifier defect rather than a supported DWARF limitation.
-22. Optional real `dwp` fixture coverage now auto-activates when `dwp` or `llvm-dwp` is available in the test environment, while continuing to skip cleanly on environments that only have compiler-produced `.o` + `.dwo` support.
+8. Indexed DWARF5 forms (`strx`/`addrx`/`loclistx`/`rnglistx`) now fail closed on unresolved entries while still enforcing per-contribution bounds.
+9. Unsupported vendor forms continue to preserve attribute-stream alignment via bounded skip heuristics so later DIE attributes remain decodable without reviving placeholder-value fallbacks.
+10. Expanded `DW_OP_GNU_implicit_pointer` evaluation to preserve value/register referents instead of collapsing non-address referents.
+11. Preserved `DW_OP_GNU_uninit` as an explicit uninitialized-result taint in concrete and symbolic evaluation.
+12. SMT verification now treats symbolic `unknown(...)` leaves as opaque solver variables instead of failing encoding immediately, reducing `UNKNOWN` outcomes for normalized branch/piece expressions.
+13. SMT verification now treats `uninitialized` taint as part of semantic equivalence, rejecting matches where value expressions agree but taint differs.
+14. SMT verification now handles top-level wide byte literals deterministically with prechecks instead of dropping to `encoding_error` for `BYTES` values larger than 64 bits.
+15. SMT verification now applies the same deterministic prechecks to composite piece locations carrying wide implicit-byte expressions, avoiding `encoding_error` for large merged implicit pieces.
+16. SMT verification now short-circuits exact structural matches for unsupported symbolic shapes (for example, identical `load(..., 9)` expressions), reducing `UNKNOWN` outcomes when both sides normalize to the same non-encodable form.
+17. SMT verification now models oversized symbolic loads as opaque solver-visible values keyed by their symbolic form, so mismatches like `load(..., 9)` versus a constant can produce real counterexamples instead of generic `encoding_error`.
+18. SMT verification now treats wide concrete `BYTES` literals as opaque solver-visible values when compared against non-byte symbolic forms, so wide implicit values can also produce real `sat` mismatches.
+19. `compare-expr` CLI coverage now includes solver-visible wide-byte and oversized-load mismatches end to end, including JSON/text row output and `fail-on-solver-result=sat` gate behavior.
+20. SMT verification now treats malformed/internal symbolic shapes with invalid node arity as deterministic precheck outcomes instead of generic `encoding_error`, both for top-level values and composite piece locations.
+21. SMT verification now treats zero-byte symbolic loads and invalid symbolic kind discriminants as deterministic precheck outcomes instead of generic `encoding_error`, both for top-level values and composite piece locations.
+22. SMT encoding now falls back to opaque solver-visible terms for malformed/invalid symbolic nodes that somehow bypass verifier prechecks, so residual `encoding_error` is reserved for verifier/backend failures rather than symbolic-expression content.
+23. SMT symbolic verification no longer reports `encoding_error` for symbolic-expression content paths; any future occurrence should be treated as a backend or verifier defect rather than a supported DWARF limitation.
+24. Optional real `dwp` fixture coverage now auto-activates when `dwp` or `llvm-dwp` is available in the test environment, while continuing to skip cleanly on environments that only have compiler-produced `.o` + `.dwo` support.
+25. `compare-expr` now supports an opt-in synthetic non-GNU vendor opcode profile (`synthetic-v1`) that proves concrete/symbolic/compare support wiring without weakening the default fail-closed behavior for arbitrary vendor ops.
 
 The real packaged-`.dwp` coverage path currently has three explicit environment requirements:
 1. a compiler that can emit split-DWARF `.o` + `.dwo` output,
@@ -134,5 +139,5 @@ When any of those are missing, the parser and CLI real-package tests intentional
 ## Next gaps to target
 
 1. Promote the optional real toolchain-produced `.dwp` package tests into CI or other environments where `dwp`/`llvm-dwp` is guaranteed to be available.
-2. Expand vendor-form skip heuristics for additional payload families only as new real-world samples surface beyond the currently covered mirrored string-pointer, offset, indexed, block, supplementary-reference, fixed-width, and nested-indirect shapes.
-3. Broaden non-GNU vendor expression opcode semantics only when real producer samples justify it; unknown vendor ops remain intentionally diagnosed and rejected.
+2. Expand vendor-form skip heuristics for additional payload families only as new real-world samples surface beyond the currently covered mirrored string-pointer, offset, indexed, block, supplementary-reference, fixed-width, and nested-indirect shapes. Current bounded recovery is no longer limited to `0x1fxx` low-byte mirrors; non-`0x1fxx` vendor forms can also recover as `known_shape` when their payload size is derivable from the same local standard-form layout.
+3. Broaden non-GNU vendor expression opcode semantics only when real producer samples justify it; unknown vendor ops remain intentionally diagnosed, isolated in compare reports, and rejected. The repo now includes a local triage command and a checked-in no-selection summary, but no real non-GNU profile has been selected yet.

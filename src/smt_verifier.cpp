@@ -236,12 +236,133 @@ private:
     }
 };
 
-bool samePieceMetadata(const SymPiece& lhs, const SymPiece& rhs) {
-    return lhs.kind == rhs.kind &&
-           lhs.byte_size == rhs.byte_size &&
-           lhs.bit_size == rhs.bit_size &&
-           lhs.bit_offset == rhs.bit_offset &&
-           lhs.implicit_bytes == rhs.implicit_bytes;
+struct NormalizedCompositePiece {
+    uint64_t start_bit = 0;
+    uint64_t end_bit = 0;
+    SymPiece piece;
+};
+
+uint64_t pieceWidthBits(const SymPiece& piece) {
+    if (piece.bit_size != 0) return piece.bit_size;
+    return piece.byte_size * 8;
+}
+
+bool pieceIsUnavailable(const SymPiece& piece) {
+    return piece.kind == SymPiece::Kind::EMPTY;
+}
+
+SymExprPtr decodeImplicitBytes(const std::vector<uint8_t>& bytes, bool little_endian) {
+    if (bytes.empty()) return SymExpr::makeConst(0);
+    if (bytes.size() > 8) return SymExpr::makeBytes(bytes);
+    return SymExpr::makeConst(decodeBytesToU64(bytes, little_endian));
+}
+
+SymExprPtr maskExprToWidth(const SymExprPtr& expr, uint64_t width_bits) {
+    if (!expr || width_bits == 0 || width_bits >= 64) return expr;
+    return SymExpr::makeBinary(SymExpr::Kind::AND,
+                               expr,
+                               SymExpr::makeConst((1ULL << width_bits) - 1));
+}
+
+SymExprPtr shiftRightExpr(const SymExprPtr& expr, uint64_t shift_bits) {
+    if (!expr || shift_bits == 0) return expr;
+    return SymExpr::makeBinary(SymExpr::Kind::SHR, expr, SymExpr::makeConst(shift_bits));
+}
+
+SymExprPtr sliceByteVectorBits(const std::vector<uint8_t>& bytes,
+                               uint64_t start_bit,
+                               uint64_t width_bits,
+                               bool little_endian) {
+    if (width_bits == 0) return SymExpr::makeConst(0);
+    if ((start_bit % 8) == 0 && (width_bits % 8) == 0) {
+        size_t start_byte = static_cast<size_t>(start_bit / 8);
+        size_t byte_count = static_cast<size_t>(width_bits / 8);
+        if (start_byte + byte_count <= bytes.size()) {
+            std::vector<uint8_t> sliced(bytes.begin() + static_cast<std::ptrdiff_t>(start_byte),
+                                        bytes.begin() + static_cast<std::ptrdiff_t>(start_byte + byte_count));
+            return decodeImplicitBytes(sliced, little_endian);
+        }
+    }
+
+    SymExprPtr value = decodeImplicitBytes(bytes, little_endian);
+    if (!value) return nullptr;
+    value = shiftRightExpr(value, start_bit);
+    return maskExprToWidth(value, width_bits);
+}
+
+SymExprPtr registerValueExpr(const SymExprPtr& location) {
+    if (!location || location->kind != SymExpr::Kind::CONST_U64) {
+        return SymExpr::makeUnknown("register_piece?");
+    }
+    return SymExpr::makeVar("reg" + std::to_string(location->const_u64));
+}
+
+SymExprPtr pieceValueExpr(const SymPiece& piece,
+                          uint64_t relative_start_bit,
+                          uint64_t width_bits,
+                          bool little_endian) {
+    if (width_bits == 0) return SymExpr::makeConst(0);
+    const uint64_t piece_width_bits = pieceWidthBits(piece);
+    if (piece_width_bits == 0 || relative_start_bit + width_bits > piece_width_bits) {
+        return nullptr;
+    }
+
+    switch (piece.kind) {
+        case SymPiece::Kind::EMPTY:
+            return SymExpr::makeUnknown("unavailable_piece");
+        case SymPiece::Kind::MEMORY: {
+            if (!piece.location) return nullptr;
+            uint64_t absolute_bit_offset = piece.bit_offset + relative_start_bit;
+            uint64_t load_size = (absolute_bit_offset + width_bits + 7) / 8;
+            if (load_size == 0) load_size = 1;
+            SymExprPtr addr = piece.location;
+            if (absolute_bit_offset / 8 != 0) {
+                addr = SymExpr::makeBinary(SymExpr::Kind::ADD,
+                                           addr,
+                                           SymExpr::makeConst(absolute_bit_offset / 8));
+            }
+            SymExprPtr value = SymExpr::makeLoad(addr, load_size);
+            value = shiftRightExpr(value, absolute_bit_offset % 8);
+            return maskExprToWidth(value, width_bits);
+        }
+        case SymPiece::Kind::REGISTER: {
+            SymExprPtr value = registerValueExpr(piece.location);
+            value = shiftRightExpr(value, relative_start_bit);
+            return maskExprToWidth(value, width_bits);
+        }
+        case SymPiece::Kind::IMPLICIT: {
+            if (!piece.implicit_bytes.empty()) {
+                return sliceByteVectorBits(piece.implicit_bytes, relative_start_bit, width_bits, little_endian);
+            }
+            SymExprPtr value = piece.location;
+            if (!value) return nullptr;
+            value = shiftRightExpr(value, relative_start_bit);
+            return maskExprToWidth(value, width_bits);
+        }
+    }
+    return nullptr;
+}
+
+std::vector<NormalizedCompositePiece> normalizeCompositePieces(const std::vector<SymPiece>& pieces) {
+    std::vector<NormalizedCompositePiece> out;
+    out.reserve(pieces.size());
+    uint64_t cursor = 0;
+    for (const auto& piece : pieces) {
+        const uint64_t width = pieceWidthBits(piece);
+        if (width == 0) continue;
+        out.push_back({cursor, cursor + width, piece});
+        cursor += width;
+    }
+    return out;
+}
+
+const NormalizedCompositePiece* findNormalizedPieceCovering(const std::vector<NormalizedCompositePiece>& pieces,
+                                                            uint64_t start_bit,
+                                                            uint64_t end_bit) {
+    for (const auto& piece : pieces) {
+        if (start_bit >= piece.start_bit && end_bit <= piece.end_bit) return &piece;
+    }
+    return nullptr;
 }
 
 const std::vector<uint8_t>* largeBytesLiteral(const SymExprPtr& expr) {
@@ -510,54 +631,97 @@ SMTVerificationResult SMTExpressionVerifier::verify(const SymbolicExpressionResu
     Encoder encoder(ctx, DwarfUtils::objectIsLittleEndian());
 
     if (lhs.type == SymbolicExpressionResult::Type::COMPOSITE) {
-        if (lhs.pieces.size() != rhs.pieces.size()) {
+        const auto lhs_norm = normalizeCompositePieces(lhs.pieces);
+        const auto rhs_norm = normalizeCompositePieces(rhs.pieces);
+
+        uint64_t lhs_total_bits = lhs_norm.empty() ? 0 : lhs_norm.back().end_bit;
+        uint64_t rhs_total_bits = rhs_norm.empty() ? 0 : rhs_norm.back().end_bit;
+        if (lhs_total_bits != rhs_total_bits) {
             out.verdict = ExpressionVerificationResult::Verdict::DIFFERENT;
-            out.reason = "composite piece-count mismatch";
+            out.reason = "composite normalized coverage mismatch";
+            out.solver_result = "precheck_piece_coverage_mismatch";
             return out;
         }
+
+        std::vector<uint64_t> boundaries;
+        boundaries.reserve(lhs_norm.size() * 2 + rhs_norm.size() * 2);
+        boundaries.push_back(0);
+        for (const auto& piece : lhs_norm) {
+            boundaries.push_back(piece.start_bit);
+            boundaries.push_back(piece.end_bit);
+        }
+        for (const auto& piece : rhs_norm) {
+            boundaries.push_back(piece.start_bit);
+            boundaries.push_back(piece.end_bit);
+        }
+        std::sort(boundaries.begin(), boundaries.end());
+        boundaries.erase(std::unique(boundaries.begin(), boundaries.end()), boundaries.end());
 
         z3::expr any_diff = ctx.bool_val(false);
         bool has_symbolic_piece = false;
         bool had_deterministic_piece_compare = false;
-        for (size_t i = 0; i < lhs.pieces.size(); ++i) {
-            const auto& l = lhs.pieces[i];
-            const auto& r = rhs.pieces[i];
-            if (!samePieceMetadata(l, r)) {
+        bool had_unavailable_segments = false;
+        for (size_t i = 0; i + 1 < boundaries.size(); ++i) {
+            const uint64_t start_bit = boundaries[i];
+            const uint64_t end_bit = boundaries[i + 1];
+            if (end_bit <= start_bit) continue;
+            const auto* lseg = findNormalizedPieceCovering(lhs_norm, start_bit, end_bit);
+            const auto* rseg = findNormalizedPieceCovering(rhs_norm, start_bit, end_bit);
+            if (!lseg || !rseg) {
                 out.verdict = ExpressionVerificationResult::Verdict::DIFFERENT;
-                out.reason = "composite piece metadata mismatch at index " + std::to_string(i);
-                out.solver_result = "precheck_piece_metadata_mismatch";
+                out.reason = "composite normalized segment coverage gap";
+                out.solver_result = "precheck_piece_segment_gap";
                 return out;
             }
-            if (!l.location && !r.location) continue;
-            if (!l.location || !r.location) {
+            const auto& l = lseg->piece;
+            const auto& r = rseg->piece;
+            const bool l_unavailable = pieceIsUnavailable(l);
+            const bool r_unavailable = pieceIsUnavailable(r);
+            if (l_unavailable || r_unavailable) {
+                had_unavailable_segments = true;
+                if (l_unavailable != r_unavailable) {
+                    out.verdict = ExpressionVerificationResult::Verdict::DIFFERENT;
+                    out.reason = "composite unavailable segment mismatch at bit " + std::to_string(start_bit);
+                    out.solver_result = "precheck_piece_unavailable_mismatch";
+                    return out;
+                }
+                continue;
+            }
+
+            const uint64_t width_bits = end_bit - start_bit;
+            SymExprPtr lv_expr = pieceValueExpr(l, start_bit - lseg->start_bit, width_bits,
+                                                DwarfUtils::objectIsLittleEndian());
+            SymExprPtr rv_expr = pieceValueExpr(r, start_bit - rseg->start_bit, width_bits,
+                                                DwarfUtils::objectIsLittleEndian());
+            if (!lv_expr || !rv_expr) {
                 out.verdict = ExpressionVerificationResult::Verdict::DIFFERENT;
-                out.reason = "composite piece location presence mismatch at index " + std::to_string(i);
-                out.solver_result = "precheck_piece_location_presence_mismatch";
+                out.reason = "composite normalized segment value extraction failed at bit " + std::to_string(start_bit);
+                out.solver_result = "precheck_piece_segment_value_missing";
                 return out;
             }
 
-            if (auto classification = classifyDeterministicPrecheckResult(l.location, r.location, true)) {
+            if (auto classification = classifyDeterministicPrecheckResult(lv_expr, rv_expr, true)) {
                 const bool same = classification->second.find("_equal") != std::string::npos;
                 out.verdict = same ? ExpressionVerificationResult::Verdict::EQUIVALENT
                                    : ExpressionVerificationResult::Verdict::DIFFERENT;
-                out.reason = classification->first + " at index " + std::to_string(i);
+                out.reason = classification->first + " at bit " + std::to_string(start_bit);
                 out.solver_result = classification->second;
                 return out;
             }
 
-            if (needsUnsupportedStructuralPrecheck(l.location) &&
-                needsUnsupportedStructuralPrecheck(r.location) &&
-                structurallyEqualExpr(l.location, r.location)) {
+            if (needsUnsupportedStructuralPrecheck(lv_expr) &&
+                needsUnsupportedStructuralPrecheck(rv_expr) &&
+                structurallyEqualExpr(lv_expr, rv_expr)) {
                 had_deterministic_piece_compare = true;
                 continue;
             }
 
-            if (const auto* lbytes = largeBytesLiteral(l.location)) {
-                if (const auto* rbytes = largeBytesLiteral(r.location)) {
+            if (const auto* lbytes = largeBytesLiteral(lv_expr)) {
+                if (const auto* rbytes = largeBytesLiteral(rv_expr)) {
                     had_deterministic_piece_compare = true;
                     if (*lbytes != *rbytes) {
                         out.verdict = ExpressionVerificationResult::Verdict::DIFFERENT;
-                        out.reason = "composite wide-byte piece mismatch at index " + std::to_string(i);
+                        out.reason = "composite wide-byte segment mismatch at bit " + std::to_string(start_bit);
                         out.solver_result = "precheck_piece_wide_bytes_mismatch";
                         return out;
                     }
@@ -565,20 +729,24 @@ SMTVerificationResult SMTExpressionVerifier::verify(const SymbolicExpressionResu
                 }
             }
 
-            z3::expr lv = encoder.encodeValue(l.location);
-            z3::expr rv = encoder.encodeValue(r.location);
+            z3::expr lv = encoder.encodeValue(lv_expr);
+            z3::expr rv = encoder.encodeValue(rv_expr);
             has_symbolic_piece = true;
             any_diff = any_diff || (lv != rv);
         }
 
         if (!has_symbolic_piece) {
             out.verdict = ExpressionVerificationResult::Verdict::EQUIVALENT;
-            out.reason = had_deterministic_piece_compare
-                             ? "composite piece expressions matched exactly without SMT"
-                             : "composite metadata matched with no symbolic locations";
-            out.solver_result = had_deterministic_piece_compare
-                                    ? "precheck_piece_structural_equal"
-                                    : "precheck_no_symbolic_piece";
+            if (had_deterministic_piece_compare) {
+                out.reason = "composite normalized segment expressions matched exactly without SMT";
+                out.solver_result = "precheck_piece_structural_equal";
+            } else if (had_unavailable_segments) {
+                out.reason = "composite normalized unavailable segments matched";
+                out.solver_result = "precheck_piece_unavailable_equal";
+            } else {
+                out.reason = "composite normalized segments matched with no symbolic locations";
+                out.solver_result = "precheck_no_symbolic_piece";
+            }
             return out;
         }
         return checkPredicateUnsat(ctx, any_diff, timeout_ms);
