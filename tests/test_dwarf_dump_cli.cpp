@@ -476,13 +476,17 @@ std::string makeInvalidLocationOpcodeELF(const std::string& stem) {
     return path;
 }
 
-std::string makeSingleVariableLocationELF(const std::string& stem,
-                                          const std::string& var_name,
-                                          const std::vector<uint8_t>& expr) {
+std::string makeVariableLocationELF(
+    const std::string& stem,
+    const std::vector<std::pair<std::string, std::vector<uint8_t>>>& vars) {
     std::vector<uint8_t> debug_str;
-    const uint32_t off_name = 0;
-    for (char c : var_name) debug_str.push_back(static_cast<uint8_t>(c));
-    debug_str.push_back(0);
+    std::vector<uint32_t> name_offsets;
+    name_offsets.reserve(vars.size());
+    for (const auto& var : vars) {
+        name_offsets.push_back(static_cast<uint32_t>(debug_str.size()));
+        for (char c : var.first) debug_str.push_back(static_cast<uint8_t>(c));
+        debug_str.push_back(0);
+    }
 
     std::vector<uint8_t> debug_abbrev;
     appendULEB128(debug_abbrev, 1);
@@ -509,10 +513,12 @@ std::string makeSingleVariableLocationELF(const std::string& stem,
     debug_info.push_back(0x08); // addr size
 
     debug_info.push_back(0x01); // CU
-    debug_info.push_back(0x02); // variable
-    appendU32LE(debug_info, off_name);
-    appendULEB128(debug_info, static_cast<uint64_t>(expr.size()));
-    debug_info.insert(debug_info.end(), expr.begin(), expr.end());
+    for (size_t i = 0; i < vars.size(); ++i) {
+        debug_info.push_back(0x02); // variable
+        appendU32LE(debug_info, name_offsets[i]);
+        appendULEB128(debug_info, static_cast<uint64_t>(vars[i].second.size()));
+        debug_info.insert(debug_info.end(), vars[i].second.begin(), vars[i].second.end());
+    }
     debug_info.push_back(0x00); // end children
 
     const uint32_t unit_len = static_cast<uint32_t>(debug_info.size() - 4);
@@ -530,6 +536,12 @@ std::string makeSingleVariableLocationELF(const std::string& stem,
         {".debug_str", debug_str},
     });
     return path;
+}
+
+std::string makeSingleVariableLocationELF(const std::string& stem,
+                                          const std::string& var_name,
+                                          const std::vector<uint8_t>& expr) {
+    return makeVariableLocationELF(stem, {{var_name, expr}});
 }
 
 std::string makeSemanticPayloadELF(const std::string& stem) {
@@ -2114,6 +2126,7 @@ int main() {
             "/tmp/dwarf_cli_range_aware_loclists_text.txt", out_text);
         assert(code_text == 0);
         assert(out_text.find("normalization_note") != std::string::npos);
+        assert(out_text.find("normalization_groups=") != std::string::npos);
         assert(out_text.find("coverage_total=32") != std::string::npos);
 #if DWARF_HAS_Z3
         assert(out_text.find("coverage_eq=16") != std::string::npos);
@@ -2150,6 +2163,10 @@ int main() {
         assert(row_json.find("\"normalization_note\"") != std::string::npos);
         assert(row_json.find("\"start\":16") != std::string::npos);
         assert(row_json.find("\"end\":32") != std::string::npos);
+        std::string range_report_json = extractObjectForKey(out_json, "report");
+        std::string range_summary_json = extractObjectForKey(range_report_json, "summary");
+        assert(!range_summary_json.empty());
+        assert(range_summary_json.find("\"normalization_groups\"") != std::string::npos);
         auto norm_segments = extractObjectsFromArrayKey(row_json, "range_segments");
         assert(norm_segments.size() == 2);
         assert(norm_segments[0].find("\"start\":16") != std::string::npos);
@@ -2937,9 +2954,57 @@ int main() {
         assert(!row_json.empty());
         assert(out_json.find("\"normalization_policy\":\"symbolic_canonical\"") != std::string::npos);
         assert(row_json.find("\"normalization_status\":\"attempted\"") != std::string::npos);
-        assert(row_json.find("\"normalization_note\":\"normalization changed one or both sides, but the comparison remained unresolved or different\"") != std::string::npos);
+        assert(row_json.find("\"normalization_note\":\"normalization eliminated the mismatch\"") != std::string::npos);
         assert(row_json.find("\"lhs_raw_summary\":") != std::string::npos);
         assert(row_json.find("\"rhs_raw_summary\":") != std::string::npos);
+    }
+
+    {
+        std::vector<uint8_t> or_identity_alpha = {
+            static_cast<uint8_t>(dwarf::DwarfOp::DW_OP_reg1),
+            static_cast<uint8_t>(dwarf::DwarfOp::DW_OP_const1u), 0,
+            static_cast<uint8_t>(dwarf::DwarfOp::DW_OP_or),
+            static_cast<uint8_t>(dwarf::DwarfOp::DW_OP_stack_value)
+        };
+        std::vector<uint8_t> or_identity_beta = {
+            static_cast<uint8_t>(dwarf::DwarfOp::DW_OP_reg2),
+            static_cast<uint8_t>(dwarf::DwarfOp::DW_OP_const1u), 0,
+            static_cast<uint8_t>(dwarf::DwarfOp::DW_OP_or),
+            static_cast<uint8_t>(dwarf::DwarfOp::DW_OP_stack_value)
+        };
+        std::string grouped_elf = makeVariableLocationELF(
+            "dwarf_cli_norm_group",
+            {
+                {"alpha", or_identity_alpha},
+                {"beta", or_identity_beta},
+            });
+
+        std::string out_text;
+        int code_text = runAndCapture(
+            dwarf_dump + " compare-expr " + grouped_elf + " " + grouped_elf +
+                " --summary-only --normalization-policy=symbolic-canonical --allow-unknown --allow-missing",
+            "/tmp/dwarf_cli_norm_group_text.txt", out_text);
+        assert(code_text == 0);
+        assert(out_text.find("normalization_groups=") != std::string::npos);
+        assert(out_text.find("rows_attempted=2") != std::string::npos);
+        assert(out_text.find("rows_equal=2") != std::string::npos);
+        assert(out_text.find("rows_lhs_rule_class_counts=or_identity:2") != std::string::npos);
+        assert(out_text.find("rows_rhs_rule_class_counts=or_identity:2") != std::string::npos);
+
+        std::string out_json;
+        int code_json = runAndCapture(
+            dwarf_dump + " compare-expr " + grouped_elf + " " + grouped_elf +
+                " --summary-only --format=json --schema-version=1 --normalization-policy=symbolic-canonical --allow-unknown --allow-missing",
+            "/tmp/dwarf_cli_norm_group_json.txt", out_json);
+        assert(code_json == 0);
+        std::string report_json = extractObjectForKey(out_json, "report");
+        std::string summary_json = extractObjectForKey(report_json, "summary");
+        assert(!summary_json.empty());
+        assert(summary_json.find("\"normalization_groups\"") != std::string::npos);
+        assert(summary_json.find("\"rows\":{\"attempted\":2,\"equal\":2,\"changed\":2") != std::string::npos);
+        assert(summary_json.find("\"lhs_rule_class_counts\":{\"or_identity\":2}") != std::string::npos);
+        assert(summary_json.find("\"rhs_rule_class_counts\":{\"or_identity\":2}") != std::string::npos);
+        assert(summary_json.find("\"segments\":{\"attempted\":0") != std::string::npos);
     }
 
     {

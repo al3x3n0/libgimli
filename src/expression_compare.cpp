@@ -99,6 +99,11 @@ std::string renderCountsJson(const std::map<std::string, size_t>& counts) {
     return out.str();
 }
 
+void incrementCount(std::map<std::string, size_t>& counts, const std::string& key) {
+    if (key.empty()) return;
+    ++counts[key];
+}
+
 std::string unsupportedOpcodeKey(const char* side, uint8_t opcode) {
     std::ostringstream out;
     out << side << ":0x" << std::hex << static_cast<unsigned>(opcode) << std::dec;
@@ -1302,6 +1307,13 @@ CrossBinaryComparisonSummary CrossBinaryExpressionComparator::summarize(
             }
             s.normalization_kind_counts[c.verification.normalization_kind.empty() ? "unspecified"
                                                                                   : c.verification.normalization_kind]++;
+            ++s.normalization_row_attempted;
+            if (c.verification.normalization_equal) ++s.normalization_row_equal;
+            if (c.verification.lhs_normalization_changed || c.verification.rhs_normalization_changed) {
+                ++s.normalization_row_changed;
+            }
+            incrementCount(s.normalization_row_lhs_rule_class_counts, c.verification.lhs_normalization_rule_class);
+            incrementCount(s.normalization_row_rhs_rule_class_counts, c.verification.rhs_normalization_rule_class);
         }
         s.coverage_total += c.coverage_total;
         s.coverage_equivalent += c.coverage_equivalent;
@@ -1344,6 +1356,15 @@ CrossBinaryComparisonSummary CrossBinaryExpressionComparator::summarize(
             s.unsupported_opcode_counts[unsupportedOpcodeKey("rhs", *c.verification.rhs_unsupported_opcode)]++;
         }
         for (const auto& segment : c.range_segments) {
+            if (segment.normalization_applied) {
+                ++s.normalization_segment_attempted;
+                if (segment.normalization_equal) ++s.normalization_segment_equal;
+                if (segment.lhs_normalization_changed || segment.rhs_normalization_changed) {
+                    ++s.normalization_segment_changed;
+                }
+                incrementCount(s.normalization_segment_lhs_rule_class_counts, segment.lhs_normalization_rule_class);
+                incrementCount(s.normalization_segment_rhs_rule_class_counts, segment.rhs_normalization_rule_class);
+            }
             if (segment.lhs_unsupported_opcode.has_value()) {
                 s.unsupported_opcode_counts[unsupportedOpcodeKey("lhs", *segment.lhs_unsupported_opcode)]++;
             }
@@ -1420,6 +1441,18 @@ std::string CrossBinaryExpressionComparator::renderTextReport(
         << " normalization_changed=" << s.normalization_changed
         << " normalized_equal=" << s.normalized_equal
         << " normalization_kind_counts=" << renderCountsText(s.normalization_kind_counts)
+        << "\n";
+    out << "normalization_groups="
+        << "rows_attempted=" << s.normalization_row_attempted
+        << ",rows_equal=" << s.normalization_row_equal
+        << ",rows_changed=" << s.normalization_row_changed
+        << ",rows_lhs_rule_class_counts=" << renderCountsText(s.normalization_row_lhs_rule_class_counts)
+        << ",rows_rhs_rule_class_counts=" << renderCountsText(s.normalization_row_rhs_rule_class_counts)
+        << ",segments_attempted=" << s.normalization_segment_attempted
+        << ",segments_equal=" << s.normalization_segment_equal
+        << ",segments_changed=" << s.normalization_segment_changed
+        << ",segments_lhs_rule_class_counts=" << renderCountsText(s.normalization_segment_lhs_rule_class_counts)
+        << ",segments_rhs_rule_class_counts=" << renderCountsText(s.normalization_segment_rhs_rule_class_counts)
         << "\n";
 
     out << "name|tag|lhs_present|rhs_present|lhs_offset|rhs_offset|verdict|verifier_backend|solver_result|reason|reason_class|isolation_kind|normalization_attempted|normalization_applied|normalization_equal|normalization_status|normalization_reason|normalization_kind|normalization_note|lhs_normalization_changed|rhs_normalization_changed|lhs_normalization_rule_class|rhs_normalization_rule_class|lhs_normalization_reason|rhs_normalization_reason|lhs_raw_summary|rhs_raw_summary|lhs_normalized_summary|rhs_normalized_summary|lhs_summary|rhs_summary|lhs_attribute_kind|rhs_attribute_kind|lhs_attribute_detail|rhs_attribute_detail|lhs_unsupported_opcode|rhs_unsupported_opcode|lhs_unsupported_vendor_extension|rhs_unsupported_vendor_extension|coverage_total|coverage_eq|coverage_diff|coverage_unknown|coverage_unsupported|coverage_uncovered|unsupported_segments|reloc_issues\n";
@@ -1516,7 +1549,23 @@ std::string CrossBinaryExpressionComparator::renderJsonReport(
         << "\"coverage_different\":" << s.coverage_different << ","
         << "\"coverage_unknown\":" << s.coverage_unknown << ","
         << "\"coverage_unsupported\":" << s.coverage_unsupported << ","
-        << "\"coverage_uncovered\":" << s.coverage_uncovered
+        << "\"coverage_uncovered\":" << s.coverage_uncovered << ","
+        << "\"normalization_groups\":{"
+        << "\"rows\":{"
+        << "\"attempted\":" << s.normalization_row_attempted << ","
+        << "\"equal\":" << s.normalization_row_equal << ","
+        << "\"changed\":" << s.normalization_row_changed << ","
+        << "\"lhs_rule_class_counts\":" << renderCountsJson(s.normalization_row_lhs_rule_class_counts) << ","
+        << "\"rhs_rule_class_counts\":" << renderCountsJson(s.normalization_row_rhs_rule_class_counts)
+        << "},"
+        << "\"segments\":{"
+        << "\"attempted\":" << s.normalization_segment_attempted << ","
+        << "\"equal\":" << s.normalization_segment_equal << ","
+        << "\"changed\":" << s.normalization_segment_changed << ","
+        << "\"lhs_rule_class_counts\":" << renderCountsJson(s.normalization_segment_lhs_rule_class_counts) << ","
+        << "\"rhs_rule_class_counts\":" << renderCountsJson(s.normalization_segment_rhs_rule_class_counts)
+        << "}"
+        << "}"
         << "},";
     out << "\"solver_result_counts\":{";
     bool first = true;

@@ -441,7 +441,24 @@ CompareExprExecutionResult executeCompareExpr(const DwarfParser& lhs,
                     << "\"unknown_reason_counts\":" << renderCountsJson(summary.unknown_reason_counts) << ","
                     << "\"unknown_solver_result_counts\":" << renderCountsJson(summary.unknown_solver_result_counts) << ","
                     << "\"unknown_lhs_attribute_kind_counts\":" << renderCountsJson(summary.unknown_lhs_attribute_kind_counts) << ","
-                    << "\"unknown_rhs_attribute_kind_counts\":" << renderCountsJson(summary.unknown_rhs_attribute_kind_counts)
+                    << "\"unknown_rhs_attribute_kind_counts\":" << renderCountsJson(summary.unknown_rhs_attribute_kind_counts) << ","
+                    << "\"normalization_kind_counts\":" << renderCountsJson(summary.normalization_kind_counts) << ","
+                    << "\"normalization_groups\":{"
+                    << "\"rows\":{"
+                    << "\"attempted\":" << summary.normalization_row_attempted << ","
+                    << "\"equal\":" << summary.normalization_row_equal << ","
+                    << "\"changed\":" << summary.normalization_row_changed << ","
+                    << "\"lhs_rule_class_counts\":" << renderCountsJson(summary.normalization_row_lhs_rule_class_counts) << ","
+                    << "\"rhs_rule_class_counts\":" << renderCountsJson(summary.normalization_row_rhs_rule_class_counts)
+                    << "},"
+                    << "\"segments\":{"
+                    << "\"attempted\":" << summary.normalization_segment_attempted << ","
+                    << "\"equal\":" << summary.normalization_segment_equal << ","
+                    << "\"changed\":" << summary.normalization_segment_changed << ","
+                    << "\"lhs_rule_class_counts\":" << renderCountsJson(summary.normalization_segment_lhs_rule_class_counts) << ","
+                    << "\"rhs_rule_class_counts\":" << renderCountsJson(summary.normalization_segment_rhs_rule_class_counts)
+                    << "}"
+                    << "}"
                     << "}"
                     << "},"
                     << "\"gate\":{"
@@ -471,6 +488,17 @@ CompareExprExecutionResult executeCompareExpr(const DwarfParser& lhs,
                 << " unknown=" << summary.unknown
                 << " missing_lhs=" << summary.missing_lhs
                 << " missing_rhs=" << summary.missing_rhs
+                << " normalization_groups="
+                << "rows_attempted=" << summary.normalization_row_attempted
+                << ",rows_equal=" << summary.normalization_row_equal
+                << ",rows_changed=" << summary.normalization_row_changed
+                << ",rows_lhs_rule_class_counts=" << renderCountsText(summary.normalization_row_lhs_rule_class_counts)
+                << ",rows_rhs_rule_class_counts=" << renderCountsText(summary.normalization_row_rhs_rule_class_counts)
+                << ",segments_attempted=" << summary.normalization_segment_attempted
+                << ",segments_equal=" << summary.normalization_segment_equal
+                << ",segments_changed=" << summary.normalization_segment_changed
+                << ",segments_lhs_rule_class_counts=" << renderCountsText(summary.normalization_segment_lhs_rule_class_counts)
+                << ",segments_rhs_rule_class_counts=" << renderCountsText(summary.normalization_segment_rhs_rule_class_counts)
                 << "\n";
         }
         result.report = oss.str();

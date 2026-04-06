@@ -127,6 +127,16 @@ struct CrossBinaryComparisonSummary {
     std::map<std::string, size_t> unsupported_opcode_counts;
     std::map<std::string, size_t> unsupported_isolation_kind_counts;
     std::map<std::string, size_t> normalization_kind_counts;
+    size_t normalization_row_attempted = 0;
+    size_t normalization_row_equal = 0;
+    size_t normalization_row_changed = 0;
+    std::map<std::string, size_t> normalization_row_lhs_rule_class_counts;
+    std::map<std::string, size_t> normalization_row_rhs_rule_class_counts;
+    size_t normalization_segment_attempted = 0;
+    size_t normalization_segment_equal = 0;
+    size_t normalization_segment_changed = 0;
+    std::map<std::string, size_t> normalization_segment_lhs_rule_class_counts;
+    std::map<std::string, size_t> normalization_segment_rhs_rule_class_counts;
 };
 
 struct CrossBinaryGateOptions {
