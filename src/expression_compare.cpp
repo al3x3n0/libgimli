@@ -114,6 +114,7 @@ struct NormalizedExpressionInfo {
     bool available = false;
     std::string kind;
     std::string key;
+    std::string rule_class;
 };
 
 bool isCommutativeExprKind(SymExpr::Kind kind) {
@@ -140,6 +141,171 @@ std::string canonicalizeBytes(const std::vector<uint8_t>& bytes) {
         out << static_cast<unsigned>(b);
     }
     return out.str();
+}
+
+bool isConstValue(const SymExprPtr& expr, uint64_t value) {
+    return expr && expr->kind == SymExpr::Kind::CONST_U64 && expr->const_u64 == value;
+}
+
+bool isZeroExpr(const SymExprPtr& expr) {
+    return isConstValue(expr, 0);
+}
+
+bool isOneExpr(const SymExprPtr& expr) {
+    return isConstValue(expr, 1);
+}
+
+bool isCommutativeRewriteKind(SymExpr::Kind kind) {
+    switch (kind) {
+        case SymExpr::Kind::ADD:
+        case SymExpr::Kind::MUL:
+        case SymExpr::Kind::AND:
+        case SymExpr::Kind::OR:
+        case SymExpr::Kind::XOR:
+        case SymExpr::Kind::EQ:
+        case SymExpr::Kind::NE:
+            return true;
+        default:
+            return false;
+    }
+}
+
+SymExprPtr rewriteSymExpr(const SymExprPtr& expr, bool& changed, std::string& rule_class) {
+    if (!expr) return nullptr;
+    std::vector<SymExprPtr> rewritten_args;
+    rewritten_args.reserve(expr->args.size());
+    for (const auto& arg : expr->args) {
+        rewritten_args.push_back(rewriteSymExpr(arg, changed, rule_class));
+    }
+
+    auto markRule = [&](const char* rule) {
+        changed = true;
+        if (rule_class.empty()) {
+            rule_class = rule;
+        } else if (rule_class != rule) {
+            rule_class = "algebraic_identity";
+        }
+    };
+
+    switch (expr->kind) {
+        case SymExpr::Kind::NEG:
+            if (rewritten_args.size() == 1 && rewritten_args[0] &&
+                rewritten_args[0]->kind == SymExpr::Kind::NEG && !rewritten_args[0]->args.empty()) {
+                markRule("double_negation");
+                return rewritten_args[0]->args[0];
+            }
+            break;
+        case SymExpr::Kind::NOT:
+            if (rewritten_args.size() == 1 && rewritten_args[0] &&
+                rewritten_args[0]->kind == SymExpr::Kind::NOT && !rewritten_args[0]->args.empty()) {
+                markRule("double_not");
+                return rewritten_args[0]->args[0];
+            }
+            break;
+        case SymExpr::Kind::ADD:
+            if (rewritten_args.size() == 2) {
+                if (isZeroExpr(rewritten_args[0])) {
+                    markRule("add_identity");
+                    return rewritten_args[1];
+                }
+                if (isZeroExpr(rewritten_args[1])) {
+                    markRule("add_identity");
+                    return rewritten_args[0];
+                }
+            }
+            break;
+        case SymExpr::Kind::SUB:
+            if (rewritten_args.size() == 2) {
+                if (isZeroExpr(rewritten_args[1])) {
+                    markRule("sub_identity");
+                    return rewritten_args[0];
+                }
+                if (rewritten_args[0] && rewritten_args[1] &&
+                    rewritten_args[0]->toString() == rewritten_args[1]->toString()) {
+                    markRule("sub_self");
+                    return SymExpr::makeConst(0);
+                }
+            }
+            break;
+        case SymExpr::Kind::MUL:
+            if (rewritten_args.size() == 2) {
+                if (isZeroExpr(rewritten_args[0]) || isZeroExpr(rewritten_args[1])) {
+                    markRule("mul_zero");
+                    return SymExpr::makeConst(0);
+                }
+                if (isOneExpr(rewritten_args[0])) {
+                    markRule("mul_identity");
+                    return rewritten_args[1];
+                }
+                if (isOneExpr(rewritten_args[1])) {
+                    markRule("mul_identity");
+                    return rewritten_args[0];
+                }
+            }
+            break;
+        case SymExpr::Kind::DIV:
+            if (rewritten_args.size() == 2 && isOneExpr(rewritten_args[1])) {
+                markRule("div_identity");
+                return rewritten_args[0];
+            }
+            break;
+        case SymExpr::Kind::OR:
+            if (rewritten_args.size() == 2) {
+                if (isZeroExpr(rewritten_args[0])) {
+                    markRule("or_identity");
+                    return rewritten_args[1];
+                }
+                if (isZeroExpr(rewritten_args[1])) {
+                    markRule("or_identity");
+                    return rewritten_args[0];
+                }
+            }
+            break;
+        case SymExpr::Kind::XOR:
+            if (rewritten_args.size() == 2) {
+                if (isZeroExpr(rewritten_args[0])) {
+                    markRule("xor_identity");
+                    return rewritten_args[1];
+                }
+                if (isZeroExpr(rewritten_args[1])) {
+                    markRule("xor_identity");
+                    return rewritten_args[0];
+                }
+                if (rewritten_args[0] && rewritten_args[1] &&
+                    rewritten_args[0]->toString() == rewritten_args[1]->toString()) {
+                    markRule("xor_self");
+                    return SymExpr::makeConst(0);
+                }
+            }
+            break;
+        case SymExpr::Kind::AND:
+            if (rewritten_args.size() == 2) {
+                if (isZeroExpr(rewritten_args[0]) || isZeroExpr(rewritten_args[1])) {
+                    markRule("and_zero");
+                    return SymExpr::makeConst(0);
+                }
+            }
+            break;
+        case SymExpr::Kind::ITE:
+            if (rewritten_args.size() == 3 && rewritten_args[1] && rewritten_args[2] &&
+                rewritten_args[1]->toString() == rewritten_args[2]->toString()) {
+                markRule("ite_same_branch");
+                return rewritten_args[1];
+            }
+            break;
+        default:
+            break;
+    }
+
+    auto out = std::make_shared<SymExpr>(*expr);
+    out->args = std::move(rewritten_args);
+    if (isCommutativeRewriteKind(out->kind) && out->args.size() == 2) {
+        if (out->args[1] && out->args[0] && out->args[1]->toString() < out->args[0]->toString()) {
+            std::swap(out->args[0], out->args[1]);
+            markRule("commutative_order");
+        }
+    }
+    return out;
 }
 
 std::string canonicalizeSymExpr(const SymExprPtr& expr) {
@@ -309,6 +475,15 @@ NormalizedExpressionInfo normalizeExpressionSemantically(const std::vector<uint8
 
     SymbolicExpressionEvaluator evaluator;
     SymbolicExpressionResult result = evaluator.evaluate(expr, ctx, pc, regs);
+    if (result.expression) {
+        bool rewrite_changed = false;
+        std::string rewrite_rule_class;
+        auto rewritten = rewriteSymExpr(result.expression, rewrite_changed, rewrite_rule_class);
+        if (rewrite_changed) {
+            result.expression = std::move(rewritten);
+            out.rule_class = rewrite_rule_class.empty() ? "algebraic_identity" : rewrite_rule_class;
+        }
+    }
     auto [kind, key] = canonicalizeResultKindAndKey(result);
     out.available = !key.empty();
     out.kind = kind;
@@ -588,6 +763,8 @@ NamedExpressionComparison compareOne(const std::string& name,
     std::string rhs_normalized_summary;
     std::string lhs_raw_summary;
     std::string rhs_raw_summary;
+    std::string lhs_normalization_rule_class;
+    std::string rhs_normalization_rule_class;
 
     const bool use_range_aware_lists =
         opts.enable_range_aware_location_compare &&
@@ -631,6 +808,10 @@ NamedExpressionComparison compareOne(const std::string& name,
                 out.verification.normalization_status = "attempted";
                 out.verification.normalization_reason = "symbolic canonical comparison";
                 out.verification.normalization_kind = normalization_kind;
+                lhs_normalization_rule_class = lhs_norm.rule_class;
+                rhs_normalization_rule_class = rhs_norm.rule_class;
+                out.verification.lhs_normalization_rule_class = lhs_normalization_rule_class;
+                out.verification.rhs_normalization_rule_class = rhs_normalization_rule_class;
                 out.verification.lhs_raw_summary = lhs_raw_summary;
                 out.verification.rhs_raw_summary = rhs_raw_summary;
                 out.verification.lhs_normalized_summary = lhs_normalized_summary;
@@ -761,6 +942,8 @@ NamedExpressionComparison compareOne(const std::string& name,
             std::string segment_normalization_reason = "normalization disabled";
             std::string segment_lhs_normalized_summary;
             std::string segment_rhs_normalized_summary;
+            std::string segment_lhs_rule_class;
+            std::string segment_rhs_rule_class;
             std::string segment_lhs_normalization_reason;
             std::string segment_rhs_normalization_reason;
             if (normalization_enabled) {
@@ -783,6 +966,10 @@ NamedExpressionComparison compareOne(const std::string& name,
                     segment_normalization_status = "attempted";
                     segment_normalization_reason = "symbolic canonical comparison";
                     segment_normalization_kind = normalization_kind;
+                    segment_lhs_rule_class = lhs_norm.rule_class;
+                    segment_rhs_rule_class = rhs_norm.rule_class;
+                    segment_lhs_normalization_reason = "lhs symbolic canonical key was reducible";
+                    segment_rhs_normalization_reason = "rhs symbolic canonical key was reducible";
                     segment_lhs_normalized_summary = lhs_norm.available ? lhs_norm.key : "";
                     segment_rhs_normalized_summary = rhs_norm.available ? rhs_norm.key : "";
                     segment_normalization_equal = lhs_norm.available && rhs_norm.available && lhs_norm.key == rhs_norm.key;
@@ -792,13 +979,13 @@ NamedExpressionComparison compareOne(const std::string& name,
                     segment_rhs_normalization_changed = rhs_norm.available &&
                                                         !rhs_raw_key.empty() &&
                                                         rhs_raw_key != (rhs_norm.kind + ":" + rhs_norm.key);
-                    segment_lhs_normalization_reason = "lhs symbolic canonical key was reducible";
-                    segment_rhs_normalization_reason = "rhs symbolic canonical key was reducible";
                     vr.normalization_attempted = true;
                     vr.normalization_applied = true;
                     vr.normalization_status = "attempted";
                     vr.normalization_reason = "symbolic canonical comparison";
                     vr.normalization_kind = normalization_kind;
+                    vr.lhs_normalization_rule_class = segment_lhs_rule_class;
+                    vr.rhs_normalization_rule_class = segment_rhs_rule_class;
                     vr.lhs_raw_summary = lhs_seg_raw_summary;
                     vr.rhs_raw_summary = rhs_seg_raw_summary;
                     vr.lhs_normalized_summary = segment_lhs_normalized_summary;
@@ -829,6 +1016,8 @@ NamedExpressionComparison compareOne(const std::string& name,
                     vr.normalization_status = segment_normalization_status;
                     vr.normalization_reason = segment_normalization_reason;
                     vr.normalization_kind = segment_normalization_kind;
+                    vr.lhs_normalization_rule_class = segment_lhs_rule_class;
+                    vr.rhs_normalization_rule_class = segment_rhs_rule_class;
                     vr.lhs_raw_summary = lhs_seg_raw_summary;
                     vr.rhs_raw_summary = rhs_seg_raw_summary;
                     vr.lhs_normalized_summary = segment_lhs_normalized_summary;
@@ -854,6 +1043,8 @@ NamedExpressionComparison compareOne(const std::string& name,
                                                                            : vr.normalization_reason;
             segment.normalization_kind = vr.normalization_kind.empty() ? segment_normalization_kind
                                                                         : vr.normalization_kind;
+            segment.lhs_normalization_rule_class = vr.lhs_normalization_rule_class;
+            segment.rhs_normalization_rule_class = vr.rhs_normalization_rule_class;
             segment.lhs_normalized_summary = vr.lhs_normalized_summary;
             segment.rhs_normalized_summary = vr.rhs_normalized_summary;
             segment.lhs_raw_summary = lhs_seg_raw_summary;
@@ -980,6 +1171,8 @@ NamedExpressionComparison compareOne(const std::string& name,
         out.verification.normalization_status = "attempted";
         out.verification.normalization_reason = "symbolic canonical comparison";
         out.verification.normalization_kind = normalization_kind;
+        out.verification.lhs_normalization_rule_class = lhs_normalization_rule_class;
+        out.verification.rhs_normalization_rule_class = rhs_normalization_rule_class;
         out.verification.lhs_normalized_summary = lhs_normalized_summary;
         out.verification.rhs_normalized_summary = rhs_normalized_summary;
         out.verification.lhs_raw_summary = lhs_raw_summary;
@@ -1208,7 +1401,7 @@ std::string CrossBinaryExpressionComparator::renderTextReport(
         << " normalization_kind_counts=" << renderCountsText(s.normalization_kind_counts)
         << "\n";
 
-    out << "name|tag|lhs_present|rhs_present|lhs_offset|rhs_offset|verdict|verifier_backend|solver_result|reason|reason_class|isolation_kind|normalization_attempted|normalization_applied|normalization_equal|normalization_status|normalization_reason|normalization_kind|lhs_normalization_changed|rhs_normalization_changed|lhs_normalization_reason|rhs_normalization_reason|lhs_raw_summary|rhs_raw_summary|lhs_normalized_summary|rhs_normalized_summary|lhs_summary|rhs_summary|lhs_attribute_kind|rhs_attribute_kind|lhs_attribute_detail|rhs_attribute_detail|lhs_unsupported_opcode|rhs_unsupported_opcode|lhs_unsupported_vendor_extension|rhs_unsupported_vendor_extension|coverage_total|coverage_eq|coverage_diff|coverage_unknown|coverage_unsupported|coverage_uncovered|unsupported_segments|reloc_issues\n";
+    out << "name|tag|lhs_present|rhs_present|lhs_offset|rhs_offset|verdict|verifier_backend|solver_result|reason|reason_class|isolation_kind|normalization_attempted|normalization_applied|normalization_equal|normalization_status|normalization_reason|normalization_kind|lhs_normalization_changed|rhs_normalization_changed|lhs_normalization_rule_class|rhs_normalization_rule_class|lhs_normalization_reason|rhs_normalization_reason|lhs_raw_summary|rhs_raw_summary|lhs_normalized_summary|rhs_normalized_summary|lhs_summary|rhs_summary|lhs_attribute_kind|rhs_attribute_kind|lhs_attribute_detail|rhs_attribute_detail|lhs_unsupported_opcode|rhs_unsupported_opcode|lhs_unsupported_vendor_extension|rhs_unsupported_vendor_extension|coverage_total|coverage_eq|coverage_diff|coverage_unknown|coverage_unsupported|coverage_uncovered|unsupported_segments|reloc_issues\n";
     size_t rows = (max_rows == 0) ? comparisons.size() : std::min(max_rows, comparisons.size());
     for (size_t i = 0; i < rows; ++i) {
         const auto& c = comparisons[i];
@@ -1237,6 +1430,8 @@ std::string CrossBinaryExpressionComparator::renderTextReport(
             << c.verification.normalization_kind << "|"
             << (c.verification.lhs_normalization_changed ? "1" : "0") << "|"
             << (c.verification.rhs_normalization_changed ? "1" : "0") << "|"
+            << c.verification.lhs_normalization_rule_class << "|"
+            << c.verification.rhs_normalization_rule_class << "|"
             << c.verification.lhs_normalization_reason << "|"
             << c.verification.rhs_normalization_reason << "|"
             << c.verification.lhs_raw_summary << "|"
@@ -1357,6 +1552,8 @@ std::string CrossBinaryExpressionComparator::renderJsonReport(
             << "\"normalization_kind\":\"" << jsonEscape(c.verification.normalization_kind) << "\","
             << "\"lhs_normalization_changed\":" << (c.verification.lhs_normalization_changed ? "true" : "false") << ","
             << "\"rhs_normalization_changed\":" << (c.verification.rhs_normalization_changed ? "true" : "false") << ","
+            << "\"lhs_normalization_rule_class\":\"" << jsonEscape(c.verification.lhs_normalization_rule_class) << "\","
+            << "\"rhs_normalization_rule_class\":\"" << jsonEscape(c.verification.rhs_normalization_rule_class) << "\","
             << "\"lhs_normalization_reason\":\"" << jsonEscape(c.verification.lhs_normalization_reason) << "\","
             << "\"rhs_normalization_reason\":\"" << jsonEscape(c.verification.rhs_normalization_reason) << "\","
             << "\"lhs_raw_summary\":\"" << jsonEscape(c.verification.lhs_raw_summary) << "\","
@@ -1420,6 +1617,8 @@ std::string CrossBinaryExpressionComparator::renderJsonReport(
                 << "\"rhs_normalized_summary\":\"" << jsonEscape(segment.rhs_normalized_summary) << "\","
                 << "\"lhs_normalization_changed\":" << (segment.lhs_normalization_changed ? "true" : "false") << ","
                 << "\"rhs_normalization_changed\":" << (segment.rhs_normalization_changed ? "true" : "false") << ","
+                << "\"lhs_normalization_rule_class\":\"" << jsonEscape(segment.lhs_normalization_rule_class) << "\","
+                << "\"rhs_normalization_rule_class\":\"" << jsonEscape(segment.rhs_normalization_rule_class) << "\","
                 << "\"lhs_normalization_reason\":\"" << jsonEscape(segment.lhs_normalization_reason) << "\","
                 << "\"rhs_normalization_reason\":\"" << jsonEscape(segment.rhs_normalization_reason) << "\","
                 << "\"lhs_unsupported_opcode\":"

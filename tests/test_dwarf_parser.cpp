@@ -7230,6 +7230,8 @@ void testCrossBinaryExpressionComparator() {
     assert(json_report.find("\"normalization_applied\"") != std::string::npos);
     assert(json_report.find("\"normalization_status\"") != std::string::npos);
     assert(json_report.find("\"normalization_reason\"") != std::string::npos);
+    assert(json_report.find("\"lhs_normalization_rule_class\"") != std::string::npos);
+    assert(json_report.find("\"rhs_normalization_rule_class\"") != std::string::npos);
     assert(json_report.find("\"lhs_raw_summary\"") != std::string::npos);
     assert(json_report.find("\"rhs_raw_summary\"") != std::string::npos);
     assert(json_report.find("\"normalization_kind_counts\"") != std::string::npos);
@@ -7282,12 +7284,58 @@ void testCrossBinaryExpressionComparator() {
         assert(normalized_json.find("\"normalization_applied\":true") != std::string::npos);
         assert(normalized_json.find("\"normalization_equal\":true") != std::string::npos);
         assert(normalized_json.find("\"normalization_kind\":\"symbolic_canonical\"") != std::string::npos);
+        assert(normalized_json.find("\"lhs_normalization_rule_class\"") != std::string::npos);
+        assert(normalized_json.find("\"rhs_normalization_rule_class\"") != std::string::npos);
         assert(normalized_json.find("\"lhs_raw_summary\"") != std::string::npos);
         assert(normalized_json.find("\"rhs_raw_summary\"") != std::string::npos);
         assert(normalized_json.find("\"lhs_normalization_reason\"") != std::string::npos);
         assert(normalized_json.find("\"rhs_normalization_reason\"") != std::string::npos);
         assert(normalized_json.find("\"normalized_equal\":") != std::string::npos);
         assert(normalized_json.find("\"normalization_kind_counts\"") != std::string::npos);
+    }
+
+    // Safe algebraic rewrite: x | 0 => x.
+    {
+        auto lcu = std::make_shared<DIE>(DwarfTag::DW_TAG_compile_unit, 0x1200, 0);
+        auto rcu = std::make_shared<DIE>(DwarfTag::DW_TAG_compile_unit, 0x1300, 0);
+
+        auto makeVar = [](const std::string& name,
+                          const std::vector<uint8_t>& expr,
+                          uint64_t off) {
+            auto die = std::make_shared<DIE>(DwarfTag::DW_TAG_variable, off, 0);
+            die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>(name));
+            die->addAttribute(DwarfAttribute::DW_AT_location,
+                              std::make_shared<LocationAttributeValue>(LocationAttributeValue::LocationType::EXPRESSION, expr));
+            return die;
+        };
+
+        std::vector<uint8_t> lhs_expr = {
+            static_cast<uint8_t>(DwarfOp::DW_OP_reg1),
+            static_cast<uint8_t>(DwarfOp::DW_OP_const1u), 0,
+            static_cast<uint8_t>(DwarfOp::DW_OP_or),
+            static_cast<uint8_t>(DwarfOp::DW_OP_stack_value)
+        };
+        std::vector<uint8_t> rhs_expr = {
+            static_cast<uint8_t>(DwarfOp::DW_OP_reg1),
+            static_cast<uint8_t>(DwarfOp::DW_OP_stack_value)
+        };
+        lcu->addChild(makeVar("rewrite", lhs_expr, 0x1210));
+        rcu->addChild(makeVar("rewrite", rhs_expr, 0x1310));
+
+        CrossBinaryCompareOptions rewrite_opts;
+        rewrite_opts.tag = DwarfTag::DW_TAG_variable;
+        rewrite_opts.attribute = DwarfAttribute::DW_AT_location;
+        rewrite_opts.enable_location_semantic_normalization = true;
+
+        auto rewrite_rows = cmp.compareDIEListsByName({lcu}, {rcu}, rewrite_opts);
+        assert(rewrite_rows.size() == 1);
+        const auto& rewrite_row = rewrite_rows.front();
+        assert(rewrite_row.verification.verdict == ExpressionVerificationResult::Verdict::EQUIVALENT);
+        assert(rewrite_row.verification.solver_result == "normalized_equal");
+        assert(rewrite_row.verification.lhs_normalization_rule_class == "or_identity");
+        assert(rewrite_row.verification.rhs_normalization_rule_class.empty());
+        assert(rewrite_row.verification.normalization_applied);
+        assert(rewrite_row.verification.normalization_equal);
     }
 
     CrossBinaryGateOptions gate_default;

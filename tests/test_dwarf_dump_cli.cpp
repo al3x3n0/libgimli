@@ -2832,6 +2832,8 @@ int main() {
         assert(row_json.find("\"lhs_normalization_changed\":") != std::string::npos);
         assert(row_json.find("\"rhs_normalization_changed\":") != std::string::npos);
         assert(row_json.find("\"normalization_kind\":\"symbolic_canonical\"") != std::string::npos);
+        assert(row_json.find("\"lhs_normalization_rule_class\"") != std::string::npos);
+        assert(row_json.find("\"rhs_normalization_rule_class\"") != std::string::npos);
         assert(row_json.find("\"lhs_raw_summary\":") != std::string::npos);
         assert(row_json.find("\"rhs_raw_summary\":") != std::string::npos);
         assert(row_json.find("\"lhs_summary\"") != std::string::npos);
@@ -2844,6 +2846,35 @@ int main() {
         assert(out_json.find("\"normalization_attempted\":1") != std::string::npos);
         assert(out_json.find("\"normalization_changed\":") != std::string::npos);
         assert(out_json.find("\"normalization_kind_counts\"") != std::string::npos);
+    }
+
+    {
+        std::vector<uint8_t> lhs_expr = {
+            static_cast<uint8_t>(dwarf::DwarfOp::DW_OP_reg1),
+            static_cast<uint8_t>(dwarf::DwarfOp::DW_OP_const1u), 0,
+            static_cast<uint8_t>(dwarf::DwarfOp::DW_OP_or),
+            static_cast<uint8_t>(dwarf::DwarfOp::DW_OP_stack_value)
+        };
+        std::vector<uint8_t> rhs_expr = {
+            static_cast<uint8_t>(dwarf::DwarfOp::DW_OP_reg1),
+            static_cast<uint8_t>(dwarf::DwarfOp::DW_OP_stack_value)
+        };
+
+        std::string lhs_elf = makeSingleVariableLocationELF("dwarf_cli_rewrite_lhs", "rewrite", lhs_expr);
+        std::string rhs_elf = makeSingleVariableLocationELF("dwarf_cli_rewrite_rhs", "rewrite", rhs_expr);
+
+        std::string out_json;
+        int code_json = runAndCapture(
+            dwarf_dump + " compare-expr " + lhs_elf + " " + rhs_elf +
+                " --name=rewrite --normalization-policy=symbolic-canonical --allow-unknown --allow-missing --format=json --schema-version=1",
+            "/tmp/dwarf_cli_rewrite_json.txt", out_json);
+        assert(code_json == 0);
+        std::string row_json = extractFirstObjectFromArrayKey(out_json, "comparisons");
+        assert(!row_json.empty());
+        assert(row_json.find("\"verdict\":\"EQUIVALENT\"") != std::string::npos);
+        assert(row_json.find("\"solver_result\":\"normalized_equal\"") != std::string::npos);
+        assert(row_json.find("\"lhs_normalization_rule_class\":\"or_identity\"") != std::string::npos);
+        assert(row_json.find("\"rhs_normalization_rule_class\":\"\"") != std::string::npos);
     }
 
     {
