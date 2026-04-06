@@ -39,6 +39,7 @@ struct ExpressionVerificationResult {
     bool normalization_applied = false;
     bool normalization_equal = false;
     std::string normalization_kind;
+    std::string normalization_note;
     std::string lhs_normalization_rule_class;
     std::string rhs_normalization_rule_class;
     std::string lhs_raw_summary;

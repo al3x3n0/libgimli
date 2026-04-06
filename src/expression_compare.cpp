@@ -143,6 +143,21 @@ std::string canonicalizeBytes(const std::vector<uint8_t>& bytes) {
     return out.str();
 }
 
+std::string buildNormalizationNote(const ExpressionVerificationResult& result) {
+    if (!result.normalization_attempted) {
+        return result.normalization_status == "unavailable"
+                   ? "normalization unavailable"
+                   : "normalization disabled";
+    }
+    if (result.normalization_equal) {
+        return "normalization eliminated the mismatch";
+    }
+    if (result.lhs_normalization_changed || result.rhs_normalization_changed) {
+        return "normalization changed one or both sides, but the comparison remained unresolved or different";
+    }
+    return "normalization attempted, but no semantic reduction occurred";
+}
+
 bool isConstValue(const SymExprPtr& expr, uint64_t value) {
     return expr && expr->kind == SymExpr::Kind::CONST_U64 && expr->const_u64 == value;
 }
@@ -842,6 +857,7 @@ NamedExpressionComparison compareOne(const std::string& name,
                     out.verification.rhs_normalization_reason = "rhs symbolic canonical key was reducible";
                     out.verification.lhs_summary = lhs_raw_summary;
                     out.verification.rhs_summary = rhs_raw_summary;
+                    out.verification.normalization_note = buildNormalizationNote(out.verification);
                     return out;
                 }
             }
@@ -1001,6 +1017,7 @@ NamedExpressionComparison compareOne(const std::string& name,
                         vr.rhs_normalization_changed = segment_rhs_normalization_changed;
                         vr.lhs_normalization_reason = segment_lhs_normalization_reason;
                         vr.rhs_normalization_reason = segment_rhs_normalization_reason;
+                        vr.normalization_note = buildNormalizationNote(vr);
                     }
                 }
             }
@@ -1027,6 +1044,7 @@ NamedExpressionComparison compareOne(const std::string& name,
                     vr.rhs_normalization_changed = segment_rhs_normalization_changed;
                     vr.lhs_normalization_reason = segment_lhs_normalization_reason;
                     vr.rhs_normalization_reason = segment_rhs_normalization_reason;
+                    vr.normalization_note = buildNormalizationNote(vr);
                 }
             }
             ++comparable_segments;
@@ -1053,6 +1071,7 @@ NamedExpressionComparison compareOne(const std::string& name,
             segment.rhs_normalization_changed = vr.rhs_normalization_changed;
             segment.lhs_normalization_reason = vr.lhs_normalization_reason;
             segment.rhs_normalization_reason = vr.rhs_normalization_reason;
+            segment.normalization_note = vr.normalization_note;
             segment.solver_result = vr.solver_result;
             segment.lhs_unsupported_opcode = vr.lhs_unsupported_opcode;
             segment.rhs_unsupported_opcode = vr.rhs_unsupported_opcode;
@@ -1117,6 +1136,7 @@ NamedExpressionComparison compareOne(const std::string& name,
                                                     : (normalization_enabled
                                                            ? "no canonical form available for range-aware compare"
                                                            : "normalization disabled for range-aware compare");
+        out.verification.normalization_note = buildNormalizationNote(out.verification);
         if (comparable_segments == 0) {
             out.verification.verdict = ExpressionVerificationResult::Verdict::UNKNOWN;
             out.verification.reason = "range-aware compare found no segments with expressions on both sides";
@@ -1188,6 +1208,7 @@ NamedExpressionComparison compareOne(const std::string& name,
         out.verification.lhs_normalization_reason = "lhs symbolic canonical key was reducible";
         out.verification.rhs_normalization_reason = "rhs symbolic canonical key was reducible";
     }
+    out.verification.normalization_note = buildNormalizationNote(out.verification);
     return out;
 }
 
@@ -1401,7 +1422,7 @@ std::string CrossBinaryExpressionComparator::renderTextReport(
         << " normalization_kind_counts=" << renderCountsText(s.normalization_kind_counts)
         << "\n";
 
-    out << "name|tag|lhs_present|rhs_present|lhs_offset|rhs_offset|verdict|verifier_backend|solver_result|reason|reason_class|isolation_kind|normalization_attempted|normalization_applied|normalization_equal|normalization_status|normalization_reason|normalization_kind|lhs_normalization_changed|rhs_normalization_changed|lhs_normalization_rule_class|rhs_normalization_rule_class|lhs_normalization_reason|rhs_normalization_reason|lhs_raw_summary|rhs_raw_summary|lhs_normalized_summary|rhs_normalized_summary|lhs_summary|rhs_summary|lhs_attribute_kind|rhs_attribute_kind|lhs_attribute_detail|rhs_attribute_detail|lhs_unsupported_opcode|rhs_unsupported_opcode|lhs_unsupported_vendor_extension|rhs_unsupported_vendor_extension|coverage_total|coverage_eq|coverage_diff|coverage_unknown|coverage_unsupported|coverage_uncovered|unsupported_segments|reloc_issues\n";
+    out << "name|tag|lhs_present|rhs_present|lhs_offset|rhs_offset|verdict|verifier_backend|solver_result|reason|reason_class|isolation_kind|normalization_attempted|normalization_applied|normalization_equal|normalization_status|normalization_reason|normalization_kind|normalization_note|lhs_normalization_changed|rhs_normalization_changed|lhs_normalization_rule_class|rhs_normalization_rule_class|lhs_normalization_reason|rhs_normalization_reason|lhs_raw_summary|rhs_raw_summary|lhs_normalized_summary|rhs_normalized_summary|lhs_summary|rhs_summary|lhs_attribute_kind|rhs_attribute_kind|lhs_attribute_detail|rhs_attribute_detail|lhs_unsupported_opcode|rhs_unsupported_opcode|lhs_unsupported_vendor_extension|rhs_unsupported_vendor_extension|coverage_total|coverage_eq|coverage_diff|coverage_unknown|coverage_unsupported|coverage_uncovered|unsupported_segments|reloc_issues\n";
     size_t rows = (max_rows == 0) ? comparisons.size() : std::min(max_rows, comparisons.size());
     for (size_t i = 0; i < rows; ++i) {
         const auto& c = comparisons[i];
@@ -1428,6 +1449,7 @@ std::string CrossBinaryExpressionComparator::renderTextReport(
             << c.verification.normalization_status << "|"
             << c.verification.normalization_reason << "|"
             << c.verification.normalization_kind << "|"
+            << c.verification.normalization_note << "|"
             << (c.verification.lhs_normalization_changed ? "1" : "0") << "|"
             << (c.verification.rhs_normalization_changed ? "1" : "0") << "|"
             << c.verification.lhs_normalization_rule_class << "|"
@@ -1550,6 +1572,7 @@ std::string CrossBinaryExpressionComparator::renderJsonReport(
             << "\"normalization_status\":\"" << jsonEscape(c.verification.normalization_status) << "\","
             << "\"normalization_reason\":\"" << jsonEscape(c.verification.normalization_reason) << "\","
             << "\"normalization_kind\":\"" << jsonEscape(c.verification.normalization_kind) << "\","
+            << "\"normalization_note\":\"" << jsonEscape(c.verification.normalization_note) << "\","
             << "\"lhs_normalization_changed\":" << (c.verification.lhs_normalization_changed ? "true" : "false") << ","
             << "\"rhs_normalization_changed\":" << (c.verification.rhs_normalization_changed ? "true" : "false") << ","
             << "\"lhs_normalization_rule_class\":\"" << jsonEscape(c.verification.lhs_normalization_rule_class) << "\","
@@ -1611,6 +1634,7 @@ std::string CrossBinaryExpressionComparator::renderJsonReport(
                 << "\"solver_result\":\"" << jsonEscape(segment.solver_result) << "\","
                 << "\"diagnosis_origin\":\"" << jsonEscape(segment.diagnosis_origin) << "\","
                 << "\"normalization_kind\":\"" << jsonEscape(segment.normalization_kind) << "\","
+                << "\"normalization_note\":\"" << jsonEscape(segment.normalization_note) << "\","
                 << "\"lhs_raw_summary\":\"" << jsonEscape(segment.lhs_raw_summary) << "\","
                 << "\"rhs_raw_summary\":\"" << jsonEscape(segment.rhs_raw_summary) << "\","
                 << "\"lhs_normalized_summary\":\"" << jsonEscape(segment.lhs_normalized_summary) << "\","

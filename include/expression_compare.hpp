@@ -60,6 +60,7 @@ struct LocationRangeSegmentVerdict {
     std::string normalization_status;
     std::string normalization_reason;
     std::string normalization_kind;
+    std::string normalization_note;
     std::string lhs_normalization_rule_class;
     std::string rhs_normalization_rule_class;
     std::string lhs_raw_summary;

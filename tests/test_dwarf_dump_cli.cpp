@@ -2113,6 +2113,7 @@ int main() {
                 " --name=range_norm --range-aware --normalize-loc --allow-unknown --allow-missing --report-only",
             "/tmp/dwarf_cli_range_aware_loclists_text.txt", out_text);
         assert(code_text == 0);
+        assert(out_text.find("normalization_note") != std::string::npos);
         assert(out_text.find("coverage_total=32") != std::string::npos);
 #if DWARF_HAS_Z3
         assert(out_text.find("coverage_eq=16") != std::string::npos);
@@ -2146,12 +2147,14 @@ int main() {
         assert(row_json.find("\"coverage_uncovered\":16") != std::string::npos);
 #endif
         assert(row_json.find("\"range_segments\"") != std::string::npos);
+        assert(row_json.find("\"normalization_note\"") != std::string::npos);
         assert(row_json.find("\"start\":16") != std::string::npos);
         assert(row_json.find("\"end\":32") != std::string::npos);
         auto norm_segments = extractObjectsFromArrayKey(row_json, "range_segments");
         assert(norm_segments.size() == 2);
         assert(norm_segments[0].find("\"start\":16") != std::string::npos);
         assert(norm_segments[0].find("\"end\":32") != std::string::npos);
+        assert(norm_segments[0].find("\"normalization_note\":\"normalization eliminated the mismatch\"") != std::string::npos);
 #if DWARF_HAS_Z3
         assert(norm_segments[0].find("\"verdict\":\"EQUIVALENT\"") != std::string::npos);
 #else
@@ -2859,6 +2862,7 @@ int main() {
         assert(row_json.find("\"normalization_equal\":true") != std::string::npos);
         assert(row_json.find("\"normalization_status\":\"attempted\"") != std::string::npos);
         assert(row_json.find("\"normalization_reason\":\"symbolic canonical comparison\"") != std::string::npos);
+        assert(row_json.find("\"normalization_note\":\"normalization eliminated the mismatch\"") != std::string::npos);
         assert(row_json.find("\"lhs_normalization_changed\":") != std::string::npos);
         assert(row_json.find("\"rhs_normalization_changed\":") != std::string::npos);
         assert(row_json.find("\"normalization_kind\":\"symbolic_canonical\"") != std::string::npos);
@@ -2903,6 +2907,7 @@ int main() {
         assert(!row_json.empty());
         assert(row_json.find("\"verdict\":\"EQUIVALENT\"") != std::string::npos);
         assert(row_json.find("\"solver_result\":\"normalized_equal\"") != std::string::npos);
+        assert(row_json.find("\"normalization_note\":\"normalization eliminated the mismatch\"") != std::string::npos);
         assert(row_json.find("\"lhs_normalization_rule_class\":\"or_identity\"") != std::string::npos);
         assert(row_json.find("\"rhs_normalization_rule_class\":\"\"") != std::string::npos);
     }
@@ -2932,6 +2937,7 @@ int main() {
         assert(!row_json.empty());
         assert(out_json.find("\"normalization_policy\":\"symbolic_canonical\"") != std::string::npos);
         assert(row_json.find("\"normalization_status\":\"attempted\"") != std::string::npos);
+        assert(row_json.find("\"normalization_note\":\"normalization changed one or both sides, but the comparison remained unresolved or different\"") != std::string::npos);
         assert(row_json.find("\"lhs_raw_summary\":") != std::string::npos);
         assert(row_json.find("\"rhs_raw_summary\":") != std::string::npos);
     }
