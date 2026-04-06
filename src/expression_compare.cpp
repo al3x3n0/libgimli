@@ -287,6 +287,19 @@ std::string rawResultKindAndKey(const SymbolicExpressionResult& result) {
     return prefix + ":" + result.expression->toString();
 }
 
+static bool normalizationEnabled(const CrossBinaryCompareOptions& opts) {
+    return opts.normalization_policy == CrossBinaryCompareOptions::NormalizationPolicy::SYMBOLIC_CANONICAL ||
+           opts.enable_location_semantic_normalization;
+}
+
+static std::string normalizationPolicyName(const CrossBinaryCompareOptions& opts) {
+    return (opts.normalization_policy == CrossBinaryCompareOptions::NormalizationPolicy::OFF)
+               ? (opts.enable_location_semantic_normalization ? "symbolic_canonical" : "off")
+               : (opts.normalization_policy == CrossBinaryCompareOptions::NormalizationPolicy::SYMBOLIC_CANONICAL
+                      ? "symbolic_canonical"
+                      : "off");
+}
+
 NormalizedExpressionInfo normalizeExpressionSemantically(const std::vector<uint8_t>& expr,
                                                          const EvaluationContext& ctx,
                                                          uint64_t pc,
@@ -566,12 +579,13 @@ NamedExpressionComparison compareOne(const std::string& name,
     auto rhs_attr = rhs_die->getAttribute(opts.attribute);
     auto lhs_loc = std::dynamic_pointer_cast<LocationAttributeValue>(lhs_attr);
     auto rhs_loc = std::dynamic_pointer_cast<LocationAttributeValue>(rhs_attr);
+    const bool normalization_enabled = normalizationEnabled(opts);
+    const std::string normalization_kind = normalizationPolicyName(opts);
     bool normalization_attempted = false;
     bool lhs_normalization_changed = false;
     bool rhs_normalization_changed = false;
     std::string lhs_normalized_summary;
     std::string rhs_normalized_summary;
-    std::string normalization_kind;
     std::string lhs_raw_summary;
     std::string rhs_raw_summary;
 
@@ -581,7 +595,7 @@ NamedExpressionComparison compareOne(const std::string& name,
         lhs_loc->getLocationType() == LocationAttributeValue::LocationType::LIST &&
         rhs_loc->getLocationType() == LocationAttributeValue::LocationType::LIST;
 
-    if (opts.enable_location_semantic_normalization && !use_range_aware_lists) {
+    if (normalization_enabled && !use_range_aware_lists) {
         std::vector<uint8_t> lhs_expr;
         std::vector<uint8_t> rhs_expr;
         if (selectExpressionBytes(lhs_die, opts.attribute, opts.use_location_list_pc, opts.lhs_location_list_pc, lhs_expr) &&
@@ -597,6 +611,8 @@ NamedExpressionComparison compareOne(const std::string& name,
                 opts.rhs_registers);
             lhs_raw_summary = summarizeSymbolicResult(lhs_raw);
             rhs_raw_summary = summarizeSymbolicResult(rhs_raw);
+            const std::string lhs_raw_key = rawResultKindAndKey(lhs_raw);
+            const std::string rhs_raw_key = rawResultKindAndKey(rhs_raw);
 
             auto lhs_norm = normalizeExpressionSemantically(
                 lhs_expr, lhs_ctx,
@@ -608,11 +624,15 @@ NamedExpressionComparison compareOne(const std::string& name,
                 opts.rhs_registers);
             if (lhs_norm.available || rhs_norm.available) {
                 normalization_attempted = true;
-                normalization_kind = "symbolic_canonical";
                 lhs_normalized_summary = lhs_norm.available ? lhs_norm.key : "";
                 rhs_normalized_summary = rhs_norm.available ? rhs_norm.key : "";
+                out.verification.normalization_attempted = true;
                 out.verification.normalization_applied = true;
-                out.verification.normalization_kind = "symbolic_canonical";
+                out.verification.normalization_status = "attempted";
+                out.verification.normalization_reason = "symbolic canonical comparison";
+                out.verification.normalization_kind = normalization_kind;
+                out.verification.lhs_raw_summary = lhs_raw_summary;
+                out.verification.rhs_raw_summary = rhs_raw_summary;
                 out.verification.lhs_normalized_summary = lhs_normalized_summary;
                 out.verification.rhs_normalized_summary = rhs_normalized_summary;
 
@@ -622,8 +642,6 @@ NamedExpressionComparison compareOne(const std::string& name,
                 const std::string rhs_norm_full = rhs_norm.available
                                                      ? (rhs_norm.kind + ":" + rhs_norm.key)
                                                      : "";
-                const std::string lhs_raw_key = rawResultKindAndKey(lhs_raw);
-                const std::string rhs_raw_key = rawResultKindAndKey(rhs_raw);
                 lhs_normalization_changed = !lhs_raw_key.empty() &&
                                            !lhs_norm_full.empty() &&
                                            lhs_raw_key != lhs_norm_full;
@@ -637,10 +655,12 @@ NamedExpressionComparison compareOne(const std::string& name,
                     out.verification.reason_class = "equivalent";
                     out.verification.verifier_backend = "structural";
                     out.verification.solver_result = "normalized_equal";
-                    out.verification.lhs_summary = lhs_raw_summary;
-                    out.verification.rhs_summary = rhs_raw_summary;
                     out.verification.lhs_normalization_changed = lhs_normalization_changed;
                     out.verification.rhs_normalization_changed = rhs_normalization_changed;
+                    out.verification.lhs_normalization_reason = "lhs symbolic canonical key was reducible";
+                    out.verification.rhs_normalization_reason = "rhs symbolic canonical key was reducible";
+                    out.verification.lhs_summary = lhs_raw_summary;
+                    out.verification.rhs_summary = rhs_raw_summary;
                     return out;
                 }
             }
@@ -650,12 +670,12 @@ NamedExpressionComparison compareOne(const std::string& name,
     if (use_range_aware_lists) {
         out.range_aware = true;
         auto lhs_entries = normalizeLocationEntries(lhs_loc->getEntries(),
-                                                    opts.enable_location_semantic_normalization,
+                                                    normalization_enabled,
                                                     lhs_ctx,
                                                     opts.lhs_evaluation_pc,
                                                     opts.lhs_registers);
         auto rhs_entries = normalizeLocationEntries(rhs_loc->getEntries(),
-                                                    opts.enable_location_semantic_normalization,
+                                                    normalization_enabled,
                                                     rhs_ctx,
                                                     opts.rhs_evaluation_pc,
                                                     opts.rhs_registers);
@@ -689,6 +709,7 @@ NamedExpressionComparison compareOne(const std::string& name,
         size_t comparable_segments = 0;
         bool saw_generic_unknown = false;
         bool saw_unsupported_segment = false;
+        bool row_normalization_attempted = false;
         for (size_t i = 0; i + 1 < unique_points.size(); ++i) {
             uint64_t start = unique_points[i];
             uint64_t end = unique_points[i + 1];
@@ -699,6 +720,10 @@ NamedExpressionComparison compareOne(const std::string& name,
             segment.end = end;
             segment.lhs_present = expressionForRange(lhs_entries, start, end) != nullptr;
             segment.rhs_present = expressionForRange(rhs_entries, start, end) != nullptr;
+            segment.normalization_status = normalization_enabled ? "unavailable" : "disabled";
+            segment.normalization_reason = normalization_enabled
+                                               ? "no canonical form available"
+                                               : "normalization disabled";
             uint64_t width = end - start;
             out.coverage_total += width;
 
@@ -706,6 +731,10 @@ NamedExpressionComparison compareOne(const std::string& name,
                 segment.verdict = ExpressionVerificationResult::Verdict::UNKNOWN;
                 segment.reason = !segment.lhs_present ? "lhs has no covering location expression"
                                                       : "rhs has no covering location expression";
+                segment.normalization_status = normalization_enabled ? "unavailable" : "disabled";
+                segment.normalization_reason = normalization_enabled
+                                                    ? "no canonical form available for range-aware compare"
+                                                    : "normalization disabled for range-aware compare";
                 out.coverage_uncovered += width;
                 if (overall == ExpressionVerificationResult::Verdict::EQUIVALENT) {
                     overall = ExpressionVerificationResult::Verdict::UNKNOWN;
@@ -719,14 +748,61 @@ NamedExpressionComparison compareOne(const std::string& name,
             uint64_t lhs_pc = (opts.lhs_evaluation_pc != 0) ? opts.lhs_evaluation_pc : start;
             uint64_t rhs_pc = (opts.rhs_evaluation_pc != 0) ? opts.rhs_evaluation_pc : start;
             ExpressionVerificationResult vr;
-            if (opts.enable_location_semantic_normalization) {
+
+            SymbolicExpressionEvaluator segment_raw_evaluator;
+            std::string lhs_seg_raw_summary;
+            std::string rhs_seg_raw_summary;
+            bool segment_normalization_attempted = false;
+            bool segment_normalization_equal = false;
+            bool segment_lhs_normalization_changed = false;
+            bool segment_rhs_normalization_changed = false;
+            std::string segment_normalization_kind;
+            std::string segment_normalization_status = "disabled";
+            std::string segment_normalization_reason = "normalization disabled";
+            std::string segment_lhs_normalized_summary;
+            std::string segment_rhs_normalized_summary;
+            std::string segment_lhs_normalization_reason;
+            std::string segment_rhs_normalization_reason;
+            if (normalization_enabled) {
+                SymbolicExpressionResult lhs_raw = segment_raw_evaluator.evaluate(
+                    *lhs_expr, lhs_ctx, lhs_pc, opts.lhs_registers);
+                SymbolicExpressionResult rhs_raw = segment_raw_evaluator.evaluate(
+                    *rhs_expr, rhs_ctx, rhs_pc, opts.rhs_registers);
+                lhs_seg_raw_summary = summarizeSymbolicResult(lhs_raw);
+                rhs_seg_raw_summary = summarizeSymbolicResult(rhs_raw);
+                const std::string lhs_raw_key = rawResultKindAndKey(lhs_raw);
+                const std::string rhs_raw_key = rawResultKindAndKey(rhs_raw);
+                segment.lhs_raw_summary = lhs_seg_raw_summary;
+                segment.rhs_raw_summary = rhs_seg_raw_summary;
+
                 auto lhs_norm = normalizeExpressionSemantically(*lhs_expr, lhs_ctx, lhs_pc, opts.lhs_registers);
                 auto rhs_norm = normalizeExpressionSemantically(*rhs_expr, rhs_ctx, rhs_pc, opts.rhs_registers);
                 if (lhs_norm.available || rhs_norm.available) {
+                    row_normalization_attempted = true;
+                    segment_normalization_attempted = true;
+                    segment_normalization_status = "attempted";
+                    segment_normalization_reason = "symbolic canonical comparison";
+                    segment_normalization_kind = normalization_kind;
+                    segment_lhs_normalized_summary = lhs_norm.available ? lhs_norm.key : "";
+                    segment_rhs_normalized_summary = rhs_norm.available ? rhs_norm.key : "";
+                    segment_normalization_equal = lhs_norm.available && rhs_norm.available && lhs_norm.key == rhs_norm.key;
+                    segment_lhs_normalization_changed = lhs_norm.available &&
+                                                        !lhs_raw_key.empty() &&
+                                                        lhs_raw_key != (lhs_norm.kind + ":" + lhs_norm.key);
+                    segment_rhs_normalization_changed = rhs_norm.available &&
+                                                        !rhs_raw_key.empty() &&
+                                                        rhs_raw_key != (rhs_norm.kind + ":" + rhs_norm.key);
+                    segment_lhs_normalization_reason = "lhs symbolic canonical key was reducible";
+                    segment_rhs_normalization_reason = "rhs symbolic canonical key was reducible";
+                    vr.normalization_attempted = true;
                     vr.normalization_applied = true;
-                    vr.normalization_kind = "symbolic_canonical";
-                    vr.lhs_normalized_summary = lhs_norm.available ? lhs_norm.key : "";
-                    vr.rhs_normalized_summary = rhs_norm.available ? rhs_norm.key : "";
+                    vr.normalization_status = "attempted";
+                    vr.normalization_reason = "symbolic canonical comparison";
+                    vr.normalization_kind = normalization_kind;
+                    vr.lhs_raw_summary = lhs_seg_raw_summary;
+                    vr.rhs_raw_summary = rhs_seg_raw_summary;
+                    vr.lhs_normalized_summary = segment_lhs_normalized_summary;
+                    vr.rhs_normalized_summary = segment_rhs_normalized_summary;
                     if (lhs_norm.available && rhs_norm.available && lhs_norm.key == rhs_norm.key) {
                         vr.normalization_equal = true;
                         vr.verdict = ExpressionVerificationResult::Verdict::EQUIVALENT;
@@ -734,6 +810,10 @@ NamedExpressionComparison compareOne(const std::string& name,
                         vr.reason_class = "equivalent";
                         vr.verifier_backend = "structural";
                         vr.solver_result = "normalized_equal";
+                        vr.lhs_normalization_changed = segment_lhs_normalization_changed;
+                        vr.rhs_normalization_changed = segment_rhs_normalization_changed;
+                        vr.lhs_normalization_reason = segment_lhs_normalization_reason;
+                        vr.rhs_normalization_reason = segment_rhs_normalization_reason;
                     }
                 }
             }
@@ -742,12 +822,46 @@ NamedExpressionComparison compareOne(const std::string& name,
                     *lhs_expr, lhs_ctx, lhs_pc, opts.lhs_registers,
                     *rhs_expr, rhs_ctx, rhs_pc, opts.rhs_registers,
                     opts.verification_options);
+                if (segment_normalization_attempted) {
+                    vr.normalization_attempted = true;
+                    vr.normalization_applied = true;
+                    vr.normalization_attempted = true;
+                    vr.normalization_status = segment_normalization_status;
+                    vr.normalization_reason = segment_normalization_reason;
+                    vr.normalization_kind = segment_normalization_kind;
+                    vr.lhs_raw_summary = lhs_seg_raw_summary;
+                    vr.rhs_raw_summary = rhs_seg_raw_summary;
+                    vr.lhs_normalized_summary = segment_lhs_normalized_summary;
+                    vr.rhs_normalized_summary = segment_rhs_normalized_summary;
+                    vr.normalization_equal = segment_normalization_equal;
+                    vr.lhs_normalization_changed = segment_lhs_normalization_changed;
+                    vr.rhs_normalization_changed = segment_rhs_normalization_changed;
+                    vr.lhs_normalization_reason = segment_lhs_normalization_reason;
+                    vr.rhs_normalization_reason = segment_rhs_normalization_reason;
+                }
             }
             ++comparable_segments;
             segment.verdict = vr.verdict;
             segment.reason = vr.reason;
             segment.reason_class = vr.reason_class;
             segment.isolation_kind = vr.isolation_kind;
+            segment.normalization_attempted = vr.normalization_attempted;
+            segment.normalization_applied = vr.normalization_applied;
+            segment.normalization_equal = vr.normalization_equal;
+            segment.normalization_status = vr.normalization_status.empty() ? segment_normalization_status
+                                                                           : vr.normalization_status;
+            segment.normalization_reason = vr.normalization_reason.empty() ? segment_normalization_reason
+                                                                           : vr.normalization_reason;
+            segment.normalization_kind = vr.normalization_kind.empty() ? segment_normalization_kind
+                                                                        : vr.normalization_kind;
+            segment.lhs_normalized_summary = vr.lhs_normalized_summary;
+            segment.rhs_normalized_summary = vr.rhs_normalized_summary;
+            segment.lhs_raw_summary = lhs_seg_raw_summary;
+            segment.rhs_raw_summary = rhs_seg_raw_summary;
+            segment.lhs_normalization_changed = vr.lhs_normalization_changed;
+            segment.rhs_normalization_changed = vr.rhs_normalization_changed;
+            segment.lhs_normalization_reason = vr.lhs_normalization_reason;
+            segment.rhs_normalization_reason = vr.rhs_normalization_reason;
             segment.solver_result = vr.solver_result;
             segment.lhs_unsupported_opcode = vr.lhs_unsupported_opcode;
             segment.rhs_unsupported_opcode = vr.rhs_unsupported_opcode;
@@ -801,8 +915,17 @@ NamedExpressionComparison compareOne(const std::string& name,
         }
 
         out.verification.verdict = overall;
-        out.verification.normalization_applied = opts.enable_location_semantic_normalization;
-        out.verification.normalization_kind = opts.enable_location_semantic_normalization ? "symbolic_canonical" : "";
+        out.verification.normalization_attempted = row_normalization_attempted;
+        out.verification.normalization_applied = row_normalization_attempted;
+        out.verification.normalization_kind = row_normalization_attempted ? normalization_kind : "";
+        out.verification.normalization_status = row_normalization_attempted
+                                                    ? "attempted"
+                                                    : (normalization_enabled ? "unavailable" : "disabled");
+        out.verification.normalization_reason = row_normalization_attempted
+                                                    ? "segment-wise symbolic canonical comparison"
+                                                    : (normalization_enabled
+                                                           ? "no canonical form available for range-aware compare"
+                                                           : "normalization disabled for range-aware compare");
         if (comparable_segments == 0) {
             out.verification.verdict = ExpressionVerificationResult::Verdict::UNKNOWN;
             out.verification.reason = "range-aware compare found no segments with expressions on both sides";
@@ -841,11 +964,26 @@ NamedExpressionComparison compareOne(const std::string& name,
         lhs_die, lhs_ctx, opts.lhs_registers,
         rhs_die, rhs_ctx, opts.rhs_registers,
         lhs_sel, rhs_sel, opts.verification_options);
+    if (!normalization_enabled) {
+        out.verification.normalization_status = "disabled";
+        out.verification.normalization_reason = "normalization disabled";
+    } else if (normalization_attempted) {
+        out.verification.normalization_status = "attempted";
+        out.verification.normalization_reason = "symbolic canonical comparison";
+    } else {
+        out.verification.normalization_status = "unavailable";
+        out.verification.normalization_reason = "no canonical form available";
+    }
     if (normalization_attempted) {
         out.verification.normalization_applied = true;
+        out.verification.normalization_attempted = true;
+        out.verification.normalization_status = "attempted";
+        out.verification.normalization_reason = "symbolic canonical comparison";
         out.verification.normalization_kind = normalization_kind;
         out.verification.lhs_normalized_summary = lhs_normalized_summary;
         out.verification.rhs_normalized_summary = rhs_normalized_summary;
+        out.verification.lhs_raw_summary = lhs_raw_summary;
+        out.verification.rhs_raw_summary = rhs_raw_summary;
         if (!lhs_raw_summary.empty()) {
             out.verification.lhs_summary = lhs_raw_summary;
         }
@@ -854,6 +992,8 @@ NamedExpressionComparison compareOne(const std::string& name,
         }
         out.verification.lhs_normalization_changed = lhs_normalization_changed;
         out.verification.rhs_normalization_changed = rhs_normalization_changed;
+        out.verification.lhs_normalization_reason = "lhs symbolic canonical key was reducible";
+        out.verification.rhs_normalization_reason = "rhs symbolic canonical key was reducible";
     }
     return out;
 }
@@ -1068,7 +1208,7 @@ std::string CrossBinaryExpressionComparator::renderTextReport(
         << " normalization_kind_counts=" << renderCountsText(s.normalization_kind_counts)
         << "\n";
 
-    out << "name|tag|lhs_present|rhs_present|lhs_offset|rhs_offset|verdict|verifier_backend|solver_result|reason|reason_class|isolation_kind|normalization_applied|normalization_equal|normalization_kind|lhs_normalization_changed|rhs_normalization_changed|lhs_normalized_summary|rhs_normalized_summary|lhs_summary|rhs_summary|lhs_attribute_kind|rhs_attribute_kind|lhs_attribute_detail|rhs_attribute_detail|lhs_unsupported_opcode|rhs_unsupported_opcode|lhs_unsupported_vendor_extension|rhs_unsupported_vendor_extension|coverage_total|coverage_eq|coverage_diff|coverage_unknown|coverage_unsupported|coverage_uncovered|unsupported_segments|reloc_issues\n";
+    out << "name|tag|lhs_present|rhs_present|lhs_offset|rhs_offset|verdict|verifier_backend|solver_result|reason|reason_class|isolation_kind|normalization_attempted|normalization_applied|normalization_equal|normalization_status|normalization_reason|normalization_kind|lhs_normalization_changed|rhs_normalization_changed|lhs_normalization_reason|rhs_normalization_reason|lhs_raw_summary|rhs_raw_summary|lhs_normalized_summary|rhs_normalized_summary|lhs_summary|rhs_summary|lhs_attribute_kind|rhs_attribute_kind|lhs_attribute_detail|rhs_attribute_detail|lhs_unsupported_opcode|rhs_unsupported_opcode|lhs_unsupported_vendor_extension|rhs_unsupported_vendor_extension|coverage_total|coverage_eq|coverage_diff|coverage_unknown|coverage_unsupported|coverage_uncovered|unsupported_segments|reloc_issues\n";
     size_t rows = (max_rows == 0) ? comparisons.size() : std::min(max_rows, comparisons.size());
     for (size_t i = 0; i < rows; ++i) {
         const auto& c = comparisons[i];
@@ -1089,11 +1229,18 @@ std::string CrossBinaryExpressionComparator::renderTextReport(
             << c.verification.reason << "|"
             << c.verification.reason_class << "|"
             << c.verification.isolation_kind << "|"
+            << (c.verification.normalization_attempted ? "1" : "0") << "|"
             << (c.verification.normalization_applied ? "1" : "0") << "|"
             << (c.verification.normalization_equal ? "1" : "0") << "|"
+            << c.verification.normalization_status << "|"
+            << c.verification.normalization_reason << "|"
             << c.verification.normalization_kind << "|"
             << (c.verification.lhs_normalization_changed ? "1" : "0") << "|"
             << (c.verification.rhs_normalization_changed ? "1" : "0") << "|"
+            << c.verification.lhs_normalization_reason << "|"
+            << c.verification.rhs_normalization_reason << "|"
+            << c.verification.lhs_raw_summary << "|"
+            << c.verification.rhs_raw_summary << "|"
             << c.verification.lhs_normalized_summary << "|"
             << c.verification.rhs_normalized_summary << "|"
             << c.verification.lhs_summary << "|"
@@ -1202,11 +1349,18 @@ std::string CrossBinaryExpressionComparator::renderJsonReport(
             << "\"reason\":\"" << jsonEscape(c.verification.reason) << "\","
             << "\"reason_class\":\"" << jsonEscape(c.verification.reason_class) << "\","
             << "\"isolation_kind\":\"" << jsonEscape(c.verification.isolation_kind) << "\","
+            << "\"normalization_attempted\":" << (c.verification.normalization_attempted ? "true" : "false") << ","
             << "\"normalization_applied\":" << (c.verification.normalization_applied ? "true" : "false") << ","
             << "\"normalization_equal\":" << (c.verification.normalization_equal ? "true" : "false") << ","
+            << "\"normalization_status\":\"" << jsonEscape(c.verification.normalization_status) << "\","
+            << "\"normalization_reason\":\"" << jsonEscape(c.verification.normalization_reason) << "\","
             << "\"normalization_kind\":\"" << jsonEscape(c.verification.normalization_kind) << "\","
             << "\"lhs_normalization_changed\":" << (c.verification.lhs_normalization_changed ? "true" : "false") << ","
             << "\"rhs_normalization_changed\":" << (c.verification.rhs_normalization_changed ? "true" : "false") << ","
+            << "\"lhs_normalization_reason\":\"" << jsonEscape(c.verification.lhs_normalization_reason) << "\","
+            << "\"rhs_normalization_reason\":\"" << jsonEscape(c.verification.rhs_normalization_reason) << "\","
+            << "\"lhs_raw_summary\":\"" << jsonEscape(c.verification.lhs_raw_summary) << "\","
+            << "\"rhs_raw_summary\":\"" << jsonEscape(c.verification.rhs_raw_summary) << "\","
             << "\"lhs_normalized_summary\":\"" << jsonEscape(c.verification.lhs_normalized_summary) << "\","
             << "\"rhs_normalized_summary\":\"" << jsonEscape(c.verification.rhs_normalized_summary) << "\","
             << "\"lhs_summary\":\"" << jsonEscape(c.verification.lhs_summary) << "\","
@@ -1252,8 +1406,22 @@ std::string CrossBinaryExpressionComparator::renderJsonReport(
                 << "\"reason\":\"" << jsonEscape(segment.reason) << "\","
                 << "\"reason_class\":\"" << jsonEscape(segment.reason_class) << "\","
                 << "\"isolation_kind\":\"" << jsonEscape(segment.isolation_kind) << "\","
+                << "\"normalization_attempted\":" << (segment.normalization_attempted ? "true" : "false") << ","
+                << "\"normalization_applied\":" << (segment.normalization_applied ? "true" : "false") << ","
+                << "\"normalization_equal\":" << (segment.normalization_equal ? "true" : "false") << ","
+                << "\"normalization_status\":\"" << jsonEscape(segment.normalization_status) << "\","
+                << "\"normalization_reason\":\"" << jsonEscape(segment.normalization_reason) << "\","
                 << "\"solver_result\":\"" << jsonEscape(segment.solver_result) << "\","
                 << "\"diagnosis_origin\":\"" << jsonEscape(segment.diagnosis_origin) << "\","
+                << "\"normalization_kind\":\"" << jsonEscape(segment.normalization_kind) << "\","
+                << "\"lhs_raw_summary\":\"" << jsonEscape(segment.lhs_raw_summary) << "\","
+                << "\"rhs_raw_summary\":\"" << jsonEscape(segment.rhs_raw_summary) << "\","
+                << "\"lhs_normalized_summary\":\"" << jsonEscape(segment.lhs_normalized_summary) << "\","
+                << "\"rhs_normalized_summary\":\"" << jsonEscape(segment.rhs_normalized_summary) << "\","
+                << "\"lhs_normalization_changed\":" << (segment.lhs_normalization_changed ? "true" : "false") << ","
+                << "\"rhs_normalization_changed\":" << (segment.rhs_normalization_changed ? "true" : "false") << ","
+                << "\"lhs_normalization_reason\":\"" << jsonEscape(segment.lhs_normalization_reason) << "\","
+                << "\"rhs_normalization_reason\":\"" << jsonEscape(segment.rhs_normalization_reason) << "\","
                 << "\"lhs_unsupported_opcode\":"
                 << (segment.lhs_unsupported_opcode ? std::to_string(*segment.lhs_unsupported_opcode) : "null") << ","
                 << "\"rhs_unsupported_opcode\":"

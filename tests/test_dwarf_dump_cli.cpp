@@ -1128,6 +1128,7 @@ int main() {
         assert(out.find("--schema-version") != std::string::npos);
         assert(out.find("--reloc-check") != std::string::npos);
         assert(out.find("--normalize-loc") != std::string::npos);
+        assert(out.find("--normalization-policy=<off|symbolic-canonical>") != std::string::npos);
         assert(out.find("Apply semantic normalization before compare") != std::string::npos);
         assert(out.find("--range-aware") != std::string::npos);
         assert(out.find("--vendor-op-profile=<P>") != std::string::npos);
@@ -2826,9 +2827,13 @@ int main() {
         assert(!row_json.empty());
         assert(row_json.find("\"normalization_applied\":true") != std::string::npos);
         assert(row_json.find("\"normalization_equal\":true") != std::string::npos);
+        assert(row_json.find("\"normalization_status\":\"attempted\"") != std::string::npos);
+        assert(row_json.find("\"normalization_reason\":\"symbolic canonical comparison\"") != std::string::npos);
         assert(row_json.find("\"lhs_normalization_changed\":") != std::string::npos);
         assert(row_json.find("\"rhs_normalization_changed\":") != std::string::npos);
         assert(row_json.find("\"normalization_kind\":\"symbolic_canonical\"") != std::string::npos);
+        assert(row_json.find("\"lhs_raw_summary\":") != std::string::npos);
+        assert(row_json.find("\"rhs_raw_summary\":") != std::string::npos);
         assert(row_json.find("\"lhs_summary\"") != std::string::npos);
         assert(row_json.find("\"rhs_summary\"") != std::string::npos);
         assert(row_json.find("\"lhs_normalized_summary\"") != std::string::npos);
@@ -2839,6 +2844,35 @@ int main() {
         assert(out_json.find("\"normalization_attempted\":1") != std::string::npos);
         assert(out_json.find("\"normalization_changed\":") != std::string::npos);
         assert(out_json.find("\"normalization_kind_counts\"") != std::string::npos);
+    }
+
+    {
+        std::vector<uint8_t> lhs_expr = {
+            static_cast<uint8_t>(dwarf::DwarfOp::DW_OP_reg1),
+            static_cast<uint8_t>(dwarf::DwarfOp::DW_OP_const1u), 1,
+            static_cast<uint8_t>(dwarf::DwarfOp::DW_OP_plus),
+            static_cast<uint8_t>(dwarf::DwarfOp::DW_OP_stack_value)
+        };
+        std::vector<uint8_t> rhs_expr = {
+            static_cast<uint8_t>(dwarf::DwarfOp::DW_OP_const1u), 1,
+            static_cast<uint8_t>(dwarf::DwarfOp::DW_OP_reg1),
+            static_cast<uint8_t>(dwarf::DwarfOp::DW_OP_plus),
+            static_cast<uint8_t>(dwarf::DwarfOp::DW_OP_stack_value)
+        };
+        std::string lhs_elf = makeSingleVariableLocationELF("dwarf_cli_norm_policy_lhs", "norm", lhs_expr);
+        std::string rhs_elf = makeSingleVariableLocationELF("dwarf_cli_norm_policy_rhs", "norm", rhs_expr);
+        std::string out_json;
+        int code_json = runAndCapture(
+            dwarf_dump + " compare-expr " + lhs_elf + " " + rhs_elf +
+                " --name=norm --normalization-policy=symbolic-canonical --allow-unknown --allow-missing --format=json --schema-version=1",
+            "/tmp/dwarf_cli_normalization_policy_json.txt", out_json);
+        assert(code_json == 0);
+        std::string row_json = extractFirstObjectFromArrayKey(out_json, "comparisons");
+        assert(!row_json.empty());
+        assert(out_json.find("\"normalization_policy\":\"symbolic_canonical\"") != std::string::npos);
+        assert(row_json.find("\"normalization_status\":\"attempted\"") != std::string::npos);
+        assert(row_json.find("\"lhs_raw_summary\":") != std::string::npos);
+        assert(row_json.find("\"rhs_raw_summary\":") != std::string::npos);
     }
 
     {
@@ -3218,6 +3252,7 @@ int main() {
             "/tmp/dwarf_expr_verify_features_all.json", out_json);
         assert(code_json == 0);
         assert(out_json.find("\"verify_features\":[\"section-reloc\",\"loc-normalize\",\"range-aware\"]") != std::string::npos);
+        assert(out_json.find("\"normalization_policy\":\"symbolic_canonical\"") != std::string::npos);
         assert(out_json.find("\"solver_timeout_ms\":123") != std::string::npos);
         assert(out_json.find("\"verify_profile\":\"custom\"") != std::string::npos);
         assert(out_json.find("\"gate_profile\":\"custom\"") != std::string::npos);
@@ -3234,6 +3269,7 @@ int main() {
             "/tmp/dwarf_expr_verify_profile_off.json", out_json);
         assert(code_json == 0);
         assert(out_json.find("\"verify_features\":[]") != std::string::npos);
+        assert(out_json.find("\"normalization_policy\":\"off\"") != std::string::npos);
         assert(out_json.find("\"reloc_check\":false") != std::string::npos);
         assert(out_json.find("\"normalize_loc\":false") != std::string::npos);
         assert(out_json.find("\"range_aware\":false") != std::string::npos);
@@ -3250,6 +3286,7 @@ int main() {
         assert(code == 0 || code == 2);
         assert(out.find("verify_profile=") != std::string::npos);
         assert(out.find("verify_features=") != std::string::npos);
+        assert(out.find("normalization_policy=off") != std::string::npos);
         assert(out.find("solver_timeout_ms=456") != std::string::npos);
         assert(out.find("gate_profile=") != std::string::npos);
         assert(out.find("gate_pass=") != std::string::npos);
@@ -3282,6 +3319,7 @@ int main() {
         assert(code == 0 || code == 2);
         assert(out.find("\"profile\"") != std::string::npos);
         assert(out.find("\"verify_profile\"") != std::string::npos);
+        assert(out.find("\"normalization_policy\"") != std::string::npos);
         assert(out.find("\"verify_features\"") != std::string::npos);
         assert(out.find("\"solver_timeout_ms\":789") != std::string::npos);
         assert(out.find("\"gate_profile\"") != std::string::npos);

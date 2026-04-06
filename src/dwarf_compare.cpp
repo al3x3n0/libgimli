@@ -52,13 +52,23 @@ struct VerifyFeatures {
     bool section_reloc = false;
     bool loc_normalize = false;
     bool range_aware = false;
+    std::string normalization_policy = "off";
 };
+
+static std::string normalizationPolicyName(const CrossBinaryCompareOptions& opts) {
+    if (opts.normalization_policy == CrossBinaryCompareOptions::NormalizationPolicy::SYMBOLIC_CANONICAL ||
+        opts.enable_location_semantic_normalization) {
+        return "symbolic_canonical";
+    }
+    return "off";
+}
 
 VerifyFeatures toVerifyFeatures(const CrossBinaryCompareOptions& opts) {
     VerifyFeatures out;
     out.section_reloc = opts.enable_relocation_checks;
     out.loc_normalize = opts.enable_location_semantic_normalization;
     out.range_aware = opts.enable_range_aware_location_compare;
+    out.normalization_policy = normalizationPolicyName(opts);
     return out;
 }
 
@@ -349,6 +359,7 @@ CompareExprExecutionResult executeCompareExpr(const DwarfParser& lhs,
             oss << "{"
                 << "\"profile\":{"
                 << "\"verify_profile\":\"" << jsonEscape(options.verify_profile) << "\","
+                << "\"normalization_policy\":\"" << jsonEscape(normalizationPolicyName(options.compare_options)) << "\","
                 << "\"vendor_op_profile\":\""
                 << jsonEscape(vendorExpressionProfileName(options.compare_options.vendor_expression_profile)) << "\","
                 << "\"verify_features\":" << renderVerifyFeaturesJson(verify_features) << ","
@@ -370,6 +381,7 @@ CompareExprExecutionResult executeCompareExpr(const DwarfParser& lhs,
         } else {
             oss << "verify_profile=" << options.verify_profile
                 << " vendor_op_profile=" << vendorExpressionProfileName(options.compare_options.vendor_expression_profile)
+                << " normalization_policy=" << normalizationPolicyName(options.compare_options)
                 << " verify_features=" << renderVerifyFeaturesText(verify_features)
                 << " solver_timeout_ms=" << options.compare_options.verification_options.solver_timeout_ms
                 << " gate_profile=" << options.gate_profile
@@ -402,6 +414,7 @@ CompareExprExecutionResult executeCompareExpr(const DwarfParser& lhs,
                     << "\"strict_attr_present\":" << (options.compare_options.require_attribute_on_both ? "true" : "false") << ","
                     << "\"reloc_check\":" << (options.compare_options.enable_relocation_checks ? "true" : "false") << ","
                     << "\"normalize_loc\":" << (options.compare_options.enable_location_semantic_normalization ? "true" : "false") << ","
+                    << "\"normalization_policy\":\"" << jsonEscape(normalizationPolicyName(options.compare_options)) << "\","
                     << "\"range_aware\":" << (options.compare_options.enable_range_aware_location_compare ? "true" : "false") << ","
                     << "\"vendor_op_profile\":\""
                     << jsonEscape(vendorExpressionProfileName(options.compare_options.vendor_expression_profile)) << "\","
@@ -479,6 +492,7 @@ CompareExprExecutionResult executeCompareExpr(const DwarfParser& lhs,
                 << "\"strict_attr_present\":" << (options.compare_options.require_attribute_on_both ? "true" : "false") << ","
                 << "\"reloc_check\":" << (options.compare_options.enable_relocation_checks ? "true" : "false") << ","
                 << "\"normalize_loc\":" << (options.compare_options.enable_location_semantic_normalization ? "true" : "false") << ","
+                << "\"normalization_policy\":\"" << jsonEscape(normalizationPolicyName(options.compare_options)) << "\","
                 << "\"range_aware\":" << (options.compare_options.enable_range_aware_location_compare ? "true" : "false") << ","
                 << "\"vendor_op_profile\":\""
                 << jsonEscape(vendorExpressionProfileName(options.compare_options.vendor_expression_profile)) << "\","

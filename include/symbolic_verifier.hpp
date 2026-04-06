@@ -33,11 +33,18 @@ struct ExpressionVerificationResult {
     std::string reason;
     std::string reason_class;
     std::string isolation_kind;
+    bool normalization_attempted = false;
+    std::string normalization_status;
+    std::string normalization_reason;
     bool normalization_applied = false;
     bool normalization_equal = false;
     std::string normalization_kind;
+    std::string lhs_raw_summary;
+    std::string rhs_raw_summary;
     std::string lhs_normalized_summary;
     std::string rhs_normalized_summary;
+    std::string lhs_normalization_reason;
+    std::string rhs_normalization_reason;
     bool lhs_normalization_changed = false;
     bool rhs_normalization_changed = false;
     std::string lhs_summary;

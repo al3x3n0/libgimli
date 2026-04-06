@@ -584,6 +584,7 @@ void printCompareExprUsage(const char* prog) {
               << "  --strict-attr-present            Compare only pairs where attr exists on both sides\n"
               << "  --reloc-check                    Enable relocation/index sanity checks (optional)\n"
               << "  --normalize-loc                  Apply semantic normalization before compare and coalesce equivalent location-list entries\n"
+              << "  --normalization-policy=<off|symbolic-canonical>  Canonicalize expressions before compare (default: off)\n"
               << "  --range-aware                    Compare location lists over PC ranges/coverage\n"
               << "  --vendor-op-profile=<P>          Non-GNU vendor opcode profile: none|synthetic-v1 (default: none)\n"
               << "  --verify-features=<LIST>         Enable compare checks: section-reloc,loc-normalize,range-aware (special: all,none)\n"
@@ -1646,6 +1647,31 @@ static bool parseVerifyFeatureProfile(const std::string& raw, VerifyRelocFeature
         return true;
     }
     return false;
+}
+
+static void applyNormalizationPolicy(CrossBinaryCompareOptions& opts,
+                                    CrossBinaryCompareOptions::NormalizationPolicy policy) {
+    opts.normalization_policy = policy;
+    opts.enable_location_semantic_normalization = policy == CrossBinaryCompareOptions::NormalizationPolicy::SYMBOLIC_CANONICAL;
+}
+
+static bool parseNormalizationPolicy(const std::string& raw,
+                                   CrossBinaryCompareOptions::NormalizationPolicy& policy) {
+    if (raw == "off") {
+        policy = CrossBinaryCompareOptions::NormalizationPolicy::OFF;
+        return true;
+    }
+    if (raw == "symbolic-canonical" || raw == "symbolic_canonical") {
+        policy = CrossBinaryCompareOptions::NormalizationPolicy::SYMBOLIC_CANONICAL;
+        return true;
+    }
+    return false;
+}
+
+static void applyNormalizationPolicy(CrossBinaryCompareOptions& opts, bool enabled) {
+    applyNormalizationPolicy(opts, enabled
+                                ? CrossBinaryCompareOptions::NormalizationPolicy::SYMBOLIC_CANONICAL
+                                : CrossBinaryCompareOptions::NormalizationPolicy::OFF);
 }
 
 static bool applyVerifyRelocGateProfile(const std::string& raw,
@@ -3170,7 +3196,18 @@ static int runCompareExpr(int argc, char* argv[]) {
             continue;
         }
         if (key == "--normalize-loc") {
-            cmp_opts.enable_location_semantic_normalization = true;
+            applyNormalizationPolicy(cmp_opts, true);
+            continue;
+        }
+        if (key == "--normalization-policy") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            CrossBinaryCompareOptions::NormalizationPolicy policy;
+            if (!parseNormalizationPolicy(val, policy)) {
+                std::cerr << "Error: invalid --normalization-policy value '" << val
+                          << "' (expected off|symbolic-canonical)\n";
+                return 1;
+            }
+            applyNormalizationPolicy(cmp_opts, policy);
             continue;
         }
         if (key == "--range-aware") {
@@ -3198,7 +3235,7 @@ static int runCompareExpr(int argc, char* argv[]) {
                 return 1;
             }
             cmp_opts.enable_relocation_checks = features.section_reloc;
-            cmp_opts.enable_location_semantic_normalization = features.loc_normalize;
+            applyNormalizationPolicy(cmp_opts, features.loc_normalize);
             cmp_opts.enable_range_aware_location_compare = features.range_aware;
             verify_profile = "custom";
             continue;
@@ -3263,7 +3300,7 @@ static int runCompareExpr(int argc, char* argv[]) {
             }
             if (is_gate_profile) gate_profile = val;
             cmp_opts.enable_relocation_checks = features.section_reloc;
-            cmp_opts.enable_location_semantic_normalization = features.loc_normalize;
+            applyNormalizationPolicy(cmp_opts, features.loc_normalize);
             cmp_opts.enable_range_aware_location_compare = features.range_aware;
             verify_profile = val;
             continue;

@@ -7228,6 +7228,10 @@ void testCrossBinaryExpressionComparator() {
     assert(json_report.find("\"reason_class\"") != std::string::npos);
     assert(json_report.find("\"isolation_kind\"") != std::string::npos);
     assert(json_report.find("\"normalization_applied\"") != std::string::npos);
+    assert(json_report.find("\"normalization_status\"") != std::string::npos);
+    assert(json_report.find("\"normalization_reason\"") != std::string::npos);
+    assert(json_report.find("\"lhs_raw_summary\"") != std::string::npos);
+    assert(json_report.find("\"rhs_raw_summary\"") != std::string::npos);
     assert(json_report.find("\"normalization_kind_counts\"") != std::string::npos);
     assert(json_report.find("\"lhs_attribute_kind\"") != std::string::npos);
     assert(json_report.find("\"rhs_attribute_detail\"") != std::string::npos);
@@ -7278,6 +7282,10 @@ void testCrossBinaryExpressionComparator() {
         assert(normalized_json.find("\"normalization_applied\":true") != std::string::npos);
         assert(normalized_json.find("\"normalization_equal\":true") != std::string::npos);
         assert(normalized_json.find("\"normalization_kind\":\"symbolic_canonical\"") != std::string::npos);
+        assert(normalized_json.find("\"lhs_raw_summary\"") != std::string::npos);
+        assert(normalized_json.find("\"rhs_raw_summary\"") != std::string::npos);
+        assert(normalized_json.find("\"lhs_normalization_reason\"") != std::string::npos);
+        assert(normalized_json.find("\"rhs_normalization_reason\"") != std::string::npos);
         assert(normalized_json.find("\"normalized_equal\":") != std::string::npos);
         assert(normalized_json.find("\"normalization_kind_counts\"") != std::string::npos);
     }

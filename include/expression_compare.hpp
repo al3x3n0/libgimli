@@ -40,6 +40,10 @@ struct CrossBinaryCompareOptions {
     bool enable_relocation_checks = false;
     bool enable_location_semantic_normalization = false;
     bool enable_range_aware_location_compare = false;
+    enum class NormalizationPolicy {
+        OFF,
+        SYMBOLIC_CANONICAL,
+    } normalization_policy = NormalizationPolicy::OFF;
 };
 
 struct LocationRangeSegmentVerdict {
@@ -50,6 +54,20 @@ struct LocationRangeSegmentVerdict {
     bool rhs_present = false;
     std::string reason;
     std::string reason_class;
+    bool normalization_attempted = false;
+    bool normalization_applied = false;
+    bool normalization_equal = false;
+    std::string normalization_status;
+    std::string normalization_reason;
+    std::string normalization_kind;
+    std::string lhs_raw_summary;
+    std::string rhs_raw_summary;
+    std::string lhs_normalized_summary;
+    std::string rhs_normalized_summary;
+    bool lhs_normalization_changed = false;
+    bool rhs_normalization_changed = false;
+    std::string lhs_normalization_reason;
+    std::string rhs_normalization_reason;
     std::string isolation_kind;
     std::string solver_result;
     std::string diagnosis_origin;
