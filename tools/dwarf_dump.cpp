@@ -732,6 +732,8 @@ void printVerifyRelocUsage(const char* prog) {
               << "  --format=<text|json>             Report format (default: text)\n"
               << "  --output=<PATH>                  Write report to file instead of stdout\n"
               << "  --summary-only                   Emit only summary (no issue rows)\n"
+              << "  --normalize-loc                  Compatibility alias for symbolic-canonical normalization\n"
+              << "  --normalization-policy=<off|symbolic-canonical>  Select normalization policy used in profile output\n"
               << "  --verify-profile=<P>             Verification preset: off|minimal|default|full|strict|balanced|lenient\n"
               << "  --verify-features=<LIST>         Enable checks: section-reloc,loc-normalize,range-aware (special: all,none)\n"
               << "  --emit-profile-only              Emit only active verification/gate profile\n"
@@ -1649,6 +1651,12 @@ static bool parseVerifyFeatureProfile(const std::string& raw, VerifyRelocFeature
     return false;
 }
 
+static std::string renderNormalizationPolicyName(CrossBinaryCompareOptions::NormalizationPolicy policy) {
+    return policy == CrossBinaryCompareOptions::NormalizationPolicy::SYMBOLIC_CANONICAL
+        ? "symbolic_canonical"
+        : "off";
+}
+
 static void applyNormalizationPolicy(CrossBinaryCompareOptions& opts,
                                     CrossBinaryCompareOptions::NormalizationPolicy policy) {
     opts.normalization_policy = policy;
@@ -2067,10 +2075,18 @@ static int runVerifyReloc(int argc, char* argv[]) {
     bool emit_profile_only = false;
     bool emit_gate_signature_only = false;
     VerifyRelocFeatures verify_features;
+    CrossBinaryCompareOptions::NormalizationPolicy normalization_policy =
+        CrossBinaryCompareOptions::NormalizationPolicy::OFF;
     size_t max_issues = 0;
     size_t max_errors = 0;
     size_t max_warnings = std::numeric_limits<size_t>::max();
     bool report_only = false;
+
+    auto syncNormalizationPolicy = [&]() {
+        normalization_policy = verify_features.loc_normalize
+            ? CrossBinaryCompareOptions::NormalizationPolicy::SYMBOLIC_CANONICAL
+            : CrossBinaryCompareOptions::NormalizationPolicy::OFF;
+    };
 
     for (int i = 3; i < argc; ++i) {
         std::string arg = argv[i];
@@ -2100,6 +2116,24 @@ static int runVerifyReloc(int argc, char* argv[]) {
             summary_only = true;
             continue;
         }
+        if (key == "--normalize-loc") {
+            verify_features.loc_normalize = true;
+            syncNormalizationPolicy();
+            continue;
+        }
+        if (key == "--normalization-policy") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            CrossBinaryCompareOptions::NormalizationPolicy parsed_policy;
+            if (!parseNormalizationPolicy(val, parsed_policy)) {
+                std::cerr << "Error: invalid --normalization-policy value '" << val
+                          << "' (expected off|symbolic-canonical)\n";
+                return 1;
+            }
+            normalization_policy = parsed_policy;
+            verify_features.loc_normalize =
+                parsed_policy == CrossBinaryCompareOptions::NormalizationPolicy::SYMBOLIC_CANONICAL;
+            continue;
+        }
         if (key == "--emit-profile-only") {
             emit_profile_only = true;
             continue;
@@ -2126,6 +2160,7 @@ static int runVerifyReloc(int argc, char* argv[]) {
                 verify_features.loc_normalize = true;
                 verify_features.range_aware = true;
             }
+            syncNormalizationPolicy();
             continue;
         }
         if (key == "--verify-features") {
@@ -2135,6 +2170,7 @@ static int runVerifyReloc(int argc, char* argv[]) {
                           << "' (expected comma-separated section-reloc|loc-normalize|range-aware|all|none)\n";
                 return 1;
             }
+            syncNormalizationPolicy();
             continue;
         }
         if (key == "--emit-gate-signature-only") {
@@ -2516,6 +2552,7 @@ static int runVerifyReloc(int argc, char* argv[]) {
                 << "\"profile\":{"
                 << "\"verify_profile\":\"" << jsonEscape(verify_profile) << "\","
                 << "\"gate_profile\":\"" << jsonEscape(gate_profile) << "\","
+                << "\"normalization_policy\":\"" << renderNormalizationPolicyName(normalization_policy) << "\","
                 << "\"verify_features\":[";
             bool first = true;
             if (verify_features.section_reloc) {
@@ -2558,6 +2595,7 @@ static int runVerifyReloc(int argc, char* argv[]) {
         } else {
             out << "verify_profile=" << verify_profile
                 << " gate_profile=" << gate_profile
+                << " normalization_policy=" << renderNormalizationPolicyName(normalization_policy)
                 << " verify_features=" << renderVerifyFeaturesText(verify_features)
                 << " gate_trigger=" << gate_trigger
                 << " gate_signature=" << gate_signature
@@ -2612,6 +2650,7 @@ static int runVerifyReloc(int argc, char* argv[]) {
             << "\"sort_top_codes\":\"" << jsonEscape(sort_top_codes) << "\","
             << "\"verify_profile\":\"" << jsonEscape(verify_profile) << "\","
             << "\"gate_profile\":\"" << jsonEscape(gate_profile) << "\","
+            << "\"normalization_policy\":\"" << renderNormalizationPolicyName(normalization_policy) << "\","
             << "\"explain_gate_mode\":\"" << jsonEscape(explain_gate_mode) << "\","
             << "\"min_count\":" << min_count << ","
             << "\"max_total\":" << max_total << ","
@@ -2805,6 +2844,7 @@ static int runVerifyReloc(int argc, char* argv[]) {
             << " sort_top_codes=" << sort_top_codes
             << " verify_profile=" << verify_profile
             << " gate_profile=" << gate_profile
+            << " normalization_policy=" << renderNormalizationPolicyName(normalization_policy)
             << " explain_gate_mode=" << explain_gate_mode
             << " min_count=" << min_count
             << " max_total=" << max_total

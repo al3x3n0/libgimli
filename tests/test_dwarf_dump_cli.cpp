@@ -1168,6 +1168,8 @@ int main() {
         assert(out.find("--format=<text|json>") != std::string::npos);
         assert(out.find("--max-errors") != std::string::npos);
         assert(out.find("--explain-gate") != std::string::npos);
+        assert(out.find("--normalize-loc") != std::string::npos);
+        assert(out.find("--normalization-policy=<off|symbolic-canonical>") != std::string::npos);
         assert(out.find("--verify-profile=<P>") != std::string::npos);
         assert(out.find("--verify-features=<LIST>") != std::string::npos);
         assert(out.find("--emit-profile-only") != std::string::npos);
@@ -2306,6 +2308,7 @@ int main() {
         assert(out.find("only_sections=") != std::string::npos);
         assert(out.find("only_severities=") != std::string::npos);
         assert(out.find("verify_features=") != std::string::npos);
+        assert(out.find("normalization_policy=") != std::string::npos);
         assert(out.find("gate_trigger=") != std::string::npos);
         assert(out.find("gate_trigger_detail=") != std::string::npos);
         assert(out.find("gate_signature=") != std::string::npos);
@@ -2347,6 +2350,7 @@ int main() {
         assert(out.find("\"only_sections\"") != std::string::npos);
         assert(out.find("\"only_severities\"") != std::string::npos);
         assert(out.find("\"verify_features\"") != std::string::npos);
+        assert(out.find("\"normalization_policy\"") != std::string::npos);
         assert(out.find("\"gate\"") != std::string::npos);
         assert(out.find("\"trigger\"") != std::string::npos);
         assert(out.find("\"trigger_detail\"") != std::string::npos);
@@ -2374,6 +2378,7 @@ int main() {
         assert(code == 0 || code == 2);
         assert(out.find("verify_profile=") != std::string::npos);
         assert(out.find("verify_features=") != std::string::npos);
+        assert(out.find("normalization_policy=") != std::string::npos);
         assert(out.find("gate_trigger=") != std::string::npos);
         assert(out.find("gate_signature=") != std::string::npos);
         assert(out.find("summary total=") == std::string::npos);
@@ -2401,6 +2406,7 @@ int main() {
         assert(out.find("\"profile\"") != std::string::npos);
         assert(out.find("\"verify_profile\"") != std::string::npos);
         assert(out.find("\"verify_features\"") != std::string::npos);
+        assert(out.find("\"normalization_policy\"") != std::string::npos);
         assert(out.find("\"gate\"") != std::string::npos);
         assert(out.find("\"trigger\"") != std::string::npos);
         assert(out.find("\"thresholds\"") != std::string::npos);
@@ -2416,6 +2422,7 @@ int main() {
             "/tmp/dwarf_cli_verify_reloc_features_none.txt", out);
         assert(code == 0);
         assert(out.find("verify_features=none") != std::string::npos);
+        assert(out.find("normalization_policy=off") != std::string::npos);
         assert(out.find("summary total=0") != std::string::npos);
     }
 
@@ -2427,6 +2434,7 @@ int main() {
             "/tmp/dwarf_cli_verify_reloc_profile_off.txt", out);
         assert(code == 0);
         assert(out.find("verify_features=none") != std::string::npos);
+        assert(out.find("normalization_policy=off") != std::string::npos);
         assert(out.find("summary total=0") != std::string::npos);
     }
 
@@ -2439,6 +2447,7 @@ int main() {
         assert(code == 0 || code == 2);
         assert(out.find("gate_profile=strict") != std::string::npos);
         assert(out.find("verify_features=section-reloc,loc-normalize,range-aware") != std::string::npos);
+        assert(out.find("normalization_policy=symbolic_canonical") != std::string::npos);
     }
 
     {
@@ -2449,6 +2458,27 @@ int main() {
             "/tmp/dwarf_cli_verify_reloc_features_section_only.txt", out);
         assert(code == 0 || code == 2);
         assert(out.find("verify_features=section-reloc") != std::string::npos);
+        assert(out.find("normalization_policy=off") != std::string::npos);
+    }
+
+    {
+        std::string out;
+        int code = runAndCapture(
+            dwarf_dump + " verify-reloc " + test_elf +
+                " --summary-only --normalize-loc",
+            "/tmp/dwarf_cli_verify_reloc_normalize_loc.txt", out);
+        assert(code == 0 || code == 2);
+        assert(out.find("normalization_policy=symbolic_canonical") != std::string::npos);
+    }
+
+    {
+        std::string out;
+        int code = runAndCapture(
+            dwarf_dump + " verify-reloc " + test_elf +
+                " --summary-only --normalization-policy=off",
+            "/tmp/dwarf_cli_verify_reloc_normalization_policy_off.txt", out);
+        assert(code == 0 || code == 2);
+        assert(out.find("normalization_policy=off") != std::string::npos);
     }
 
     {
