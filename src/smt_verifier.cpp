@@ -627,7 +627,13 @@ SMTVerificationResult SMTExpressionVerifier::verify(const SymbolicExpressionResu
         return out;
     }
 
-    z3::context ctx;
+    // Reuse one Z3 context per thread across verify() calls; constructing a fresh
+    // context per call was a dominant cost on the SMT path. Each call still uses a
+    // fresh Encoder (whose caches reset) and a fresh solver, so queries stay fully
+    // independent; Z3 ref-counts AST nodes so live memory stays bounded per call.
+    // thread_local keeps this safe under concurrent use (contexts aren't shareable
+    // across threads).
+    thread_local z3::context ctx;
     Encoder encoder(ctx, DwarfUtils::objectIsLittleEndian());
 
     if (lhs.type == SymbolicExpressionResult::Type::COMPOSITE) {

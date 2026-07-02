@@ -20,6 +20,11 @@ struct ExpressionVerificationOptions {
     bool run_differential = true;
     // Optional Z3 timeout per equivalence query (0 = solver default/no timeout).
     uint32_t solver_timeout_ms = 0;
+    // Apply algebraic/canonical rewrite to evaluated expressions before comparison.
+    // Enabled by default so semantically-equivalent-but-syntactically-different
+    // expressions (including in the CFI path) are reconciled symbolically instead
+    // of failing on a raw byte mismatch.
+    bool enable_symbolic_normalization = true;
 };
 
 struct ExpressionVerificationResult {

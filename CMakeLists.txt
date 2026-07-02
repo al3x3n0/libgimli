@@ -51,6 +51,7 @@ set(SOURCES
     src/demangler.cpp
     src/type_printer.cpp
     src/symbol_table.cpp
+    src/bolt_remap.cpp
     src/variable_inspector.cpp
     src/dwarf_support_matrix.cpp
 )
@@ -87,6 +88,7 @@ set(HEADERS
     include/demangler.hpp
     include/type_printer.hpp
     include/symbol_table.hpp
+    include/bolt_remap.hpp
     include/variable_inspector.hpp
     include/dwarf_support_matrix.hpp
 )

@@ -1,8 +1,10 @@
 #pragma once
 
+#include "bolt_remap.hpp"
 #include "die_parser.hpp"
 #include "dwarf_parser.hpp"
 #include "symbolic_verifier.hpp"
+#include <functional>
 #include <limits>
 #include <memory>
 #include <map>
@@ -17,6 +19,11 @@ enum class CompareKeyMode {
     NAME_ONLY,
     LINKAGE_OR_NAME
 };
+
+// Maps an lhs "old" code address to its rhs "new" address, or returns nullopt
+// when the address is not remapped. Lets callers reconcile BOLT-style (or any
+// other) relocation without coupling the comparator to a specific map layout.
+using AddressRemapFn = std::function<std::optional<uint64_t>(uint64_t)>;
 
 struct CrossBinaryCompareOptions {
     DwarfTag tag = DwarfTag::DW_TAG_variable;
@@ -43,7 +50,16 @@ struct CrossBinaryCompareOptions {
     enum class NormalizationPolicy {
         OFF,
         SYMBOLIC_CANONICAL,
-    } normalization_policy = NormalizationPolicy::OFF;
+    } normalization_policy = NormalizationPolicy::SYMBOLIC_CANONICAL;
+    // Optional callback that returns the reconciled rhs "new" address for an lhs
+    // "old" code address (nullopt when unmapped). When set, address expressions
+    // that differ only by a mapped relocation are reconciled as EQUIVALENT
+    // instead of being reported as a symbolic difference.
+    AddressRemapFn address_remap;
+    // When true (default) and no explicit address_remap is supplied,
+    // compareParsersByName auto-detects a BOLT remap from the two ELFs (if either
+    // carries BOLT markers) and installs it as the address_remap callback.
+    bool bolt_auto_remap = true;
 };
 
 struct LocationRangeSegmentVerdict {

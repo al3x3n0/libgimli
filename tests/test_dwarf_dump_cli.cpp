@@ -2184,7 +2184,7 @@ int main() {
         std::string out_json_raw;
         int code_json_raw = runAndCapture(
             dwarf_dump + " compare-expr " + lhs_loc_elf + " " + rhs_loc_elf +
-                " --name=range_norm --range-aware --allow-unknown --allow-missing --report-only --format=json --schema-version=1",
+                " --name=range_norm --range-aware --normalization-policy=off --allow-unknown --allow-missing --report-only --format=json --schema-version=1",
             "/tmp/dwarf_cli_range_aware_loclists_json_raw.txt", out_json_raw);
         assert(code_json_raw == 0);
         std::string row_json_raw = extractFirstObjectFromArrayKey(out_json_raw, "comparisons");
@@ -3418,7 +3418,7 @@ int main() {
         assert(code == 0 || code == 2);
         assert(out.find("verify_profile=") != std::string::npos);
         assert(out.find("verify_features=") != std::string::npos);
-        assert(out.find("normalization_policy=off") != std::string::npos);
+        assert(out.find("normalization_policy=symbolic_canonical") != std::string::npos);
         assert(out.find("solver_timeout_ms=456") != std::string::npos);
         assert(out.find("gate_profile=") != std::string::npos);
         assert(out.find("gate_pass=") != std::string::npos);
@@ -3588,7 +3588,7 @@ int main() {
         std::string out_fail;
         int code_fail = runAndCapture(
             dwarf_dump + " compare-expr " + test_elf + " " + test_elf +
-                " --name=_IO_stdin_used --fail-on-solver-result=" + std::string(kExprPrimarySolverResult) +
+                " --name=_IO_stdin_used --normalization-policy=off --fail-on-solver-result=" + std::string(kExprPrimarySolverResult) +
                 " --allow-unknown --allow-missing",
             "/tmp/dwarf_cli_expr_fail_on_solver_unsat.txt", out_fail);
         assert(code_fail == 2);
@@ -3600,7 +3600,7 @@ int main() {
         std::string out_fail_json;
         int code_fail_json = runAndCapture(
             dwarf_dump + " compare-expr " + test_elf + " " + test_elf +
-                " --name=_IO_stdin_used --fail-on-solver-result=" + std::string(kExprPrimarySolverResult) +
+                " --name=_IO_stdin_used --normalization-policy=off --fail-on-solver-result=" + std::string(kExprPrimarySolverResult) +
                 " --allow-unknown --allow-missing --format=json --schema-version=1",
             "/tmp/dwarf_cli_expr_fail_on_solver_unsat.json", out_fail_json);
         assert(code_fail_json == 2);
@@ -3619,7 +3619,7 @@ int main() {
         std::string out_fail;
         int code_fail = runAndCapture(
             dwarf_dump + " compare-expr " + test_elf + " " + test_elf +
-                " --name=_IO_stdin_used --fail-on-verifier-backend=" + std::string(kExprSolverBackend) +
+                " --name=_IO_stdin_used --normalization-policy=off --fail-on-verifier-backend=" + std::string(kExprSolverBackend) +
                 " --allow-unknown --allow-missing",
             "/tmp/dwarf_cli_expr_fail_on_verifier_backend_z3.txt", out_fail);
         assert(code_fail == 2);
@@ -3631,7 +3631,7 @@ int main() {
         std::string out_fail_json;
         int code_fail_json = runAndCapture(
             dwarf_dump + " compare-expr " + test_elf + " " + test_elf +
-                " --name=_IO_stdin_used --fail-on-verifier-backend=" + std::string(kExprSolverBackend) +
+                " --name=_IO_stdin_used --normalization-policy=off --fail-on-verifier-backend=" + std::string(kExprSolverBackend) +
                 " --allow-unknown --allow-missing --format=json --schema-version=1",
             "/tmp/dwarf_cli_expr_fail_on_verifier_backend_z3.json", out_fail_json);
         assert(code_fail_json == 2);
@@ -3694,7 +3694,7 @@ int main() {
         std::string out_fail_json;
         int code_fail_json = runAndCapture(
             dwarf_dump + " compare-expr " + test_elf + " " + test_elf +
-                " --name=_IO_stdin_used --fail-on-solver-result=" + std::string(kExprPrimarySolverResult) +
+                " --name=_IO_stdin_used --normalization-policy=off --fail-on-solver-result=" + std::string(kExprPrimarySolverResult) +
                 " --fail-on-verifier-backend=" + std::string(kExprSolverBackend) +
                 " --allow-unknown --allow-missing --format=json --schema-version=1",
             "/tmp/dwarf_cli_expr_fail_on_both_solver_and_backend.json", out_fail_json);
@@ -3709,7 +3709,7 @@ int main() {
         std::string out_fail;
         int code_fail = runAndCapture(
             dwarf_dump + " compare-expr " + test_elf + " " + test_elf +
-                " --name=_IO_stdin_used --fail-on-solver-result=" + std::string(kExprPrimarySolverResult) +
+                " --name=_IO_stdin_used --normalization-policy=off --fail-on-solver-result=" + std::string(kExprPrimarySolverResult) +
                 " --fail-on-verifier-backend=" + std::string(kExprSolverBackend) +
                 " --allow-unknown --allow-missing",
             "/tmp/dwarf_cli_expr_fail_on_both_solver_and_backend.txt", out_fail);

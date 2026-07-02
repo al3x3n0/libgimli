@@ -271,6 +271,18 @@ ExpressionVerificationResult ExpressionVerifier::verifyWithContexts(
         return out;
     }
 
+    // Canonicalize both expression trees before comparison so semantically
+    // equivalent but syntactically different forms reconcile symbolically rather
+    // than failing on a raw byte/structure mismatch (e.g. the CFI path). On a
+    // mismatch that normalization cannot resolve, the downstream verifier still
+    // reports DIFFERENT.
+    if (opts.enable_symbolic_normalization) {
+        bool changed = false;
+        std::string rule_class;
+        if (l.expression) l.expression = rewriteSymExpr(l.expression, changed, rule_class);
+        if (r.expression) r.expression = rewriteSymExpr(r.expression, changed, rule_class);
+    }
+
     SMTExpressionVerifier smt;
     SMTVerificationResult smt_result = smt.verify(l, r, opts.solver_timeout_ms);
     out.verdict = smt_result.verdict;

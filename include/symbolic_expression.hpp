@@ -171,4 +171,9 @@ private:
 
 std::string summarizeSymbolicResult(const SymbolicExpressionResult& r);
 
+// Apply algebraic identity / commutative-ordering rewrites to canonicalize a
+// symbolic expression tree. `changed` is set if any rewrite fired and
+// `rule_class` names the applied rule(s). Defined in expression_compare.cpp.
+SymExprPtr rewriteSymExpr(const SymExprPtr& expr, bool& changed, std::string& rule_class);
+
 } // namespace dwarf

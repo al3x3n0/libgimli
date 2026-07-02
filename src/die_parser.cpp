@@ -359,15 +359,16 @@ std::shared_ptr<DIE> DIEParser::parseDIE(uint64_t& offset,
         return nullptr; // Null DIE
     }
     
-    // Parse abbreviation entry
-    auto abbrev_entry = lookupAbbreviationEntry(abbrev_code, abbrev_offset);
-    if (abbrev_entry.code == 0) {
+    // Parse abbreviation entry (cached; pointer into the parser-lifetime cache)
+    const AbbreviationEntry* abbrev_entry_ptr = lookupAbbreviationEntry(abbrev_code, abbrev_offset);
+    if (abbrev_entry_ptr == nullptr) {
         DEBUG_OUT("Failed to find abbreviation entry for code " << abbrev_code);
         return nullptr;
     }
-    
+    const AbbreviationEntry& abbrev_entry = *abbrev_entry_ptr;
+
     DEBUG_OUT("Found abbreviation entry, tag: " << static_cast<int>(abbrev_entry.tag));
-    
+
     // Create DIE
     auto die = std::make_shared<DIE>(abbrev_entry.tag, biased_start_offset, 0);
     die->setCUBaseOffset(cu_base_offset);
@@ -792,33 +793,43 @@ DIEParser::AbbreviationEntry DIEParser::parseAbbreviationEntry(uint64_t& offset)
     return entry;
 }
 
-DIEParser::AbbreviationEntry DIEParser::lookupAbbreviationEntry(uint64_t code, uint64_t abbrev_offset) const {
-    // Parse the abbreviation table and look up the code
+const std::map<uint64_t, DIEParser::AbbreviationEntry>&
+DIEParser::abbreviationTableAt(uint64_t abbrev_offset) const {
+    auto cached = abbrev_table_cache_.find(abbrev_offset);
+    if (cached != abbrev_table_cache_.end()) {
+        return cached->second;
+    }
+
+    // Parse this CU's abbreviation table once (from abbrev_offset to the
+    // terminating null entry) and cache it. Subsequent DIE lookups are O(log n)
+    // map lookups instead of a full re-scan + re-parse of the raw bytes.
+    std::map<uint64_t, AbbreviationEntry> table;
     uint64_t offset = abbrev_offset;
-    DEBUG_OUT("Looking up abbreviation code " << code << " starting at offset " << abbrev_offset
-              << " in table of size " << debug_abbrev_.size());
-    
     while (offset < debug_abbrev_.size()) {
         uint64_t before = offset;
         AbbreviationEntry entry = parseAbbreviationEntry(offset);
-        DEBUG_OUT("Found abbreviation entry with code " << entry.code << " at offset " << offset);
         if (entry.code == 0) {
-            break; // End of table
+            break; // End of this table
         }
-        if (entry.code == code) {
-            DEBUG_OUT("Found matching abbreviation entry!");
-            return entry;
-        }
+        table.emplace(entry.code, std::move(entry));
         if (offset <= before) {
             break;
         }
     }
-    
-    DEBUG_OUT("Abbreviation code " << code << " not found");
-    // Not found
-    AbbreviationEntry empty;
-    empty.code = 0;
-    return empty;
+
+    auto inserted = abbrev_table_cache_.emplace(abbrev_offset, std::move(table));
+    return inserted.first->second;
+}
+
+const DIEParser::AbbreviationEntry*
+DIEParser::lookupAbbreviationEntry(uint64_t code, uint64_t abbrev_offset) const {
+    const auto& table = abbreviationTableAt(abbrev_offset);
+    auto it = table.find(code);
+    if (it == table.end()) {
+        DEBUG_OUT("Abbreviation code " << code << " not found");
+        return nullptr;
+    }
+    return &it->second;
 }
 
 void DIEParser::clearDecodeError() const {

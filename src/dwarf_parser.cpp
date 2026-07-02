@@ -864,9 +864,9 @@ void DwarfParser::integrateSplitDwarf() {
     }
 }
 
-void DwarfParser::cacheDIE(std::shared_ptr<DIE> die) {
+void DwarfParser::cacheDIE(const std::shared_ptr<DIE>& die) {
     if (!die) return;
-    
+
     die_cache_[die->getOffset()] = die;
     indexTypeUnitSignature(die);
     
@@ -876,7 +876,7 @@ void DwarfParser::cacheDIE(std::shared_ptr<DIE> die) {
     }
 }
 
-void DwarfParser::indexTypeUnitSignature(std::shared_ptr<DIE> die) {
+void DwarfParser::indexTypeUnitSignature(const std::shared_ptr<DIE>& die) {
     if (!die) return;
     auto sig_attr = std::dynamic_pointer_cast<UnsignedAttributeValue>(
         die->getAttribute(DwarfAttribute::DW_AT_signature));
@@ -893,6 +893,12 @@ void DwarfParser::indexTypeUnitSignature(std::shared_ptr<DIE> die) {
 }
 
 void DwarfParser::resolveTypeSignatureReferences() {
+    // Nothing to resolve when no type-unit signatures were indexed; skip the full
+    // DIE-tree walk (and its per-attribute dynamic_casts) entirely for the common
+    // case of binaries without split type units.
+    if (type_signature_die_offset_cache_.empty()) {
+        return;
+    }
     for (const auto& cu : compilation_units_) {
         resolveTypeSignatureReferences(cu);
     }
@@ -901,7 +907,7 @@ void DwarfParser::resolveTypeSignatureReferences() {
     }
 }
 
-void DwarfParser::resolveTypeSignatureReferences(std::shared_ptr<DIE> die) {
+void DwarfParser::resolveTypeSignatureReferences(const std::shared_ptr<DIE>& die) {
     if (!die) return;
 
     std::vector<std::pair<DwarfAttribute, std::shared_ptr<TypeAttributeValue>>> replacements;

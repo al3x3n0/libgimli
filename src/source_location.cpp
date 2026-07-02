@@ -23,11 +23,8 @@ void SourceLocationResolver::addCULineInfo(const CULineInfo& cu_info) {
         }
     }
 
-    // Re-sort by address
-    std::sort(sorted_locations_.begin(), sorted_locations_.end(),
-              [](const SourceLocation& a, const SourceLocation& b) {
-                  return a.address < b.address;
-              });
+    // Defer sorting until the first query (see ensureSorted).
+    locations_sorted_ = false;
 }
 
 void SourceLocationResolver::addLineTable(
@@ -85,11 +82,8 @@ void SourceLocationResolver::addLineTable(
         }
     }
 
-    // Re-sort by address
-    std::sort(sorted_locations_.begin(), sorted_locations_.end(),
-              [](const SourceLocation& a, const SourceLocation& b) {
-                  return a.address < b.address;
-              });
+    // Defer sorting until the first query (see ensureSorted).
+    locations_sorted_ = false;
 }
 
 std::optional<SourceLocation> SourceLocationResolver::getSourceLocation(uint64_t address) const {
@@ -209,6 +203,7 @@ std::optional<AddressRange> SourceLocationResolver::getAddressRangeForLine(
 
 std::vector<SourceLocation> SourceLocationResolver::getLinesInFile(const std::string& file) const {
     std::vector<SourceLocation> results;
+    ensureSorted();
 
     for (const auto& loc : sorted_locations_) {
         if (loc.file == file ||
@@ -286,6 +281,7 @@ bool SourceLocationResolver::isValidCodeAddress(uint64_t address) const {
     if (sorted_locations_.empty()) {
         return false;
     }
+    ensureSorted();
 
     uint64_t min_addr = sorted_locations_.front().address;
     uint64_t max_addr = sorted_locations_.back().address;
@@ -301,6 +297,7 @@ void SourceLocationResolver::clear() {
     sorted_locations_.clear();
     file_line_map_.clear();
     all_files_.clear();
+    locations_sorted_ = true;
 }
 
 std::string SourceLocationResolver::buildFullPath(
@@ -383,11 +380,20 @@ std::string SourceLocationResolver::normalizePath(const std::string& path) const
 
 std::vector<SourceLocation>::const_iterator SourceLocationResolver::findLocation(
     uint64_t address) const {
-
+    ensureSorted();
     return std::lower_bound(sorted_locations_.begin(), sorted_locations_.end(), address,
                            [](const SourceLocation& loc, uint64_t addr) {
                                return loc.address < addr;
                            });
+}
+
+void SourceLocationResolver::ensureSorted() const {
+    if (locations_sorted_) return;
+    std::sort(sorted_locations_.begin(), sorted_locations_.end(),
+              [](const SourceLocation& a, const SourceLocation& b) {
+                  return a.address < b.address;
+              });
+    locations_sorted_ = true;
 }
 
 } // namespace dwarf

@@ -5,6 +5,7 @@
 #include <memory>
 #include <vector>
 #include <map>
+#include <unordered_map>
 #include <utility>
 
 namespace dwarf {
@@ -143,12 +144,18 @@ private:
     
     std::map<uint64_t, AbbreviationEntry> parseAbbreviationTable();
     AbbreviationEntry parseAbbreviationEntry(uint64_t& offset) const;
-    AbbreviationEntry lookupAbbreviationEntry(uint64_t code, uint64_t abbrev_offset = 0) const;
+    // Returns the (cached) parsed abbreviation table starting at abbrev_offset.
+    const std::map<uint64_t, AbbreviationEntry>& abbreviationTableAt(uint64_t abbrev_offset) const;
+    // Returns a pointer to the cached abbreviation entry for `code`, or nullptr.
+    const AbbreviationEntry* lookupAbbreviationEntry(uint64_t code, uint64_t abbrev_offset = 0) const;
     void clearDecodeError() const;
     bool hasDecodeError() const;
 
     mutable bool decode_error_ = false;
     std::vector<VendorFormSkipDetail> vendor_form_skip_details_;
+    // Cache of parsed abbreviation tables keyed by abbrev_offset. debug_abbrev_ is
+    // a fixed reference for the parser's lifetime, so cached tables stay valid.
+    mutable std::unordered_map<uint64_t, std::map<uint64_t, AbbreviationEntry>> abbrev_table_cache_;
 };
 
 } // namespace dwarf

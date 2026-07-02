@@ -52,7 +52,7 @@ struct VerifyFeatures {
     bool section_reloc = false;
     bool loc_normalize = false;
     bool range_aware = false;
-    std::string normalization_policy = "off";
+    std::string normalization_policy = "symbolic_canonical";
 };
 
 static std::string normalizationPolicyName(const CrossBinaryCompareOptions& opts) {

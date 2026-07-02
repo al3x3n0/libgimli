@@ -584,8 +584,10 @@ void printCompareExprUsage(const char* prog) {
               << "  --strict-attr-present            Compare only pairs where attr exists on both sides\n"
               << "  --reloc-check                    Enable relocation/index sanity checks (optional)\n"
               << "  --normalize-loc                  Apply semantic normalization before compare and coalesce equivalent location-list entries\n"
-              << "  --normalization-policy=<off|symbolic-canonical>  Canonicalize expressions before compare (default: off)\n"
+              << "  --normalization-policy=<off|symbolic-canonical>  Canonicalize expressions before compare (default: symbolic-canonical)\n"
               << "  --range-aware                    Compare location lists over PC ranges/coverage\n"
+              << "  --bolt-remap=<auto|off>          Reconcile BOLT-style code-address relocation (default: auto)\n"
+              << "  --bolt-map=<file>                Load explicit old->new address remap (lines: <old_hex> <new_hex>)\n"
               << "  --vendor-op-profile=<P>          Non-GNU vendor opcode profile: none|synthetic-v1 (default: none)\n"
               << "  --verify-features=<LIST>         Enable compare checks: section-reloc,loc-normalize,range-aware (special: all,none)\n"
               << "  --emit-profile-only              Emit only active verification/gate profile\n"
@@ -2076,7 +2078,7 @@ static int runVerifyReloc(int argc, char* argv[]) {
     bool emit_gate_signature_only = false;
     VerifyRelocFeatures verify_features;
     CrossBinaryCompareOptions::NormalizationPolicy normalization_policy =
-        CrossBinaryCompareOptions::NormalizationPolicy::OFF;
+        CrossBinaryCompareOptions::NormalizationPolicy::SYMBOLIC_CANONICAL;
     size_t max_issues = 0;
     size_t max_errors = 0;
     size_t max_warnings = std::numeric_limits<size_t>::max();
@@ -3138,6 +3140,9 @@ static int runCompareExpr(int argc, char* argv[]) {
     std::string rhs_file = argv[3];
 
     CrossBinaryCompareOptions cmp_opts;
+    // Holds an explicitly-loaded BOLT remap; must outlive the comparison call
+    // since cmp_opts.bolt_remap points at it.
+    BoltAddressRemap explicit_bolt_map;
     std::vector<std::string> selected_names;
     std::string name_prefix_filter;
     std::string name_contains_filter;
@@ -3252,6 +3257,36 @@ static int runCompareExpr(int argc, char* argv[]) {
         }
         if (key == "--range-aware") {
             cmp_opts.enable_range_aware_location_compare = true;
+            continue;
+        }
+        if (key == "--bolt-remap") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            if (val == "auto") {
+                cmp_opts.bolt_auto_remap = true;
+            } else if (val == "off" || val == "none") {
+                cmp_opts.bolt_auto_remap = false;
+            } else {
+                std::cerr << "Error: invalid --bolt-remap value '" << val
+                          << "' (expected auto|off)\n";
+                return 1;
+            }
+            continue;
+        }
+        if (key == "--bolt-map") {
+            if (val.empty() && i + 1 < argc) val = argv[++i];
+            if (val.empty()) {
+                std::cerr << "Error: invalid --bolt-map value (empty)\n";
+                return 1;
+            }
+            std::string bolt_err;
+            explicit_bolt_map = loadBoltRemapFromFile(val, bolt_err);
+            if (!bolt_err.empty()) {
+                std::cerr << "Error: " << bolt_err << "\n";
+                return 1;
+            }
+            cmp_opts.address_remap = [&explicit_bolt_map](uint64_t old_addr) {
+                return explicit_bolt_map.apply(old_addr);
+            };
             continue;
         }
         if (key == "--vendor-op-profile") {

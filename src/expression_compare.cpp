@@ -120,7 +120,40 @@ struct NormalizedExpressionInfo {
     std::string kind;
     std::string key;
     std::string rule_class;
+    bool address_remapped = false;
 };
+
+// Rewrites CONST_U64 leaves that the address-remap callback reconciles to a
+// different "new" address. Used only on the "old" (lhs) side of a comparison so
+// a relocated code address matches its counterpart. `changed` is set if any leaf
+// was remapped.
+SymExprPtr rewriteAddressConstants(const SymExprPtr& expr,
+                                   const AddressRemapFn& remap,
+                                   bool& changed) {
+    if (!expr) return nullptr;
+    if (expr->kind == SymExpr::Kind::CONST_U64) {
+        if (auto mapped = remap(expr->const_u64)) {
+            if (*mapped != expr->const_u64) {
+                changed = true;
+                return SymExpr::makeConst(*mapped);
+            }
+        }
+        return expr;
+    }
+    if (expr->args.empty()) return expr;
+    std::vector<SymExprPtr> new_args;
+    new_args.reserve(expr->args.size());
+    bool any = false;
+    for (const auto& arg : expr->args) {
+        auto rewritten = rewriteAddressConstants(arg, remap, changed);
+        any = any || (rewritten != arg);
+        new_args.push_back(std::move(rewritten));
+    }
+    if (!any) return expr;
+    auto out = std::make_shared<SymExpr>(*expr);
+    out->args = std::move(new_args);
+    return out;
+}
 
 bool isCommutativeExprKind(SymExpr::Kind kind) {
     switch (kind) {
@@ -190,12 +223,12 @@ bool isCommutativeRewriteKind(SymExpr::Kind kind) {
     }
 }
 
-SymExprPtr rewriteSymExpr(const SymExprPtr& expr, bool& changed, std::string& rule_class) {
+SymExprPtr rewriteSymExprImpl(const SymExprPtr& expr, bool& changed, std::string& rule_class) {
     if (!expr) return nullptr;
     std::vector<SymExprPtr> rewritten_args;
     rewritten_args.reserve(expr->args.size());
     for (const auto& arg : expr->args) {
-        rewritten_args.push_back(rewriteSymExpr(arg, changed, rule_class));
+        rewritten_args.push_back(rewriteSymExprImpl(arg, changed, rule_class));
     }
 
     auto markRule = [&](const char* rule) {
@@ -489,16 +522,29 @@ static std::string normalizationPolicyName(const CrossBinaryCompareOptions& opts
 NormalizedExpressionInfo normalizeExpressionSemantically(const std::vector<uint8_t>& expr,
                                                          const EvaluationContext& ctx,
                                                          uint64_t pc,
-                                                         const std::vector<uint64_t>& regs) {
+                                                         const std::vector<uint64_t>& regs,
+                                                         const AddressRemapFn* address_remap = nullptr) {
     NormalizedExpressionInfo out;
     if (expr.empty()) return out;
 
     SymbolicExpressionEvaluator evaluator;
     SymbolicExpressionResult result = evaluator.evaluate(expr, ctx, pc, regs);
+    // Reconcile BOLT-style relocation on the "old" side before canonicalization,
+    // but only for address-typed results so we never rewrite semantic integer
+    // constants that happen to collide with a relocated code address.
+    if (address_remap && *address_remap && result.expression &&
+        result.type == SymbolicExpressionResult::Type::ADDRESS) {
+        bool remap_changed = false;
+        auto remapped = rewriteAddressConstants(result.expression, *address_remap, remap_changed);
+        if (remap_changed) {
+            result.expression = std::move(remapped);
+            out.address_remapped = true;
+        }
+    }
     if (result.expression) {
         bool rewrite_changed = false;
         std::string rewrite_rule_class;
-        auto rewritten = rewriteSymExpr(result.expression, rewrite_changed, rewrite_rule_class);
+        auto rewritten = rewriteSymExprImpl(result.expression, rewrite_changed, rewrite_rule_class);
         if (rewrite_changed) {
             result.expression = std::move(rewritten);
             out.rule_class = rewrite_rule_class.empty() ? "algebraic_identity" : rewrite_rule_class;
@@ -775,6 +821,7 @@ NamedExpressionComparison compareOne(const std::string& name,
     auto lhs_loc = std::dynamic_pointer_cast<LocationAttributeValue>(lhs_attr);
     auto rhs_loc = std::dynamic_pointer_cast<LocationAttributeValue>(rhs_attr);
     const bool normalization_enabled = normalizationEnabled(opts);
+    const bool bolt_remap_active = static_cast<bool>(opts.address_remap);
     const std::string normalization_kind = normalizationPolicyName(opts);
     bool normalization_attempted = false;
     bool lhs_normalization_changed = false;
@@ -792,7 +839,7 @@ NamedExpressionComparison compareOne(const std::string& name,
         lhs_loc->getLocationType() == LocationAttributeValue::LocationType::LIST &&
         rhs_loc->getLocationType() == LocationAttributeValue::LocationType::LIST;
 
-    if (normalization_enabled && !use_range_aware_lists) {
+    if ((normalization_enabled || bolt_remap_active) && !use_range_aware_lists) {
         std::vector<uint8_t> lhs_expr;
         std::vector<uint8_t> rhs_expr;
         if (selectExpressionBytes(lhs_die, opts.attribute, opts.use_location_list_pc, opts.lhs_location_list_pc, lhs_expr) &&
@@ -814,7 +861,7 @@ NamedExpressionComparison compareOne(const std::string& name,
             auto lhs_norm = normalizeExpressionSemantically(
                 lhs_expr, lhs_ctx,
                 opts.lhs_evaluation_pc != 0 ? opts.lhs_evaluation_pc : opts.lhs_location_list_pc,
-                opts.lhs_registers);
+                opts.lhs_registers, &opts.address_remap);
             auto rhs_norm = normalizeExpressionSemantically(
                 rhs_expr, rhs_ctx,
                 opts.rhs_evaluation_pc != 0 ? opts.rhs_evaluation_pc : opts.rhs_location_list_pc,
@@ -852,10 +899,17 @@ NamedExpressionComparison compareOne(const std::string& name,
                 if (lhs_norm.available && rhs_norm.available && lhs_norm.key == rhs_norm.key) {
                     out.verification.normalization_equal = true;
                     out.verification.verdict = ExpressionVerificationResult::Verdict::EQUIVALENT;
-                    out.verification.reason = "semantic normalization matched";
-                    out.verification.reason_class = "equivalent";
-                    out.verification.verifier_backend = "structural";
-                    out.verification.solver_result = "normalized_equal";
+                    if (lhs_norm.address_remapped) {
+                        out.verification.reason = "address remap reconciled relocation";
+                        out.verification.reason_class = "address_remap";
+                        out.verification.verifier_backend = "structural";
+                        out.verification.solver_result = "address_remap_equal";
+                    } else {
+                        out.verification.reason = "semantic normalization matched";
+                        out.verification.reason_class = "equivalent";
+                        out.verification.verifier_backend = "structural";
+                        out.verification.solver_result = "normalized_equal";
+                    }
                     out.verification.lhs_normalization_changed = lhs_normalization_changed;
                     out.verification.rhs_normalization_changed = rhs_normalization_changed;
                     out.verification.lhs_normalization_reason = "lhs symbolic canonical key was reducible";
@@ -1219,11 +1273,30 @@ NamedExpressionComparison compareOne(const std::string& name,
 
 } // namespace
 
+// Exported wrapper (declared in symbolic_expression.hpp) so other translation
+// units — notably the CFI/expression verifier — can reuse the same algebraic
+// rewrite used by cross-binary normalization.
+SymExprPtr rewriteSymExpr(const SymExprPtr& expr, bool& changed, std::string& rule_class) {
+    return rewriteSymExprImpl(expr, changed, rule_class);
+}
+
 std::vector<NamedExpressionComparison> CrossBinaryExpressionComparator::compareParsersByName(
     const DwarfParser& lhs,
     const DwarfParser& rhs,
     const CrossBinaryCompareOptions& opts) const {
-    return compareDIEListsByName(lhs.getCompilationUnits(), rhs.getCompilationUnits(), opts);
+    // Auto-detect a BOLT remap when the caller did not supply one and either
+    // binary carries BOLT markers, then install it as the address_remap callback.
+    CrossBinaryCompareOptions local = opts;
+    if (local.bolt_auto_remap && !local.address_remap &&
+        (elfHasBoltMarkers(lhs.getELF()) || elfHasBoltMarkers(rhs.getELF()))) {
+        BoltAddressRemap auto_remap = buildBoltRemapFromElves(lhs.getELF(), rhs.getELF());
+        if (!auto_remap.empty()) {
+            local.address_remap = [remap = std::move(auto_remap)](uint64_t old_addr) {
+                return remap.apply(old_addr);
+            };
+        }
+    }
+    return compareDIEListsByName(lhs.getCompilationUnits(), rhs.getCompilationUnits(), local);
 }
 
 std::vector<NamedExpressionComparison> CrossBinaryExpressionComparator::compareDIEListsByName(

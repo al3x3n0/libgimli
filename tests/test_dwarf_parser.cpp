@@ -7100,6 +7100,9 @@ void testCrossBinaryExpressionComparator() {
     opts.tag = DwarfTag::DW_TAG_variable;
     opts.attribute = DwarfAttribute::DW_AT_location;
     opts.include_missing = true;
+    // Baseline path isolates SMT-verifier semantics; the normalized path is
+    // exercised separately via normalized_opts below.
+    opts.normalization_policy = CrossBinaryCompareOptions::NormalizationPolicy::OFF;
 
     auto results = cmp.compareDIEListsByName({lhs_cu}, {rhs_cu}, opts);
     assert(results.size() == 5);
@@ -7788,6 +7791,7 @@ void testCrossBinaryExpressionComparator() {
         raw_opts.attribute = DwarfAttribute::DW_AT_location;
         raw_opts.enable_range_aware_location_compare = true;
         raw_opts.enable_location_semantic_normalization = false;
+        raw_opts.normalization_policy = CrossBinaryCompareOptions::NormalizationPolicy::OFF;
 
         auto raw_rows = cmp.compareDIEListsByName({lcu}, {rcu}, raw_opts);
         assert(raw_rows.size() == 1);
@@ -7832,6 +7836,79 @@ void testCrossBinaryExpressionComparator() {
     }
 
     std::cout << "CrossBinaryExpressionComparator tests passed!" << std::endl;
+}
+
+void testBoltAddressRemap() {
+    std::cout << "Testing BoltAddressRemap..." << std::endl;
+
+    // Unit: exact key + within-function span + unmapped address.
+    {
+        BoltAddressRemap remap;
+        remap.old_to_new[0x1000] = 0x8000;               // function entry
+        remap.spans.push_back({0x1000, 0x40, 0x8000});   // 64-byte body
+        assert(!remap.empty());
+        assert(remap.apply(0x1000).has_value() && *remap.apply(0x1000) == 0x8000);
+        assert(remap.apply(0x1010).has_value() && *remap.apply(0x1010) == 0x8010); // offset in span
+        assert(!remap.apply(0x2000).has_value());        // unmapped -> nullopt
+        assert(!remap.apply(0x1040).has_value());        // one past span end
+    }
+
+    // Integration: a remapped code address reconciles to EQUIVALENT, while an
+    // address not covered by the remap stays DIFFERENT.
+    auto makeAddrExpr = [](uint64_t addr) {
+        std::vector<uint8_t> e;
+        e.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_addr));
+        for (int i = 0; i < 8; ++i) e.push_back(static_cast<uint8_t>((addr >> (8 * i)) & 0xff));
+        return e;
+    };
+    auto makeVar = [](const std::string& name, const std::vector<uint8_t>& expr, uint64_t off) {
+        auto die = std::make_shared<DIE>(DwarfTag::DW_TAG_variable, off, 0);
+        die->addAttribute(DwarfAttribute::DW_AT_name, std::make_shared<StringAttributeValue>(name));
+        die->addAttribute(DwarfAttribute::DW_AT_location,
+                          std::make_shared<LocationAttributeValue>(LocationAttributeValue::LocationType::EXPRESSION, expr));
+        return die;
+    };
+
+    auto lhs_cu = std::make_shared<DIE>(DwarfTag::DW_TAG_compile_unit, 0xb00, 0);
+    auto rhs_cu = std::make_shared<DIE>(DwarfTag::DW_TAG_compile_unit, 0xc00, 0);
+    lhs_cu->addChild(makeVar("mapped", makeAddrExpr(0x1000), 0xb10));
+    rhs_cu->addChild(makeVar("mapped", makeAddrExpr(0x8000), 0xc10));
+    lhs_cu->addChild(makeVar("unmapped", makeAddrExpr(0x3000), 0xb20));
+    rhs_cu->addChild(makeVar("unmapped", makeAddrExpr(0x9999), 0xc20));
+
+    BoltAddressRemap remap;
+    remap.old_to_new[0x1000] = 0x8000;
+
+    CrossBinaryExpressionComparator cmp;
+    CrossBinaryCompareOptions opts;
+    opts.tag = DwarfTag::DW_TAG_variable;
+    opts.attribute = DwarfAttribute::DW_AT_location;
+    opts.address_remap = [&remap](uint64_t old_addr) { return remap.apply(old_addr); };
+
+    auto results = cmp.compareDIEListsByName({lhs_cu}, {rhs_cu}, opts);
+    const NamedExpressionComparison* mapped = nullptr;
+    const NamedExpressionComparison* unmapped = nullptr;
+    for (const auto& r : results) {
+        if (r.name == "mapped") mapped = &r;
+        if (r.name == "unmapped") unmapped = &r;
+    }
+    assert(mapped && unmapped);
+    assert(mapped->verification.verdict == ExpressionVerificationResult::Verdict::EQUIVALENT);
+    assert(mapped->verification.solver_result == "address_remap_equal");
+    assert(mapped->verification.reason_class == "address_remap");
+    assert(unmapped->verification.verdict != ExpressionVerificationResult::Verdict::EQUIVALENT);
+
+    // With no remap supplied, the mapped pair is a genuine address difference.
+    CrossBinaryCompareOptions no_remap = opts;
+    no_remap.address_remap = nullptr;
+    auto results_no_remap = cmp.compareDIEListsByName({lhs_cu}, {rhs_cu}, no_remap);
+    for (const auto& r : results_no_remap) {
+        if (r.name == "mapped") {
+            assert(r.verification.verdict != ExpressionVerificationResult::Verdict::EQUIVALENT);
+        }
+    }
+
+    std::cout << "BoltAddressRemap tests passed!" << std::endl;
 }
 
 void testCrossBinaryExpressionComparatorVendorProfile() {
@@ -20677,6 +20754,7 @@ int main() {
 	    testExpressionVerifier();
 	    testSMTExpressionVerifierBehavior();
     testCrossBinaryExpressionComparator();
+    testBoltAddressRemap();
     testCrossBinaryExpressionComparatorVendorProfile();
 	    testAttributeParserBoundedStringsAndBlocks();
 	    testStrpSup();

@@ -264,14 +264,14 @@ private:
     void integrateSupplementary();
     void integrateSplitDwarf();
     void resolveTypeSignatureReferences();
-    void indexTypeUnitSignature(std::shared_ptr<DIE> die);
-    void resolveTypeSignatureReferences(std::shared_ptr<DIE> die);
+    void indexTypeUnitSignature(const std::shared_ptr<DIE>& die);
+    void resolveTypeSignatureReferences(const std::shared_ptr<DIE>& die);
     uint64_t getOrAssignDWOBias(uint64_t dwo_id);
     const std::vector<uint64_t>* getDebugAddrTable(uint64_t addr_base, uint8_t address_size) const;
     const std::vector<uint64_t>* getDebugAddrTableForSection(const std::vector<uint8_t>& debug_addr_section,
                                                              uint64_t addr_base,
                                                              uint8_t address_size) const;
-    void cacheDIE(std::shared_ptr<DIE> die);
+    void cacheDIE(const std::shared_ptr<DIE>& die);
     
     // Section loading helpers
     bool loadSection(const std::string& section_name, std::vector<uint8_t>& data);

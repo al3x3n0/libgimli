@@ -88,8 +88,14 @@ public:
     void clear();
 
 private:
-    // Line entries sorted by address for binary search
-    std::vector<SourceLocation> sorted_locations_;
+    // Line entries sorted by address for binary search. Sorting is deferred until
+    // the first query (see ensureSorted) so that adding many line tables is O(N)
+    // rather than re-sorting the whole vector on every add.
+    mutable std::vector<SourceLocation> sorted_locations_;
+    mutable bool locations_sorted_ = true;
+
+    // Sorts sorted_locations_ by address if a table was added since the last sort.
+    void ensureSorted() const;
 
     // Map from file -> line -> addresses for reverse lookup
     std::map<std::string, std::map<uint32_t, std::vector<uint64_t>>> file_line_map_;
