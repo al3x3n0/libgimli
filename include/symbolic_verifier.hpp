@@ -25,6 +25,11 @@ struct ExpressionVerificationOptions {
     // expressions (including in the CFI path) are reconciled symbolically instead
     // of failing on a raw byte mismatch.
     bool enable_symbolic_normalization = true;
+    // Optional callback reconciling an lhs "old" code address to its rhs "new"
+    // address. When set, absolute address constants in the lhs expression (e.g. a
+    // DW_OP_addr inside a CFA expression) are remapped before comparison so
+    // BOLT-relocated addresses are not reported as differences.
+    AddressRemapFn address_remap;
 };
 
 struct ExpressionVerificationResult {

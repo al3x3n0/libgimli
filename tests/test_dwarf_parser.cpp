@@ -5892,6 +5892,38 @@ void testExpressionVerifier() {
         );
     }
 
+    // address_remap hook: a BOLT-relocated DW_OP_addr on the lhs reconciles to
+    // its rhs counterpart instead of being reported as a difference.
+    {
+        auto addrExpr = [](uint64_t a) {
+            std::vector<uint8_t> e;
+            e.push_back(static_cast<uint8_t>(DwarfOp::DW_OP_addr));
+            for (int i = 0; i < 8; ++i) e.push_back(static_cast<uint8_t>((a >> (8 * i)) & 0xff));
+            return e;
+        };
+        std::vector<uint8_t> lhs = addrExpr(0x1000);
+        std::vector<uint8_t> rhs = addrExpr(0x8000);
+
+        // Without a remap the two absolute addresses differ.
+        auto r_plain = verifier.verifyWithContexts(lhs, ctx, 0, {}, rhs, ctx, 0, {});
+        assert(r_plain.verdict != ExpressionVerificationResult::Verdict::EQUIVALENT);
+
+        // With a remap relocating 0x1000 -> 0x8000 the lhs reconciles to the rhs.
+        ExpressionVerificationOptions remap_opts;
+        remap_opts.address_remap = [](uint64_t old_addr) -> std::optional<uint64_t> {
+            if (old_addr == 0x1000) return uint64_t{0x8000};
+            return std::nullopt;
+        };
+        auto r_remap = verifier.verifyWithContexts(lhs, ctx, 0, {}, rhs, ctx, 0, {}, remap_opts);
+        assert(r_remap.verdict ==
+#if DWARF_HAS_Z3
+               ExpressionVerificationResult::Verdict::EQUIVALENT
+#else
+               ExpressionVerificationResult::Verdict::UNKNOWN
+#endif
+        );
+    }
+
     // entry_value and GNU_entry_value should materialize entry-time register values through verifier contexts.
     {
         std::vector<uint8_t> lhs = {

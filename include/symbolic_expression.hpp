@@ -2,6 +2,7 @@
 
 #include "expression_evaluator.hpp"
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -13,6 +14,10 @@ namespace dwarf {
 // This is intentionally minimal: it is meant for debugging/inspection, not SMT completeness.
 struct SymExpr;
 using SymExprPtr = std::shared_ptr<const SymExpr>;
+
+// Maps an "old" code address to its reconciled "new" address (nullopt if unmapped).
+// Used to reconcile BOLT-style relocation of address constants during comparison.
+using AddressRemapFn = std::function<std::optional<uint64_t>(uint64_t)>;
 
 struct SymExpr {
     enum class Kind {
@@ -175,5 +180,10 @@ std::string summarizeSymbolicResult(const SymbolicExpressionResult& r);
 // symbolic expression tree. `changed` is set if any rewrite fired and
 // `rule_class` names the applied rule(s). Defined in expression_compare.cpp.
 SymExprPtr rewriteSymExpr(const SymExprPtr& expr, bool& changed, std::string& rule_class);
+
+// Rewrites CONST_U64 leaves that `remap` reconciles to a different address (used
+// on the "old" side so a relocated code address matches its counterpart).
+// `changed` is set if any leaf was remapped.
+SymExprPtr rewriteAddressConstants(const SymExprPtr& expr, const AddressRemapFn& remap, bool& changed);
 
 } // namespace dwarf

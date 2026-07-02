@@ -2173,6 +2173,32 @@ bool SymbolicExpressionEvaluator::executeProcedureSubexprInPlace(const std::vect
     return true;
 }
 
+SymExprPtr rewriteAddressConstants(const SymExprPtr& expr, const AddressRemapFn& remap, bool& changed) {
+    if (!expr || !remap) return expr;
+    if (expr->kind == SymExpr::Kind::CONST_U64) {
+        if (auto mapped = remap(expr->const_u64)) {
+            if (*mapped != expr->const_u64) {
+                changed = true;
+                return SymExpr::makeConst(*mapped);
+            }
+        }
+        return expr;
+    }
+    if (expr->args.empty()) return expr;
+    std::vector<SymExprPtr> new_args;
+    new_args.reserve(expr->args.size());
+    bool any = false;
+    for (const auto& arg : expr->args) {
+        auto rewritten = rewriteAddressConstants(arg, remap, changed);
+        any = any || (rewritten != arg);
+        new_args.push_back(std::move(rewritten));
+    }
+    if (!any) return expr;
+    auto out = std::make_shared<SymExpr>(*expr);
+    out->args = std::move(new_args);
+    return out;
+}
+
 std::string summarizeSymbolicResult(const SymbolicExpressionResult& r) {
     std::ostringstream ss;
     switch (r.type) {

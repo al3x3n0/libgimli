@@ -123,37 +123,9 @@ struct NormalizedExpressionInfo {
     bool address_remapped = false;
 };
 
-// Rewrites CONST_U64 leaves that the address-remap callback reconciles to a
-// different "new" address. Used only on the "old" (lhs) side of a comparison so
-// a relocated code address matches its counterpart. `changed` is set if any leaf
-// was remapped.
-SymExprPtr rewriteAddressConstants(const SymExprPtr& expr,
-                                   const AddressRemapFn& remap,
-                                   bool& changed) {
-    if (!expr) return nullptr;
-    if (expr->kind == SymExpr::Kind::CONST_U64) {
-        if (auto mapped = remap(expr->const_u64)) {
-            if (*mapped != expr->const_u64) {
-                changed = true;
-                return SymExpr::makeConst(*mapped);
-            }
-        }
-        return expr;
-    }
-    if (expr->args.empty()) return expr;
-    std::vector<SymExprPtr> new_args;
-    new_args.reserve(expr->args.size());
-    bool any = false;
-    for (const auto& arg : expr->args) {
-        auto rewritten = rewriteAddressConstants(arg, remap, changed);
-        any = any || (rewritten != arg);
-        new_args.push_back(std::move(rewritten));
-    }
-    if (!any) return expr;
-    auto out = std::make_shared<SymExpr>(*expr);
-    out->args = std::move(new_args);
-    return out;
-}
+// rewriteAddressConstants is defined in symbolic_expression.cpp and declared in
+// symbolic_expression.hpp so both the compare and CFI/expression-verifier paths
+// share one implementation.
 
 bool isCommutativeExprKind(SymExpr::Kind kind) {
     switch (kind) {

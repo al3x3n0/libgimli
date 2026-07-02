@@ -3977,6 +3977,22 @@ int main() {
     }
 
     {
+        // BOLT-aware pairing: with no BOLT markers the remap is empty, so a
+        // self-compare falls back to matching by identical start PC and must pair
+        // every FDE with no unmatched entries on either side.
+        std::string out_remap;
+        int code_remap = runAndCapture(
+            dwarf_dump + " compare-cfi " + test_elf + " " + test_elf +
+                " --all-fdes --pair-by=remapped-pc --report-only",
+            "/tmp/dwarf_cli_compare_cfi_pair_remapped.txt", out_remap);
+        assert(code_remap == 0);
+        assert(out_remap.find("pair_by=remapped-pc") != std::string::npos);
+        assert(out_remap.find("missing_lhs=0") != std::string::npos);
+        assert(out_remap.find("missing_rhs=0") != std::string::npos);
+        assert(out_remap.find("different=0") != std::string::npos);
+    }
+
+    {
         std::string out_json;
         int code_json = runAndCapture(
             dwarf_dump + " compare-cfi " + test_elf + " " + test_elf +

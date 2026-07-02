@@ -1,5 +1,6 @@
 #include "dwarf_compare.hpp"
 
+#include "bolt_remap.hpp"
 #include "dwarf_utils.hpp"
 
 #include <algorithm>
@@ -582,6 +583,19 @@ CompareCFIExecutionResult executeCompareCFI(const DwarfParser& lhs,
     CompareCFIExecutionResult result;
     SymbolicCFIVerifier verifier;
 
+    // Auto-detect a BOLT remap from the two ELFs when either carries BOLT markers.
+    // It is reused both for remapped-pc FDE pairing and for reconciling absolute
+    // address constants inside CFA expressions (opts.expression_options.address_remap).
+    BoltAddressRemap cfi_remap;
+    if (elfHasBoltMarkers(lhs.getELF()) || elfHasBoltMarkers(rhs.getELF())) {
+        cfi_remap = buildBoltRemapFromElves(lhs.getELF(), rhs.getELF());
+    }
+    SymbolicCFICompareOptions cfi_opts = options.compare_options;
+    if (!cfi_remap.empty()) {
+        cfi_opts.expression_options.address_remap =
+            [&cfi_remap](uint64_t old_addr) { return cfi_remap.apply(old_addr); };
+    }
+
     auto resolveFuncName = [](const DwarfParser& p, uint64_t pc) -> std::string {
         auto die = p.getFunctionAt(pc);
         if (!die) return "";
@@ -648,6 +662,52 @@ CompareCFIExecutionResult executeCompareCFI(const DwarfParser& lhs,
                 result.missing_rhs += lq.size();
                 result.missing_lhs += rq.size();
             }
+        } else if (options.pair_by == "remapped-pc") {
+            // BOLT-aware pairing: match an lhs FDE to the rhs FDE whose start PC
+            // equals the remapped lhs start (remap(lhs_start) == rhs_start), using
+            // the remap auto-detected above. FDEs the remap does not cover fall
+            // back to matching by the function name covering each FDE start.
+            const BoltAddressRemap& remap = cfi_remap;
+
+            std::map<uint64_t, std::deque<size_t>> rhs_by_pc;
+            for (size_t i = 0; i < rf.size(); ++i) rhs_by_pc[rf[i]->initial_location].push_back(i);
+            std::map<std::string, std::deque<size_t>> rhs_by_func;
+            for (size_t i = 0; i < rf.size(); ++i) {
+                std::string n = resolveFuncName(rhs, rf[i]->initial_location);
+                if (!n.empty()) rhs_by_func[n].push_back(i);
+            }
+
+            std::vector<bool> rhs_used(rf.size(), false);
+            auto takeFirstUnused = [&](std::deque<size_t>& q) -> long {
+                while (!q.empty()) {
+                    size_t idx = q.front();
+                    q.pop_front();
+                    if (!rhs_used[idx]) return static_cast<long>(idx);
+                }
+                return -1;
+            };
+
+            for (size_t i = 0; i < lf.size(); ++i) {
+                uint64_t target = remap.apply(lf[i]->initial_location)
+                                      .value_or(lf[i]->initial_location);
+                long ridx = -1;
+                auto it = rhs_by_pc.find(target);
+                if (it != rhs_by_pc.end()) ridx = takeFirstUnused(it->second);
+                if (ridx < 0) {
+                    std::string n = resolveFuncName(lhs, lf[i]->initial_location);
+                    auto fit = n.empty() ? rhs_by_func.end() : rhs_by_func.find(n);
+                    if (fit != rhs_by_func.end()) ridx = takeFirstUnused(fit->second);
+                }
+                if (ridx >= 0) {
+                    rhs_used[static_cast<size_t>(ridx)] = true;
+                    pairs.emplace_back(i, static_cast<size_t>(ridx));
+                } else {
+                    ++result.missing_rhs;
+                }
+            }
+            for (size_t i = 0; i < rf.size(); ++i) {
+                if (!rhs_used[i]) ++result.missing_lhs;
+            }
         } else {
             using Key = std::pair<uint64_t, uint64_t>;
             std::map<Key, std::deque<size_t>> lhs_by_range;
@@ -672,7 +732,7 @@ CompareCFIExecutionResult executeCompareCFI(const DwarfParser& lhs,
         }
 
         for (const auto& p : pairs) {
-            auto r = verifier.compareFDEByIndex(lhs.getCFIParser(), p.first, rhs.getCFIParser(), p.second, options.compare_options);
+            auto r = verifier.compareFDEByIndex(lhs.getCFIParser(), p.first, rhs.getCFIParser(), p.second, cfi_opts);
             CFICompareRow row;
             row.lhs_index = p.first;
             row.rhs_index = p.second;
@@ -692,7 +752,7 @@ CompareCFIExecutionResult executeCompareCFI(const DwarfParser& lhs,
             result.rows.push_back(std::move(row));
         }
     } else if (options.pc_mode) {
-        auto r = verifier.compareParsersAtPC(lhs.getCFIParser(), rhs.getCFIParser(), options.lhs_pc, options.rhs_pc, options.compare_options);
+        auto r = verifier.compareParsersAtPC(lhs.getCFIParser(), rhs.getCFIParser(), options.lhs_pc, options.rhs_pc, cfi_opts);
         CFICompareRow row;
         appendRowFromState(row, r);
         auto lf = lhs.getCFIParser().findFDE(options.lhs_pc);
@@ -711,7 +771,7 @@ CompareCFIExecutionResult executeCompareCFI(const DwarfParser& lhs,
         }
         result.rows.push_back(std::move(row));
     } else {
-        auto r = verifier.compareFDEByIndex(lhs.getCFIParser(), options.lhs_fde_index, rhs.getCFIParser(), options.rhs_fde_index, options.compare_options);
+        auto r = verifier.compareFDEByIndex(lhs.getCFIParser(), options.lhs_fde_index, rhs.getCFIParser(), options.rhs_fde_index, cfi_opts);
         CFICompareRow row;
         row.lhs_index = options.lhs_fde_index;
         row.rhs_index = options.rhs_fde_index;

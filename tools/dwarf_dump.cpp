@@ -663,7 +663,7 @@ void printCompareCFIUsage(const char* prog) {
               << "  --lhs-fde-index=<N>              LHS FDE index (default: 0)\n"
               << "  --rhs-fde-index=<N>              RHS FDE index (default: 0)\n"
               << "  --all-fdes                       Compare all index-aligned FDE pairs\n"
-              << "  --pair-by=<index|start-pc|range> Pairing strategy in --all-fdes mode (default: index)\n"
+              << "  --pair-by=<index|start-pc|range|remapped-pc> Pairing strategy in --all-fdes mode (default: index; remapped-pc reconciles BOLT relocation)\n"
               << "  --lhs-pc=<PC>                    LHS PC for state compare mode\n"
               << "  --rhs-pc=<PC>                    RHS PC for state compare mode\n"
               << "  --lhs-func=<NAME>                Resolve lhs function name to low_pc for PC mode\n"
@@ -3854,9 +3854,9 @@ static int runCompareCFI(int argc, char* argv[]) {
         }
         if (key == "--pair-by") {
             if (val.empty() && i + 1 < argc) val = argv[++i];
-            if (val != "index" && val != "start-pc" && val != "range") {
+            if (val != "index" && val != "start-pc" && val != "range" && val != "remapped-pc") {
                 std::cerr << "Error: invalid --pair-by value '" << val
-                          << "' (expected index|start-pc|range)\n";
+                          << "' (expected index|start-pc|range|remapped-pc)\n";
                 return 1;
             }
             pair_by = val;

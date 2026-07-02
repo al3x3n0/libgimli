@@ -271,6 +271,16 @@ ExpressionVerificationResult ExpressionVerifier::verifyWithContexts(
         return out;
     }
 
+    // Reconcile BOLT-style relocation of absolute address constants on the "old"
+    // (lhs) side before comparison — e.g. a DW_OP_addr inside a CFA expression.
+    // Restricted to address-typed results so semantic integer constants are never
+    // rewritten.
+    if (opts.address_remap && l.expression &&
+        l.type == SymbolicExpressionResult::Type::ADDRESS) {
+        bool remap_changed = false;
+        l.expression = rewriteAddressConstants(l.expression, opts.address_remap, remap_changed);
+    }
+
     // Canonicalize both expression trees before comparison so semantically
     // equivalent but syntactically different forms reconcile symbolically rather
     // than failing on a raw byte/structure mismatch (e.g. the CFI path). On a

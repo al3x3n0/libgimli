@@ -20,10 +20,8 @@ enum class CompareKeyMode {
     LINKAGE_OR_NAME
 };
 
-// Maps an lhs "old" code address to its rhs "new" address, or returns nullopt
-// when the address is not remapped. Lets callers reconcile BOLT-style (or any
-// other) relocation without coupling the comparator to a specific map layout.
-using AddressRemapFn = std::function<std::optional<uint64_t>(uint64_t)>;
+// AddressRemapFn (lhs "old" address -> rhs "new" address, nullopt if unmapped)
+// is defined in symbolic_expression.hpp and reused here.
 
 struct CrossBinaryCompareOptions {
     DwarfTag tag = DwarfTag::DW_TAG_variable;
