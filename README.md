@@ -9,6 +9,7 @@ A comprehensive C++ library for parsing and evaluating DWARF debug information f
 - **Type System**: Comprehensive type system for representing DWARF types
 - **Expression Evaluator**: Evaluate DWARF location expressions and operations
 - **Attribute Parser**: Parse and evaluate DWARF attributes
+- **Semantic / BOLT-aware Compare**: Cross-binary expression & CFI equivalence with symbolic-canonical normalization (default) and BOLT-style address-relocation reconciliation
 - **Modern C++**: Uses C++17 features and modern design patterns
 - **Cross-platform**: Works on Linux, macOS, and Windows
 
@@ -286,6 +287,41 @@ JSON summaries include bucket counts:
 - `solver_result_counts`
 - `verifier_backend_counts`
 
+### BOLT / Relocation-Aware Comparison
+
+`compare-expr` and `compare-cfi` reconcile BOLT-style code relocation so that
+addresses which only moved (rather than changed semantically) are not reported
+as differences. Pass the pre-BOLT binary as the first (lhs, "old") argument.
+
+- **Symbolic normalization is on by default** (`--normalization-policy=symbolic-canonical`);
+  disable with `--normalization-policy=off`. Equivalent-but-syntactically-different
+  expressions are reconciled symbolically instead of failing on a raw byte mismatch.
+- **Address remap** is auto-detected from the two ELFs when either carries BOLT
+  markers (`.bolt.*` sections). An lhs "old" address that maps to the rhs "new"
+  address reconciles to EQUIVALENT (`reason_class=address_remap`,
+  `solver_result=address_remap_equal`). This covers `DW_OP_addr` in location
+  expressions and inside CFA expressions.
+
+```bash
+# compare-expr: BOLT remap auto-detected by default; or supply an explicit map
+./build/dwarf_dump compare-expr original.elf bolted.elf            # auto
+./build/dwarf_dump compare-expr original.elf bolted.elf --bolt-remap=off
+./build/dwarf_dump compare-expr original.elf bolted.elf --bolt-map=remap.txt
+
+# compare-cfi: pair FDEs across BOLT relocation/reordering, then verify unwind
+./build/dwarf_dump compare-cfi original.elf bolted.elf \
+  --all-fdes --pair-by=remapped-pc --allow-unknown --allow-missing
+```
+
+- `--bolt-remap=<auto|off>` controls auto-detection (default `auto`).
+- `--bolt-map=<file>` supplies an explicit remap (lines of `<old_hex> <new_hex>`).
+- `--pair-by=remapped-pc` pairs each lhs FDE to the rhs FDE whose start PC equals
+  the remapped lhs start, falling back to function-name matching. The other
+  `--pair-by` modes (`index`/`start-pc`/`range`) assume identical ordering or
+  absolute addresses and do not survive BOLT reordering/relocation.
+- Limitation: whole-function relocation is reconciled; intra-function
+  basic-block reordering is not yet mapped.
+
 ### Test Suite
 
 The test suite validates core functionality:
@@ -390,6 +426,9 @@ Compatibility guidance for semantic compare outputs/APIs:
   - `counterexample_model`
   - `counterexample_witness`
 - For CFI rows, solver metadata contract includes the same four fields above.
+- Normalization/remap outcomes are surfaced via `reason_class` and `solver_result`:
+  - `normalized_equal` — matched by symbolic-canonical normalization.
+  - `address_remap_equal` (`reason_class=address_remap`) — matched after applying a BOLT-style address remap to the lhs.
 
 Stability policy:
 - New fields may be added in minor releases without breaking existing fields.
